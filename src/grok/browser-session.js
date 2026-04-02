@@ -9,6 +9,7 @@ export class BrowserSession {
     this.page = null;
     this.pending = new Map();
     this.statsigChunkSource = null;
+    this.bindingsInstalled = false;
   }
 
   async loadStatsigChunkSource() {
@@ -25,6 +26,7 @@ export class BrowserSession {
 
   async init() {
     if (this.context) {
+      await this.ensurePage();
       return;
     }
 
@@ -40,21 +42,38 @@ export class BrowserSession {
       }
     );
 
-    this.page =
-      this.context.pages()[0] ??
-      (await this.context.newPage());
+    await this.installBindings();
 
-    await this.page.exposeBinding("__grokBridgeMeta", (_source, payload) => {
+    if (this.config.importCookiesOnBoot) {
+      const cookies = await readCookiesFromSource({
+        filePath: this.config.grokCookieFile,
+        rawText: this.config.grokCookiesText
+      });
+
+      if (cookies.length) {
+        await this.context.addCookies(cookies);
+      }
+    }
+
+    await this.ensurePage();
+  }
+
+  async installBindings() {
+    if (this.bindingsInstalled) {
+      return;
+    }
+
+    await this.context.exposeBinding("__grokBridgeMeta", (_source, payload) => {
       const pending = this.pending.get(payload.requestId);
       pending?.onMeta(payload);
     });
 
-    await this.page.exposeBinding("__grokBridgeChunk", (_source, payload) => {
+    await this.context.exposeBinding("__grokBridgeChunk", (_source, payload) => {
       const pending = this.pending.get(payload.requestId);
       pending?.onChunk(payload.chunk);
     });
 
-    await this.page.exposeBinding("__grokBridgeDone", (_source, payload) => {
+    await this.context.exposeBinding("__grokBridgeDone", (_source, payload) => {
       const pending = this.pending.get(payload.requestId);
       if (!pending) {
         return;
@@ -64,7 +83,7 @@ export class BrowserSession {
       pending.resolve();
     });
 
-    await this.page.exposeBinding("__grokBridgeError", (_source, payload) => {
+    await this.context.exposeBinding("__grokBridgeError", (_source, payload) => {
       const pending = this.pending.get(payload.requestId);
       if (!pending) {
         return;
@@ -74,7 +93,7 @@ export class BrowserSession {
       pending.reject(new Error(payload.message));
     });
 
-    await this.page.addInitScript(() => {
+    await this.context.addInitScript(() => {
       window.__grokBridgeEnsureStatsigGenerator = async (scriptSource) => {
         if (window.__grokStatsigGen) {
           return window.__grokStatsigGen;
@@ -193,20 +212,36 @@ export class BrowserSession {
       };
     });
 
-    if (this.config.importCookiesOnBoot) {
-      const cookies = await readCookiesFromSource({
-        filePath: this.config.grokCookieFile,
-        rawText: this.config.grokCookiesText
-      });
+    this.bindingsInstalled = true;
+  }
 
-      if (cookies.length) {
-        await this.context.addCookies(cookies);
-      }
+  async ensurePage() {
+    if (this.page && !this.page.isClosed()) {
+      return this.page;
     }
 
+    this.page = await this.context.newPage();
+    this.page.on("close", () => {
+      if (this.page && this.page.isClosed()) {
+        this.page = null;
+      }
+    });
     await this.page.goto(this.config.grokBaseUrl, {
       waitUntil: "domcontentloaded"
     });
+    return this.page;
+  }
+
+  async recreatePage() {
+    if (this.page && !this.page.isClosed()) {
+      await this.page.close().catch(() => {});
+    }
+    this.page = null;
+    return this.ensurePage();
+  }
+
+  async evaluateRequest(page, payload) {
+    return page.evaluate((requestPayload) => window.__grokBridgeFetch(requestPayload), payload);
   }
 
   async request({
@@ -223,32 +258,57 @@ export class BrowserSession {
 
     let meta = null;
     const chunks = [];
+    const payload = {
+      requestId,
+      url,
+      method,
+      body,
+      headers,
+      statsigChunkSource
+    };
 
-    await new Promise((resolve, reject) => {
-      this.pending.set(requestId, {
-        onMeta(payload) {
-          meta = payload;
-          onMeta?.(payload);
-        },
-        onChunk(chunk) {
-          chunks.push(chunk);
-          onChunk?.(chunk);
-        },
-        resolve,
-        reject
+    const run = async (page) => {
+      await new Promise((resolve, reject) => {
+        this.pending.set(requestId, {
+          onMeta(payload) {
+            meta = payload;
+            onMeta?.(payload);
+          },
+          onChunk(chunk) {
+            chunks.push(chunk);
+            onChunk?.(chunk);
+          },
+          resolve,
+          reject
+        });
+
+        this.evaluateRequest(page, payload).catch((error) => {
+          this.pending.delete(requestId);
+          reject(error);
+        });
       });
+    };
 
-      this.page
-        .evaluate((payload) => window.__grokBridgeFetch(payload), {
-          requestId,
-          url,
-          method,
-          body,
-          headers,
-          statsigChunkSource
-        })
-        .catch(reject);
-    });
+    try {
+      const page = await this.ensurePage();
+      await run(page);
+    } catch (error) {
+      this.pending.delete(requestId);
+
+      const message = error instanceof Error ? error.message : String(error);
+      if (
+        message.includes("Execution context was destroyed") ||
+        message.includes("Most likely because of a navigation") ||
+        message.includes("Target closed")
+      ) {
+        meta = null;
+        chunks.length = 0;
+        const page = await this.recreatePage();
+        await run(page);
+      } else {
+        throw error;
+      }
+    }
 
     return {
       meta,

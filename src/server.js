@@ -190,13 +190,17 @@ async function uploadFilesToGrok(files) {
   const uploaded = [];
 
   for (const file of files) {
-    uploaded.push(
-      await grokClient.uploadFile({
-        filename: file.filename,
-        mimeType: file.mimeType,
-        bytes: file.bytes
-      })
-    );
+    const upload = await grokClient.uploadFile({
+      filename: file.filename,
+      mimeType: file.mimeType,
+      bytes: file.bytes
+    });
+
+    if (!upload?.fileMetadataId) {
+      throw new HttpError(502, "Grok upload did not return a fileMetadataId");
+    }
+
+    uploaded.push(upload.fileMetadataId);
   }
 
   return uploaded;
