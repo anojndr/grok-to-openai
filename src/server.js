@@ -386,39 +386,47 @@ app.post("/v1/responses", async (req, res, next) => {
         request: parsed
       });
 
-      writeSseEvent(res, "response.created", {
-        type: "response.created",
-        response: snapshot
-      });
-      writeSseEvent(res, "response.in_progress", {
-        type: "response.in_progress",
-        response: snapshot
-      });
-      writeSseEvent(res, "response.output_item.added", {
-        type: "response.output_item.added",
-        output_index: 0,
-        item: {
-          id: messageId,
-          type: "message",
-          status: "in_progress",
-          role: "assistant",
-          content: []
-        }
-      });
-      writeSseEvent(res, "response.content_part.added", {
-        type: "response.content_part.added",
-        item_id: messageId,
-        output_index: 0,
-        content_index: 0,
-        part: {
-          type: "output_text",
-          text: "",
-          annotations: []
-        }
-      });
-
       const sanitizer = createGrokMarkupStreamSanitizer();
       let sawToken = false;
+      let emittedPrelude = false;
+      const emitPrelude = () => {
+        if (emittedPrelude) {
+          return;
+        }
+
+        emittedPrelude = true;
+        // Grok rejects the upstream request if we emit SSE bytes before it starts streaming.
+        writeSseEvent(res, "response.created", {
+          type: "response.created",
+          response: snapshot
+        });
+        writeSseEvent(res, "response.in_progress", {
+          type: "response.in_progress",
+          response: snapshot
+        });
+        writeSseEvent(res, "response.output_item.added", {
+          type: "response.output_item.added",
+          output_index: 0,
+          item: {
+            id: messageId,
+            type: "message",
+            status: "in_progress",
+            role: "assistant",
+            content: []
+          }
+        });
+        writeSseEvent(res, "response.content_part.added", {
+          type: "response.content_part.added",
+          item_id: messageId,
+          output_index: 0,
+          content_index: 0,
+          part: {
+            type: "output_text",
+            text: "",
+            annotations: []
+          }
+        });
+      };
       const result = await runResponseRequest(parsed, {
         onToken(token) {
           const visible = sanitizer.write(token);
@@ -426,6 +434,7 @@ app.post("/v1/responses", async (req, res, next) => {
             return;
           }
 
+          emitPrelude();
           sawToken = true;
           writeSseEvent(res, "response.output_text.delta", {
             type: "response.output_text.delta",
@@ -438,6 +447,7 @@ app.post("/v1/responses", async (req, res, next) => {
       });
       const flushed = sanitizer.flush();
       if (flushed) {
+        emitPrelude();
         sawToken = true;
         writeSseEvent(res, "response.output_text.delta", {
           type: "response.output_text.delta",
@@ -452,6 +462,7 @@ app.post("/v1/responses", async (req, res, next) => {
       );
 
       if (!sawToken && text) {
+        emitPrelude();
         for (const token of text) {
           writeSseEvent(res, "response.output_text.delta", {
             type: "response.output_text.delta",
@@ -463,6 +474,7 @@ app.post("/v1/responses", async (req, res, next) => {
         }
       }
 
+      emitPrelude();
       writeSseEvent(res, "response.output_text.done", {
         type: "response.output_text.done",
         item_id: messageId,
@@ -583,21 +595,28 @@ app.post("/v1/chat/completions", async (req, res, next) => {
       res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
       res.setHeader("Cache-Control", "no-cache, no-transform");
       res.setHeader("Connection", "keep-alive");
-      res.flushHeaders?.();
-
-      res.write(
-        `data: ${JSON.stringify(
-          createChatCompletionChunk({
-            id: chatCompletionId,
-            model: publicModel,
-            delta: { role: "assistant", content: "" },
-            created
-          })
-        )}\n\n`
-      );
 
       const sanitizer = createGrokMarkupStreamSanitizer();
       let sawToken = false;
+      let emittedAssistantRole = false;
+      const ensureAssistantRoleEmitted = () => {
+        if (emittedAssistantRole) {
+          return;
+        }
+
+        emittedAssistantRole = true;
+        // Grok rejects the upstream request if we emit SSE bytes before it starts streaming.
+        res.write(
+          `data: ${JSON.stringify(
+            createChatCompletionChunk({
+              id: chatCompletionId,
+              model: publicModel,
+              delta: { role: "assistant", content: "" },
+              created
+            })
+          )}\n\n`
+        );
+      };
       const result = await runChatCompletionRequest(parsed, {
         onToken(token) {
           const visible = sanitizer.write(token);
@@ -605,6 +624,7 @@ app.post("/v1/chat/completions", async (req, res, next) => {
             return;
           }
 
+          ensureAssistantRoleEmitted();
           sawToken = true;
           res.write(
             `data: ${JSON.stringify(
@@ -620,6 +640,7 @@ app.post("/v1/chat/completions", async (req, res, next) => {
       });
       const flushed = sanitizer.flush();
       if (flushed) {
+        ensureAssistantRoleEmitted();
         sawToken = true;
         res.write(
           `data: ${JSON.stringify(
@@ -636,6 +657,7 @@ app.post("/v1/chat/completions", async (req, res, next) => {
         result.state.assistantText || result.state.modelResponse?.message || ""
       );
       if (!sawToken && text) {
+        ensureAssistantRoleEmitted();
         res.write(
           `data: ${JSON.stringify(
             createChatCompletionChunk({
@@ -648,6 +670,7 @@ app.post("/v1/chat/completions", async (req, res, next) => {
         );
       }
 
+      ensureAssistantRoleEmitted();
       res.write(
         `data: ${JSON.stringify(
           createChatCompletionChunk({
