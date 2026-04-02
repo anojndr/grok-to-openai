@@ -24,6 +24,10 @@ import {
 import { initSse, writeSseEvent } from "./openai/sse.js";
 import { createId, unixTimestampSeconds } from "./lib/ids.js";
 import { GrokClient } from "./grok/client.js";
+import {
+  createGrokMarkupStreamSanitizer,
+  sanitizeGrokMarkup
+} from "./grok/markup.js";
 import { listModels, resolveModel } from "./grok/model-map.js";
 
 const app = express();
@@ -409,20 +413,39 @@ app.post("/v1/responses", async (req, res, next) => {
         }
       });
 
+      const sanitizer = createGrokMarkupStreamSanitizer();
       let sawToken = false;
       const result = await runResponseRequest(parsed, {
         onToken(token) {
+          const visible = sanitizer.write(token);
+          if (!visible) {
+            return;
+          }
+
           sawToken = true;
           writeSseEvent(res, "response.output_text.delta", {
             type: "response.output_text.delta",
             item_id: messageId,
             output_index: 0,
             content_index: 0,
-            delta: token
+            delta: visible
           });
         }
       });
-      const text = result.state.assistantText || result.state.modelResponse?.message || "";
+      const flushed = sanitizer.flush();
+      if (flushed) {
+        sawToken = true;
+        writeSseEvent(res, "response.output_text.delta", {
+          type: "response.output_text.delta",
+          item_id: messageId,
+          output_index: 0,
+          content_index: 0,
+          delta: flushed
+        });
+      }
+      const text = sanitizeGrokMarkup(
+        result.state.assistantText || result.state.modelResponse?.message || ""
+      );
 
       if (!sawToken && text) {
         for (const token of text) {
@@ -507,7 +530,9 @@ app.post("/v1/responses", async (req, res, next) => {
       fileStore
     });
     const result = await runResponseRequest(parsed);
-    const text = result.state.assistantText || result.state.modelResponse?.message || "";
+    const text = sanitizeGrokMarkup(
+      result.state.assistantText || result.state.modelResponse?.message || ""
+    );
     const finalResponse = createResponseEnvelope({
       id: responseId,
       messageId,
@@ -567,23 +592,45 @@ app.post("/v1/chat/completions", async (req, res, next) => {
         )}\n\n`
       );
 
+      const sanitizer = createGrokMarkupStreamSanitizer();
       let sawToken = false;
       const result = await runChatCompletionRequest(parsed, {
         onToken(token) {
+          const visible = sanitizer.write(token);
+          if (!visible) {
+            return;
+          }
+
           sawToken = true;
           res.write(
             `data: ${JSON.stringify(
               createChatCompletionChunk({
                 id: chatCompletionId,
                 model: publicModel,
-                delta: { content: token },
+                delta: { content: visible },
                 created
               })
             )}\n\n`
           );
         }
       });
-      const text = result.state.assistantText || result.state.modelResponse?.message || "";
+      const flushed = sanitizer.flush();
+      if (flushed) {
+        sawToken = true;
+        res.write(
+          `data: ${JSON.stringify(
+            createChatCompletionChunk({
+              id: chatCompletionId,
+              model: publicModel,
+              delta: { content: flushed },
+              created
+            })
+          )}\n\n`
+        );
+      }
+      const text = sanitizeGrokMarkup(
+        result.state.assistantText || result.state.modelResponse?.message || ""
+      );
       if (!sawToken && text) {
         res.write(
           `data: ${JSON.stringify(
@@ -615,7 +662,9 @@ app.post("/v1/chat/completions", async (req, res, next) => {
     }
 
     const result = await runChatCompletionRequest(parsed);
-    const text = result.state.assistantText || result.state.modelResponse?.message || "";
+    const text = sanitizeGrokMarkup(
+      result.state.assistantText || result.state.modelResponse?.message || ""
+    );
     const response = createChatCompletion({
       model: publicModel,
       content: text,
