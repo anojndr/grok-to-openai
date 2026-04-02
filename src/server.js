@@ -1,19 +1,28 @@
 import express from "express";
 import multer from "multer";
-import path from "node:path";
 import { config } from "./config.js";
 import { ensureDir } from "./lib/fs.js";
 import { HttpError, toOpenAIError } from "./lib/errors.js";
 import { FileStore } from "./store/file-store.js";
 import { ResponseStore } from "./store/response-store.js";
-import { responsesCreateSchema } from "./openai/schema.js";
-import { normalizeConversationInput } from "./openai/input.js";
+import {
+  chatCompletionsCreateSchema,
+  responsesCreateSchema
+} from "./openai/schema.js";
+import {
+  normalizeChatCompletionInput,
+  normalizeConversationInput
+} from "./openai/input.js";
 import {
   createResponseEnvelope,
   createStreamingResponseSnapshot
 } from "./openai/response-object.js";
+import {
+  createChatCompletion,
+  createChatCompletionChunk
+} from "./openai/chat-completions.js";
 import { initSse, writeSseEvent } from "./openai/sse.js";
-import { createId } from "./lib/ids.js";
+import { createId, unixTimestampSeconds } from "./lib/ids.js";
 import { GrokClient } from "./grok/client.js";
 import { listModels, resolveModel } from "./grok/model-map.js";
 
@@ -39,6 +48,37 @@ process.on("SIGINT", async () => {
   await grokClient.browser.close();
   process.exit(0);
 });
+
+function maybeHandleStreamingError(req, res, error) {
+  const contentType = res.getHeader("Content-Type");
+  const isEventStream =
+    typeof contentType === "string" &&
+    contentType.includes("text/event-stream");
+
+  if (!isEventStream || res.writableEnded) {
+    return false;
+  }
+
+  const payload = toOpenAIError(error);
+
+  if (req.path === "/v1/responses") {
+    writeSseEvent(res, "error", {
+      type: "error",
+      error: payload.body.error
+    });
+    res.end();
+    return true;
+  }
+
+  if (req.path === "/v1/chat/completions") {
+    res.write(`data: ${JSON.stringify(payload.body)}\n\n`);
+    res.write("data: [DONE]\n\n");
+    res.end();
+    return true;
+  }
+
+  return false;
+}
 
 app.use(express.json({ limit: "60mb" }));
 app.use((req, res, next) => {
@@ -94,6 +134,9 @@ app.post("/v1/files", upload.single("file"), async (req, res, next) => {
 
     res.status(200).json(record);
   } catch (error) {
+    if (maybeHandleStreamingError(req, res, error)) {
+      return;
+    }
     next(error);
   }
 });
@@ -155,60 +198,47 @@ async function uploadFilesToGrok(files) {
   return uploaded;
 }
 
+function buildTranscriptPrompt(messages) {
+  return messages
+    .map((message) => {
+      const role =
+        message.role === "assistant"
+          ? "Assistant"
+          : message.role === "user"
+            ? "User"
+            : message.role;
+      const attachmentSuffix =
+        message.files.length > 0 ? `\n[Attachments: ${message.files.length}]` : "";
+      return `${role}: ${message.text || ""}${attachmentSuffix}`.trim();
+    })
+    .join("\n\n");
+}
+
 async function executeManualHistory({
   messages,
   instructions,
   publicModel,
   onToken
 }) {
-  const conversation = await grokClient.createConversation();
-  let previousAssistantId = null;
-  let previousUserId = null;
-
-  for (let index = 0; index < messages.length; index += 1) {
-    const message = messages[index];
-    const isLast = index === messages.length - 1;
-
-    if (message.role === "assistant") {
-      const assistantResponse = await grokClient.addModelResponse({
-        conversationId: conversation.conversationId,
-        parentResponseId: previousUserId,
-        message: message.text
-      });
-      previousAssistantId = assistantResponse.responseId;
-      continue;
-    }
-
-    if (!isLast) {
-      if (message.files.length) {
-        throw new HttpError(
-          400,
-          "Historical user file inputs are only supported when continuing with previous_response_id"
-        );
-      }
-
-      const userResponse = await grokClient.addUserResponse({
-        conversationId: conversation.conversationId,
-        parentResponseId: previousAssistantId,
-        message: message.text
-      });
-      previousUserId = userResponse.responseId;
-      continue;
-    }
-
-    const fileAttachments = await uploadFilesToGrok(message.files);
-    return grokClient.addResponse({
-      conversationId: conversation.conversationId,
-      parentResponseId: previousAssistantId,
-      instructions,
-      model: publicModel,
-      message: message.text,
-      fileAttachments,
-      onToken
-    });
+  const lastMessage = messages[messages.length - 1];
+  if (!lastMessage || lastMessage.role !== "user") {
+    throw new HttpError(400, "The final message must be a user message");
   }
 
-  throw new HttpError(400, "No final user message provided");
+  const priorMessages = messages.slice(0, -1);
+  const fileAttachments = await uploadFilesToGrok(lastMessage.files);
+  const transcript = buildTranscriptPrompt(priorMessages);
+  const combinedMessage = transcript
+    ? `${transcript}\n\nUser: ${lastMessage.text}\n\nRespond to the latest user message.`
+    : lastMessage.text;
+
+  return grokClient.createConversationAndRespond({
+    instructions,
+    model: publicModel,
+    message: combinedMessage,
+    fileAttachments,
+    onToken
+  });
 }
 
 async function runResponseRequest(reqBody, options = {}) {
@@ -252,6 +282,51 @@ async function runResponseRequest(reqBody, options = {}) {
       onToken
     });
   }
+
+  if (normalized.messages.length === 1 && normalized.messages[0].role === "user") {
+    const message = normalized.messages[0];
+    const fileAttachments = await uploadFilesToGrok(message.files);
+
+    return grokClient.createConversationAndRespond({
+      instructions: normalized.instructions,
+      model: publicModel,
+      message: message.text,
+      fileAttachments,
+      onToken
+    });
+  }
+
+  return executeManualHistory({
+    messages: normalized.messages,
+    instructions: normalized.instructions,
+    publicModel,
+    onToken
+  });
+}
+
+async function runChatCompletionRequest(reqBody, options = {}) {
+  const parsed = chatCompletionsCreateSchema.parse(reqBody);
+  const normalized = await normalizeChatCompletionInput({
+    requestBody: parsed,
+    fileStore
+  });
+  const onToken = options.onToken ?? null;
+
+  if (!normalized.messages.length) {
+    throw new HttpError(400, "messages must include at least one user message");
+  }
+
+  if (parsed.n && parsed.n !== 1) {
+    throw new HttpError(400, "Only n=1 is supported");
+  }
+
+  const { publicModel } = resolveModel(
+    parsed.model,
+    parsed.reasoning_effort === "none" || parsed.reasoning_effort === "minimal"
+      ? undefined
+      : parsed.reasoning_effort,
+    config.defaultModel
+  );
 
   if (normalized.messages.length === 1 && normalized.messages[0].role === "user") {
     const message = normalized.messages[0];
@@ -461,7 +536,113 @@ app.post("/v1/responses", async (req, res, next) => {
   }
 });
 
-app.use((error, _req, res, _next) => {
+app.post("/v1/chat/completions", async (req, res, next) => {
+  try {
+    const parsed = chatCompletionsCreateSchema.parse(req.body);
+    const { publicModel } = resolveModel(
+      parsed.model,
+      parsed.reasoning_effort === "none" || parsed.reasoning_effort === "minimal"
+        ? undefined
+        : parsed.reasoning_effort,
+      config.defaultModel
+    );
+
+    if (parsed.stream) {
+      const chatCompletionId = createId("chatcmpl");
+      const created = unixTimestampSeconds();
+      res.status(200);
+      res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+      res.setHeader("Cache-Control", "no-cache, no-transform");
+      res.setHeader("Connection", "keep-alive");
+      res.flushHeaders?.();
+
+      res.write(
+        `data: ${JSON.stringify(
+          createChatCompletionChunk({
+            id: chatCompletionId,
+            model: publicModel,
+            delta: { role: "assistant", content: "" },
+            created
+          })
+        )}\n\n`
+      );
+
+      let sawToken = false;
+      const result = await runChatCompletionRequest(parsed, {
+        onToken(token) {
+          sawToken = true;
+          res.write(
+            `data: ${JSON.stringify(
+              createChatCompletionChunk({
+                id: chatCompletionId,
+                model: publicModel,
+                delta: { content: token },
+                created
+              })
+            )}\n\n`
+          );
+        }
+      });
+      const text = result.state.assistantText || result.state.modelResponse?.message || "";
+      if (!sawToken && text) {
+        res.write(
+          `data: ${JSON.stringify(
+            createChatCompletionChunk({
+              id: chatCompletionId,
+              model: publicModel,
+              delta: { content: text },
+              created
+            })
+          )}\n\n`
+        );
+      }
+
+      res.write(
+        `data: ${JSON.stringify(
+          createChatCompletionChunk({
+            id: chatCompletionId,
+            model: publicModel,
+            delta: {},
+            finishReason: "stop",
+            created
+          })
+        )}\n\n`
+      );
+      res.write("data: [DONE]\n\n");
+      res.end();
+
+      return;
+    }
+
+    const result = await runChatCompletionRequest(parsed);
+    const text = result.state.assistantText || result.state.modelResponse?.message || "";
+    const response = createChatCompletion({
+      model: publicModel,
+      content: text,
+      created: unixTimestampSeconds()
+    });
+
+    res.status(200).json(response);
+  } catch (error) {
+    if (maybeHandleStreamingError(req, res, error)) {
+      return;
+    }
+    next(error);
+  }
+});
+
+app.use((error, req, res, _next) => {
+  if (maybeHandleStreamingError(req, res, error)) {
+    return;
+  }
+
+  if (res.headersSent || res.writableEnded) {
+    if (!res.writableEnded) {
+      res.end();
+    }
+    return;
+  }
+
   const payload = toOpenAIError(error);
   res.status(payload.status).json(payload.body);
 });

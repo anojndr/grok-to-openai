@@ -1,5 +1,13 @@
 import { z } from "zod";
 
+const imageUrlValueSchema = z.union([
+  z.string(),
+  z.object({
+    url: z.string(),
+    detail: z.string().optional()
+  })
+]);
+
 const inputTextPart = z.object({
   type: z.enum(["input_text", "text", "output_text"]).default("input_text"),
   text: z.string()
@@ -53,4 +61,48 @@ export const responsesCreateSchema = z.object({
   tools: z.array(z.unknown()).optional(),
   tool_choice: z.unknown().optional(),
   conversation: z.string().optional()
+});
+
+const chatTextPart = z.object({
+  type: z.literal("text"),
+  text: z.string()
+});
+
+const chatImagePart = z.object({
+  type: z.literal("image_url"),
+  image_url: imageUrlValueSchema
+});
+
+const chatMessageSchema = z.object({
+  role: z.enum(["system", "developer", "user", "assistant", "tool"]),
+  content: z
+    .union([z.string(), z.array(z.union([chatTextPart, chatImagePart])), z.null()])
+    .optional(),
+  name: z.string().optional(),
+  tool_call_id: z.string().optional()
+});
+
+export const chatCompletionsCreateSchema = z.object({
+  model: z.string().optional(),
+  messages: z.array(chatMessageSchema),
+  stream: z.boolean().optional(),
+  store: z.boolean().optional(),
+  metadata: z.record(z.string()).optional(),
+  temperature: z.number().optional(),
+  top_p: z.number().optional(),
+  n: z.number().int().positive().optional(),
+  stop: z.union([z.string(), z.array(z.string())]).optional(),
+  max_completion_tokens: z.number().int().positive().optional(),
+  max_tokens: z.number().int().positive().optional(),
+  reasoning_effort: z
+    .enum(["none", "minimal", "low", "medium", "high", "xhigh"])
+    .optional(),
+  response_format: z.unknown().optional(),
+  tools: z.array(z.unknown()).optional(),
+  tool_choice: z.unknown().optional(),
+  stream_options: z
+    .object({
+      include_usage: z.boolean().optional()
+    })
+    .optional()
 });

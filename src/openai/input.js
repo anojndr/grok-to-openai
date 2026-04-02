@@ -77,6 +77,41 @@ function inferFilenameFromUrl(urlString) {
   }
 }
 
+function inferExtensionFromMimeType(mimeType) {
+  switch (mimeType) {
+    case "image/png":
+      return ".png";
+    case "image/jpeg":
+      return ".jpg";
+    case "image/webp":
+      return ".webp";
+    case "image/gif":
+      return ".gif";
+    default:
+      return "";
+  }
+}
+
+function extractImageParts(content) {
+  if (typeof content === "string") {
+    return [];
+  }
+
+  return content.filter((part) => part.type === "input_image" || part.type === "image_url");
+}
+
+function getImageUrlValue(part) {
+  if (part.type === "input_image") {
+    return part.image_url;
+  }
+
+  if (typeof part.image_url === "string") {
+    return part.image_url;
+  }
+
+  return part.image_url?.url;
+}
+
 export async function resolveFileParts({
   content,
   fileStore
@@ -140,6 +175,51 @@ export async function resolveFileParts({
   return resolved;
 }
 
+export async function resolveImageParts({ content }) {
+  const imageParts = extractImageParts(content);
+  const resolved = [];
+
+  for (const imagePart of imageParts) {
+    const imageUrl = getImageUrlValue(imagePart);
+    if (!imageUrl) {
+      throw new HttpError(400, "image input requires image_url");
+    }
+
+    const match = /^data:([^;,]+);base64,(.+)$/s.exec(imageUrl);
+    if (match) {
+      const mimeType = match[1] || "application/octet-stream";
+      resolved.push({
+        filename: `image${inferExtensionFromMimeType(mimeType) || ".bin"}`,
+        mimeType,
+        bytes: Buffer.from(match[2], "base64"),
+        source: "image_data_url"
+      });
+      continue;
+    }
+
+    const response = await fetch(imageUrl);
+    if (!response.ok) {
+      throw new HttpError(400, `Unable to fetch image_url: ${imageUrl}`);
+    }
+
+    const mimeType =
+      response.headers.get("content-type") || "application/octet-stream";
+    const filename =
+      inferFilenameFromUrl(imageUrl) ||
+      `image${inferExtensionFromMimeType(mimeType) || ".bin"}`;
+    const buffer = Buffer.from(await response.arrayBuffer());
+
+    resolved.push({
+      filename,
+      mimeType,
+      bytes: buffer,
+      source: "image_url"
+    });
+  }
+
+  return resolved;
+}
+
 export async function normalizeConversationInput({
   requestBody,
   fileStore
@@ -158,11 +238,52 @@ export async function normalizeConversationInput({
       content: message.content,
       fileStore
     });
+    const images = await resolveImageParts({
+      content: message.content
+    });
 
     normalizedMessages.push({
       role: message.role,
       text,
-      files
+      files: [...files, ...images]
+    });
+  }
+
+  return {
+    instructions,
+    messages: normalizedMessages
+  };
+}
+
+export async function normalizeChatCompletionInput({
+  requestBody,
+  fileStore
+}) {
+  const { instructions, messages } = splitInstructionsAndMessages(
+    requestBody.messages,
+    ""
+  );
+
+  const normalizedMessages = [];
+
+  for (const message of messages) {
+    if (message.role === "tool") {
+      continue;
+    }
+
+    const text = extractTextContent(message.content ?? "");
+    const files = await resolveFileParts({
+      content: message.content ?? "",
+      fileStore
+    });
+    const images = await resolveImageParts({
+      content: message.content ?? ""
+    });
+
+    normalizedMessages.push({
+      role: message.role,
+      text,
+      files: [...files, ...images]
     });
   }
 

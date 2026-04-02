@@ -121,10 +121,15 @@ export class BrowserSession {
       window.__grokBridgeFetch = async (request) => {
         try {
           const url = new URL(request.url, location.origin);
-          const generator = await window.__grokBridgeEnsureStatsigGenerator(
-            request.statsigChunkSource
-          );
-          const statsigId = await generator(url.pathname, request.method);
+          let statsigId;
+          try {
+            const generator = await window.__grokBridgeEnsureStatsigGenerator(
+              request.statsigChunkSource
+            );
+            statsigId = await generator(url.pathname, request.method);
+          } catch (error) {
+            statsigId = btoa(`e:${String(error)}`);
+          }
           const headers = new Headers(request.headers || {});
           headers.set("x-xai-request-id", crypto.randomUUID());
           headers.set("x-statsig-id", statsigId);
@@ -204,7 +209,15 @@ export class BrowserSession {
     });
   }
 
-  async request({ requestId, url, method = "GET", body = null, headers = {} }) {
+  async request({
+    requestId,
+    url,
+    method = "GET",
+    body = null,
+    headers = {},
+    onChunk = null,
+    onMeta = null
+  }) {
     await this.init();
     const statsigChunkSource = await this.loadStatsigChunkSource();
 
@@ -215,9 +228,11 @@ export class BrowserSession {
       this.pending.set(requestId, {
         onMeta(payload) {
           meta = payload;
+          onMeta?.(payload);
         },
         onChunk(chunk) {
           chunks.push(chunk);
+          onChunk?.(chunk);
         },
         resolve,
         reject

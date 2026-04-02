@@ -5,6 +5,7 @@ OpenAI-compatible bridge for `grok.com` web sessions. It drives Grok through the
 ## What it supports
 
 - `POST /v1/responses`
+- `POST /v1/chat/completions`
 - `GET /v1/responses/:response_id`
 - `POST /v1/files`
 - `GET /v1/files/:file_id`
@@ -15,13 +16,15 @@ OpenAI-compatible bridge for `grok.com` web sessions. It drives Grok through the
   - `file_id`
   - `file_url`
   - `file_data`
+- Image inputs via:
+  - Responses API `input_image`
+  - Chat Completions `messages[].content[].type = "image_url"`
 
 ## Limits of this first version
 
-- The bridge targets the OpenAI Responses API shape, not Chat Completions.
 - Historical user file attachments inside manually seeded multi-message `input` are not supported unless you continue from `previous_response_id`.
 - Text streaming is emitted as OpenAI-style SSE events, but usage accounting is `null`.
-- Image inputs are not implemented.
+- Historical user attachments in manually seeded Chat Completions history are only supported on the final user turn.
 
 ## Setup
 
@@ -69,6 +72,46 @@ curl http://127.0.0.1:8787/v1/responses \
   -d '{
     "model": "grok-4-auto",
     "input": "Reply with the single word PONG."
+  }'
+```
+
+## Chat Completions example
+
+```bash
+curl http://127.0.0.1:8787/v1/chat/completions \
+  -H "Authorization: Bearer sk-local-test" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "grok-4-auto",
+    "messages": [
+      { "role": "developer", "content": "You are concise." },
+      { "role": "user", "content": "Reply with the single word PONG." }
+    ]
+  }'
+```
+
+## Chat Completions image example
+
+```bash
+curl http://127.0.0.1:8787/v1/chat/completions \
+  -H "Authorization: Bearer sk-local-test" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "grok-4-auto",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          { "type": "text", "text": "What is in this image?" },
+          {
+            "type": "image_url",
+            "image_url": {
+              "url": "https://upload.wikimedia.org/wikipedia/commons/thumb/d/dd/Gfp-wisconsin-madison-the-nature-boardwalk.jpg/2560px-Gfp-wisconsin-madison-the-nature-boardwalk.jpg"
+            }
+          }
+        ]
+      }
+    ]
   }'
 ```
 
