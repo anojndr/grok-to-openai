@@ -1,9 +1,11 @@
 const START_MARKERS = [
   {
+    kind: "tool",
     start: "<xai:tool_usage_card>",
     end: "</xai:tool_usage_card>"
   },
   {
+    kind: "render",
     start: "<grok:render",
     end: "</grok:render>"
   }
@@ -25,14 +27,16 @@ export function sanitizeGrokMarkup(text) {
   return output.trim();
 }
 
-export function createGrokMarkupStreamSanitizer() {
+export function createGrokMarkupStreamSanitizer(options = {}) {
   let buffer = "";
   let hidden = null;
+  let halted = false;
+  const stopAtRenderTag = options.stopAtRenderTag ?? false;
 
   function consumeVisiblePrefix() {
     let output = "";
 
-    while (buffer.length > 0) {
+    while (!halted && buffer.length > 0) {
       if (hidden) {
         const endIndex = buffer.indexOf(hidden.end);
         if (endIndex === -1) {
@@ -76,6 +80,11 @@ export function createGrokMarkupStreamSanitizer() {
         return output;
       }
 
+      if (stopAtRenderTag && nextMarker.kind === "render") {
+        halted = true;
+        return output;
+      }
+
       buffer = buffer.slice(nextMarker.start.length);
       hidden = nextMarker;
     }
@@ -86,10 +95,13 @@ export function createGrokMarkupStreamSanitizer() {
   return {
     write(chunk) {
       buffer += chunk;
+      if (halted) {
+        return "";
+      }
       return consumeVisiblePrefix();
     },
     flush() {
-      if (hidden) {
+      if (hidden || halted) {
         return "";
       }
 

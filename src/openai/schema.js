@@ -33,6 +33,12 @@ const messageInput = z.object({
   content: z.union([z.string(), z.array(messageContentPart)])
 });
 
+const sourceAttributionSchema = z.object({
+  inline_citations: z.boolean().optional(),
+  include_sources: z.boolean().optional(),
+  include_search_queries: z.boolean().optional()
+});
+
 export const responsesCreateSchema = z.object({
   model: z.string().optional(),
   input: z.union([z.string(), messageInput, z.array(messageInput)]).optional(),
@@ -60,7 +66,8 @@ export const responsesCreateSchema = z.object({
   truncation: z.string().optional(),
   tools: z.array(z.unknown()).optional(),
   tool_choice: z.unknown().optional(),
-  conversation: z.string().optional()
+  conversation: z.string().optional(),
+  source_attribution: sourceAttributionSchema.optional()
 });
 
 const chatTextPart = z.object({
@@ -104,5 +111,6 @@ export const chatCompletionsCreateSchema = z.object({
     .object({
       include_usage: z.boolean().optional()
     })
-    .optional()
+    .optional(),
+  source_attribution: sourceAttributionSchema.optional()
 });

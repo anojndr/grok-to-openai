@@ -22,6 +22,7 @@ export function createChatCompletion({
   id = createId("chatcmpl"),
   model,
   content,
+  sourceAttribution = null,
   finishReason = "stop",
   created = unixTimestampSeconds()
 }) {
@@ -44,7 +45,8 @@ export function createChatCompletion({
       }
     ],
     usage: createUsage(),
-    service_tier: "default"
+    service_tier: "default",
+    source_attribution: sourceAttribution
   };
 }
 

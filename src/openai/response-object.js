@@ -5,6 +5,7 @@ export function createResponseEnvelope({
   messageId = createId("msg"),
   model,
   text,
+  sourceAttribution = null,
   instructions = null,
   previousResponseId = null,
   metadata = {},
@@ -53,7 +54,8 @@ export function createResponseEnvelope({
     truncation: request.truncation ?? "disabled",
     usage: null,
     user: null,
-    metadata
+    metadata,
+    source_attribution: sourceAttribution
   };
 }
 
@@ -63,6 +65,7 @@ export function createStreamingResponseSnapshot({
   instructions,
   previousResponseId,
   metadata,
+  sourceAttribution = null,
   request
 }) {
   return {
@@ -91,6 +94,7 @@ export function createStreamingResponseSnapshot({
     truncation: request.truncation ?? "disabled",
     usage: null,
     user: null,
-    metadata
+    metadata,
+    source_attribution: sourceAttribution
   };
 }

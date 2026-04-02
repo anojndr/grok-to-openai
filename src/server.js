@@ -24,11 +24,14 @@ import {
 import { initSse, writeSseEvent } from "./openai/sse.js";
 import { createId, unixTimestampSeconds } from "./lib/ids.js";
 import { GrokClient } from "./grok/client.js";
-import {
-  createGrokMarkupStreamSanitizer,
-  sanitizeGrokMarkup
-} from "./grok/markup.js";
+import { createGrokMarkupStreamSanitizer } from "./grok/markup.js";
 import { listModels, resolveModel } from "./grok/model-map.js";
+import {
+  createSourceAttributionPayload,
+  extractSourceAttribution,
+  renderGrokText,
+  resolveSourceAttributionOptions
+} from "./grok/source-attribution.js";
 
 const app = express();
 const upload = multer({
@@ -222,6 +225,51 @@ function buildTranscriptPrompt(messages) {
     .join("\n\n");
 }
 
+function buildAssistantOutput(state, sourceAttributionRequest) {
+  const rawText = state.assistantText || state.modelResponse?.message || "";
+  const sourceAttributionOptions = resolveSourceAttributionOptions(
+    sourceAttributionRequest
+  );
+  const sourceAttribution = extractSourceAttribution({
+    assistantText: rawText,
+    modelResponse: state.modelResponse
+  });
+
+  return {
+    text: renderGrokText({
+      text: rawText,
+      sourceAttribution,
+      options: sourceAttributionOptions
+    }),
+    sourceAttribution: createSourceAttributionPayload({
+      sourceAttribution,
+      options: sourceAttributionOptions
+    }),
+    options: sourceAttributionOptions
+  };
+}
+
+function getStreamingTextSuffix(fullText, emittedText) {
+  if (!emittedText) {
+    return fullText;
+  }
+
+  if (fullText.startsWith(emittedText)) {
+    return fullText.slice(emittedText.length);
+  }
+
+  let sharedPrefixLength = 0;
+  while (
+    sharedPrefixLength < fullText.length &&
+    sharedPrefixLength < emittedText.length &&
+    fullText[sharedPrefixLength] === emittedText[sharedPrefixLength]
+  ) {
+    sharedPrefixLength += 1;
+  }
+
+  return fullText.slice(sharedPrefixLength);
+}
+
 async function executeManualHistory({
   messages,
   instructions,
@@ -386,8 +434,14 @@ app.post("/v1/responses", async (req, res, next) => {
         request: parsed
       });
 
-      const sanitizer = createGrokMarkupStreamSanitizer();
+      const sourceAttributionOptions = resolveSourceAttributionOptions(
+        parsed.source_attribution
+      );
+      const sanitizer = createGrokMarkupStreamSanitizer({
+        stopAtRenderTag: sourceAttributionOptions.inlineCitations
+      });
       let sawToken = false;
+      let emittedText = "";
       let emittedPrelude = false;
       const emitPrelude = () => {
         if (emittedPrelude) {
@@ -436,6 +490,7 @@ app.post("/v1/responses", async (req, res, next) => {
 
           emitPrelude();
           sawToken = true;
+          emittedText += visible;
           writeSseEvent(res, "response.output_text.delta", {
             type: "response.output_text.delta",
             item_id: messageId,
@@ -449,6 +504,7 @@ app.post("/v1/responses", async (req, res, next) => {
       if (flushed) {
         emitPrelude();
         sawToken = true;
+        emittedText += flushed;
         writeSseEvent(res, "response.output_text.delta", {
           type: "response.output_text.delta",
           item_id: messageId,
@@ -457,21 +513,23 @@ app.post("/v1/responses", async (req, res, next) => {
           delta: flushed
         });
       }
-      const text = sanitizeGrokMarkup(
-        result.state.assistantText || result.state.modelResponse?.message || ""
+      const assistantOutput = buildAssistantOutput(
+        result.state,
+        parsed.source_attribution
       );
+      const text = assistantOutput.text;
+      const pendingText = getStreamingTextSuffix(text, emittedText);
 
-      if (!sawToken && text) {
+      if (pendingText) {
         emitPrelude();
-        for (const token of text) {
-          writeSseEvent(res, "response.output_text.delta", {
-            type: "response.output_text.delta",
-            item_id: messageId,
-            output_index: 0,
-            content_index: 0,
-            delta: token
-          });
-        }
+        sawToken = true;
+        writeSseEvent(res, "response.output_text.delta", {
+          type: "response.output_text.delta",
+          item_id: messageId,
+          output_index: 0,
+          content_index: 0,
+          delta: pendingText
+        });
       }
 
       emitPrelude();
@@ -516,6 +574,7 @@ app.post("/v1/responses", async (req, res, next) => {
         messageId,
         model: publicModel,
         text,
+        sourceAttribution: assistantOutput.sourceAttribution,
         instructions,
         previousResponseId: parsed.previous_response_id ?? null,
         metadata: parsed.metadata ?? {},
@@ -546,14 +605,17 @@ app.post("/v1/responses", async (req, res, next) => {
       fileStore
     });
     const result = await runResponseRequest(parsed);
-    const text = sanitizeGrokMarkup(
-      result.state.assistantText || result.state.modelResponse?.message || ""
+    const assistantOutput = buildAssistantOutput(
+      result.state,
+      parsed.source_attribution
     );
+    const text = assistantOutput.text;
     const finalResponse = createResponseEnvelope({
       id: responseId,
       messageId,
       model: publicModel,
       text,
+      sourceAttribution: assistantOutput.sourceAttribution,
       instructions: normalized.instructions,
       previousResponseId: parsed.previous_response_id ?? null,
       metadata: parsed.metadata ?? {},
@@ -596,8 +658,14 @@ app.post("/v1/chat/completions", async (req, res, next) => {
       res.setHeader("Cache-Control", "no-cache, no-transform");
       res.setHeader("Connection", "keep-alive");
 
-      const sanitizer = createGrokMarkupStreamSanitizer();
+      const sourceAttributionOptions = resolveSourceAttributionOptions(
+        parsed.source_attribution
+      );
+      const sanitizer = createGrokMarkupStreamSanitizer({
+        stopAtRenderTag: sourceAttributionOptions.inlineCitations
+      });
       let sawToken = false;
+      let emittedText = "";
       let emittedAssistantRole = false;
       const ensureAssistantRoleEmitted = () => {
         if (emittedAssistantRole) {
@@ -626,6 +694,7 @@ app.post("/v1/chat/completions", async (req, res, next) => {
 
           ensureAssistantRoleEmitted();
           sawToken = true;
+          emittedText += visible;
           res.write(
             `data: ${JSON.stringify(
               createChatCompletionChunk({
@@ -642,6 +711,7 @@ app.post("/v1/chat/completions", async (req, res, next) => {
       if (flushed) {
         ensureAssistantRoleEmitted();
         sawToken = true;
+        emittedText += flushed;
         res.write(
           `data: ${JSON.stringify(
             createChatCompletionChunk({
@@ -650,20 +720,24 @@ app.post("/v1/chat/completions", async (req, res, next) => {
               delta: { content: flushed },
               created
             })
-          )}\n\n`
+            )}\n\n`
         );
       }
-      const text = sanitizeGrokMarkup(
-        result.state.assistantText || result.state.modelResponse?.message || ""
+      const assistantOutput = buildAssistantOutput(
+        result.state,
+        parsed.source_attribution
       );
-      if (!sawToken && text) {
+      const text = assistantOutput.text;
+      const pendingText = getStreamingTextSuffix(text, emittedText);
+      if (pendingText) {
         ensureAssistantRoleEmitted();
+        sawToken = true;
         res.write(
           `data: ${JSON.stringify(
             createChatCompletionChunk({
               id: chatCompletionId,
               model: publicModel,
-              delta: { content: text },
+              delta: { content: pendingText },
               created
             })
           )}\n\n`
@@ -689,12 +763,15 @@ app.post("/v1/chat/completions", async (req, res, next) => {
     }
 
     const result = await runChatCompletionRequest(parsed);
-    const text = sanitizeGrokMarkup(
-      result.state.assistantText || result.state.modelResponse?.message || ""
+    const assistantOutput = buildAssistantOutput(
+      result.state,
+      parsed.source_attribution
     );
+    const text = assistantOutput.text;
     const response = createChatCompletion({
       model: publicModel,
       content: text,
+      sourceAttribution: assistantOutput.sourceAttribution,
       created: unixTimestampSeconds()
     });
 
