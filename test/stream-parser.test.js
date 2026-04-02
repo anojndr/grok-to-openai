@@ -1,0 +1,60 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import {
+  applyGrokEvent,
+  collectGrokStreamingState
+} from "../src/grok/stream-parser.js";
+
+test("applyGrokEvent handles nested conversation-new streaming payloads", () => {
+  const state = collectGrokStreamingState();
+
+  const delta = applyGrokEvent(state, {
+    result: {
+      conversation: { conversationId: "conv_123" },
+      response: {
+        userResponse: { responseId: "user_123" },
+        token: "Hello",
+        llmInfo: { modelHash: "abc" }
+      }
+    }
+  });
+
+  assert.deepEqual(delta, { type: "token", token: "Hello" });
+  assert.equal(state.conversation.conversationId, "conv_123");
+  assert.equal(state.userResponse.responseId, "user_123");
+  assert.equal(state.assistantText, "Hello");
+  assert.equal(state.llmInfo.modelHash, "abc");
+});
+
+test("applyGrokEvent handles flat follow-up streaming payloads", () => {
+  const state = collectGrokStreamingState();
+
+  const tokenDelta = applyGrokEvent(state, {
+    result: {
+      token: "Your",
+      responseId: "resp_123"
+    }
+  });
+
+  applyGrokEvent(state, {
+    result: {
+      finalMetadata: {
+        followUpSuggestions: [{ label: "Why?" }]
+      }
+    }
+  });
+
+  applyGrokEvent(state, {
+    result: {
+      modelResponse: {
+        responseId: "resp_123",
+        message: "Your favorite color is cerulean."
+      }
+    }
+  });
+
+  assert.deepEqual(tokenDelta, { type: "token", token: "Your" });
+  assert.equal(state.assistantText, "Your");
+  assert.equal(state.finalMetadata.followUpSuggestions[0].label, "Why?");
+  assert.equal(state.modelResponse.message, "Your favorite color is cerulean.");
+});

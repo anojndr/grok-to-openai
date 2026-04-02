@@ -47,6 +47,11 @@ export function applyGrokEvent(state, payload) {
     return null;
   }
 
+  // Grok emits two closely related streaming shapes:
+  // - `/conversations/new`: response details nested under `result.response`
+  // - follow-up `/conversations/:id/responses`: response details at `result.*`
+  const response = result.response ?? result;
+
   if (result.conversation) {
     state.conversation = result.conversation;
   }
@@ -55,34 +60,34 @@ export function applyGrokEvent(state, payload) {
     state.title = result.title.newTitle;
   }
 
-  if (result.response?.userResponse) {
-    state.userResponse = result.response.userResponse;
+  if (response.userResponse) {
+    state.userResponse = response.userResponse;
   }
 
-  if (result.response?.uiLayout) {
-    state.uiLayout = result.response.uiLayout;
+  if (response.uiLayout) {
+    state.uiLayout = response.uiLayout;
   }
 
-  if (result.response?.llmInfo) {
-    state.llmInfo = result.response.llmInfo;
+  if (response.llmInfo) {
+    state.llmInfo = response.llmInfo;
   }
 
-  if (typeof result.response?.token === "string") {
-    state.assistantText += result.response.token;
+  if (typeof response.token === "string") {
+    state.assistantText += response.token;
     return {
       type: "token",
-      token: result.response.token
+      token: response.token
     };
   }
 
-  if (result.response?.finalMetadata) {
-    state.finalMetadata = result.response.finalMetadata;
+  if (response.finalMetadata) {
+    state.finalMetadata = response.finalMetadata;
   }
 
-  if (result.response?.modelResponse) {
-    state.modelResponse = result.response.modelResponse;
-    if (result.response.modelResponse.message && !state.assistantText) {
-      state.assistantText = result.response.modelResponse.message;
+  if (response.modelResponse) {
+    state.modelResponse = response.modelResponse;
+    if (response.modelResponse.message && !state.assistantText) {
+      state.assistantText = response.modelResponse.message;
     }
   }
 
