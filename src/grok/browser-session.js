@@ -316,6 +316,37 @@ export class BrowserSession {
     };
   }
 
+  async fetchBase64(url) {
+    await this.init();
+
+    const headers = {
+      Accept: "*/*",
+      Referer: this.config.grokBaseUrl
+    };
+    const cookies = await this.context.cookies(url);
+
+    if (cookies.length) {
+      headers.Cookie = cookies.map((cookie) => `${cookie.name}=${cookie.value}`).join("; ");
+    }
+
+    try {
+      const page = await this.ensurePage();
+      headers["User-Agent"] = await page.evaluate(() => navigator.userAgent);
+    } catch {
+      // Fall back to Node's default user agent if page access fails.
+    }
+
+    const response = await fetch(url, { headers });
+    if (!response.ok) {
+      throw new Error(`Asset fetch failed with status ${response.status}`);
+    }
+
+    return {
+      contentType: response.headers.get("content-type") || "application/octet-stream",
+      base64: Buffer.from(await response.arrayBuffer()).toString("base64")
+    };
+  }
+
   async close() {
     await this.context?.close();
     this.context = null;

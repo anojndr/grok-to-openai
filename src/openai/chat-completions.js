@@ -18,10 +18,43 @@ function createUsage() {
   };
 }
 
+function normalizeImageUrls(images) {
+  return images.map((image) => ({
+    url: image.url,
+    mime_type: image.mimeType ?? null,
+    title: image.title ?? null,
+    action: image.action ?? null,
+    prompt: image.prompt ?? null,
+    revised_prompt: image.revisedPrompt ?? null,
+    image_model: image.imageModel ?? null
+  }));
+}
+
+export function renderChatCompletionContent({ text = "", images = [] }) {
+  if (!images.length) {
+    return text;
+  }
+
+  const markdownImages = images.map((image, index) => {
+    const fallbackLabel =
+      image.title ||
+      (image.action === "edit" ? "Edited image" : "Generated image");
+    const label = images.length > 1 ? `${fallbackLabel} ${index + 1}` : fallbackLabel;
+    return `![${label}](${image.url})`;
+  });
+
+  if (!text) {
+    return markdownImages.join("\n\n");
+  }
+
+  return `${text}\n\n${markdownImages.join("\n\n")}`;
+}
+
 export function createChatCompletion({
   id = createId("chatcmpl"),
   model,
   content,
+  imageUrls = [],
   sourceAttribution = null,
   finishReason = "stop",
   created = unixTimestampSeconds()
@@ -38,7 +71,10 @@ export function createChatCompletion({
           role: "assistant",
           content,
           refusal: null,
-          annotations: []
+          annotations: [],
+          ...(imageUrls.length
+            ? { image_urls: normalizeImageUrls(imageUrls) }
+            : {})
         },
         logprobs: null,
         finish_reason: finishReason

@@ -1,10 +1,112 @@
 import { createId, unixTimestampSeconds } from "../lib/ids.js";
 
+function inferOutputFormat({ mimeType, resultUrl }) {
+  const normalizedMime = (mimeType || "").toLowerCase();
+  const normalizedUrl = (resultUrl || "").toLowerCase();
+
+  if (normalizedMime.includes("png") || normalizedUrl.endsWith(".png")) {
+    return "png";
+  }
+
+  if (
+    normalizedMime.includes("jpeg") ||
+    normalizedMime.includes("jpg") ||
+    normalizedUrl.endsWith(".jpg") ||
+    normalizedUrl.endsWith(".jpeg")
+  ) {
+    return "jpeg";
+  }
+
+  if (normalizedMime.includes("webp") || normalizedUrl.endsWith(".webp")) {
+    return "webp";
+  }
+
+  if (normalizedMime.includes("gif") || normalizedUrl.endsWith(".gif")) {
+    return "gif";
+  }
+
+  return null;
+}
+
+export function createResponseMessageOutputItem({
+  id,
+  text,
+  status = "completed"
+}) {
+  return {
+    id,
+    type: "message",
+    status,
+    role: "assistant",
+    content: [
+      {
+        type: "output_text",
+        text,
+        annotations: []
+      }
+    ]
+  };
+}
+
+export function createResponseImageOutputItem({
+  image,
+  status = "completed"
+}) {
+  const outputFormat = inferOutputFormat({
+    mimeType: image.mimeType,
+    resultUrl: image.url
+  });
+
+  return {
+    id: image.id,
+    type: "image_generation_call",
+    status,
+    ...(status === "completed" ? { result: image.result ?? null } : {}),
+    ...(image.url ? { result_url: image.url } : {}),
+    ...(image.mimeType ? { mime_type: image.mimeType } : {}),
+    ...(image.prompt ? { prompt: image.prompt } : {}),
+    ...(image.revisedPrompt ? { revised_prompt: image.revisedPrompt } : {}),
+    ...(image.action ? { action: image.action } : {}),
+    ...(image.imageModel ? { image_model: image.imageModel } : {}),
+    ...(image.title ? { title: image.title } : {}),
+    ...(image.resultError ? { result_error: image.resultError } : {}),
+    ...(outputFormat ? { output_format: outputFormat } : {})
+  };
+}
+
+export function createResponseOutputItems({
+  messageId,
+  text,
+  images = []
+}) {
+  const output = [];
+
+  if (text) {
+    output.push(
+      createResponseMessageOutputItem({
+        id: messageId,
+        text
+      })
+    );
+  }
+
+  for (const image of images) {
+    output.push(
+      createResponseImageOutputItem({
+        image
+      })
+    );
+  }
+
+  return output;
+}
+
 export function createResponseEnvelope({
   id = createId("resp"),
   messageId = createId("msg"),
   model,
   text,
+  images = [],
   sourceAttribution = null,
   instructions = null,
   previousResponseId = null,
@@ -24,21 +126,11 @@ export function createResponseEnvelope({
     instructions: instructions || null,
     max_output_tokens: request.max_output_tokens ?? null,
     model,
-    output: [
-      {
-        id: messageId,
-        type: "message",
-        status: "completed",
-        role: "assistant",
-        content: [
-          {
-            type: "output_text",
-            text,
-            annotations: []
-          }
-        ]
-      }
-    ],
+    output: createResponseOutputItems({
+      messageId,
+      text,
+      images
+    }),
     parallel_tool_calls: true,
     previous_response_id: previousResponseId,
     reasoning: {

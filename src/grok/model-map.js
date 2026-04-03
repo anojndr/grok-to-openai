@@ -23,19 +23,50 @@ const aliasToMode = new Map([
   ["auto", "auto"],
   ["fast", "fast"],
   ["expert", "expert"],
+  ["grok", "auto"],
+  ["grok auto", "auto"],
+  ["grok fast", "fast"],
+  ["grok expert", "expert"],
+  ["grok-auto", "auto"],
+  ["grok-fast", "fast"],
+  ["grok-expert", "expert"],
   ["grok-4", "auto"],
   ["grok-4-auto", "auto"],
   ["grok-4-fast", "fast"],
   ["grok-4-expert", "expert"],
+  ["grok-3", "auto"],
+  ["grok-3-auto", "auto"],
+  ["grok-3-fast", "fast"],
+  ["grok-3-expert", "expert"],
   ["grok-latest", "auto"],
   ["gpt-4o", "auto"],
   ["gpt-4.1", "auto"],
   ["gpt-5", "auto"]
 ]);
 
+function inferModeFromModelName(normalizedModel) {
+  if (!normalizedModel) {
+    return null;
+  }
+
+  if (/(\b|[-_ ])expert(\b|[-_ ])/.test(normalizedModel)) {
+    return "expert";
+  }
+
+  if (/(\b|[-_ ])fast(\b|[-_ ])/.test(normalizedModel)) {
+    return "fast";
+  }
+
+  if (/(\b|[-_ ])auto(\b|[-_ ])/.test(normalizedModel)) {
+    return "auto";
+  }
+
+  return null;
+}
+
 export function resolveModel(requestedModel, reasoningEffort, fallbackModel) {
   const normalized = (requestedModel || fallbackModel || "grok-4-auto").toLowerCase();
-  const explicitMode = aliasToMode.get(normalized);
+  const explicitMode = aliasToMode.get(normalized) || inferModeFromModelName(normalized);
 
   if (explicitMode) {
     return {

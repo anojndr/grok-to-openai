@@ -4,8 +4,13 @@ import {
   renderGrokText,
   resolveSourceAttributionOptions
 } from "./source-attribution.js";
+import { extractGeneratedImages } from "./generated-images.js";
 
-export function buildAssistantOutput(state, sourceAttributionRequest) {
+export function buildAssistantOutput(
+  state,
+  sourceAttributionRequest,
+  options = {}
+) {
   const streamedText = state?.assistantText || "";
   const canonicalText = state?.modelResponse?.message || streamedText;
   const sourceAttributionOptions = resolveSourceAttributionOptions(
@@ -21,6 +26,11 @@ export function buildAssistantOutput(state, sourceAttributionRequest) {
       text: canonicalText,
       sourceAttribution,
       options: sourceAttributionOptions
+    }),
+    images: extractGeneratedImages({
+      assistantText: streamedText || canonicalText,
+      modelResponse: state?.modelResponse ?? null,
+      grokBaseUrl: options.grokBaseUrl
     }),
     sourceAttribution: createSourceAttributionPayload({
       sourceAttribution,

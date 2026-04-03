@@ -27,6 +27,7 @@ browser session. It does not use the official xAI API.
   - Responses API `input_image`
   - Chat Completions `messages[].content[].type = "image_url"`
 - Remote URLs and Base64 data URLs for image inputs
+- Grok image generation and image editing output
 - Multi-turn Responses API continuation via `previous_response_id`
 - Streaming for both `/v1/responses` and `/v1/chat/completions`
 - Inline Grok citations preserved as shortened Markdown links by default
@@ -44,13 +45,30 @@ browser session. It does not use the official xAI API.
 - `grok-4-fast`
 - `grok-4-expert`
 
-The bridge also accepts these aliases and maps them to Grok auto mode:
+The bridge also accepts these aliases:
 
+- Auto mode:
 - `grok-4`
 - `grok-latest`
+- `grok`
+- `grok auto`
+- `grok-auto`
+- `grok-3`
+- `grok-3-auto`
 - `gpt-4o`
 - `gpt-4.1`
 - `gpt-5`
+- Fast mode:
+- `grok fast`
+- `grok-fast`
+- `grok-3-fast`
+- Expert mode:
+- `grok expert`
+- `grok-expert`
+- `grok-3-expert`
+
+If the model name contains `fast`, `expert`, or `auto`, the bridge routes to
+that Grok mode even if the exact string is not listed above.
 
 If you omit `model`, the bridge uses `DEFAULT_MODEL`, which defaults to
 `grok-4-auto`.
@@ -71,10 +89,23 @@ If you omit `model`, the bridge uses `DEFAULT_MODEL`, which defaults to
   final user turn. Earlier turns keep only an `[Attachments: N]` marker in the
   synthesized transcript.
 - Chat Completions `tool` messages are ignored.
+- Chat Completions does not have a native OpenAI image-generation response
+  shape. The bridge therefore exposes generated images in a compatibility
+  format:
+  - `choices[0].message.content` includes Markdown image embeds pointing at the
+    Grok asset URLs.
+  - `choices[0].message.image_urls` contains a bridge-specific structured image
+    list for clients that want machine-readable metadata.
 - Responses are still stored locally even if you send `"store": false`; the
   flag is only reflected in the returned response object.
+- Responses API image-generation results are stored with the returned response
+  object, so `.data/responses.json` can grow quickly if you generate many
+  images.
 - Usage accounting is `null` for Responses API payloads. Non-streaming Chat
   Completions returns placeholder zero usage.
+- Responses streaming currently emits completed image items once Grok has
+  produced the final asset URL. It does not yet proxy Grok partial-image
+  previews as OpenAI `response.image_generation_call.partial_image` events.
 - The current implementation does not perform automated login with
   `GROK_EMAIL` or `GROK_PASSWORD`. You need valid Grok session cookies or a
   warmed browser profile.
@@ -290,6 +321,110 @@ curl http://127.0.0.1:8787/v1/responses \
   }"
 ```
 
+## Image generation output
+
+Grok can generate and edit images from ordinary conversational prompts. The
+bridge now exposes those results instead of dropping the image cards.
+
+### Responses API shape
+
+For `POST /v1/responses`, generated images are returned as `output` items of
+type `image_generation_call`, matching the official Responses API pattern for
+image generation tools.
+
+Example request:
+
+```bash
+curl http://127.0.0.1:8787/v1/responses \
+  -H "Authorization: Bearer sk-local-test" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "grok fast",
+    "input": "Generate an image of a cat wearing a brown tweed hat."
+  }'
+```
+
+Example response shape:
+
+```json
+{
+  "output": [
+    {
+      "id": "ig_...",
+      "type": "image_generation_call",
+      "status": "completed",
+      "result": "<base64 image bytes>",
+      "result_url": "https://assets.grok.com/.../image.jpg",
+      "mime_type": "image/jpeg",
+      "action": "generate",
+      "prompt": "Generate an image of a cat wearing a brown tweed hat.",
+      "revised_prompt": "..."
+    }
+  ]
+}
+```
+
+Handling notes:
+
+- `result`
+  - Base64 image bytes, like OpenAI's `image_generation_call.result`.
+- `result_url`
+  - Bridge-specific convenience field with the final Grok asset URL.
+- `action`
+  - `generate` for new images, `edit` for conversational edits to a prior
+    Grok image.
+- `revised_prompt`
+  - Grok's expanded image prompt when the payload exposes it.
+
+### Chat Completions shape
+
+For `POST /v1/chat/completions`, the bridge keeps `message.content` usable by
+plain-text and Markdown clients, then adds a structured bridge-specific image
+field:
+
+```json
+{
+  "choices": [
+    {
+      "message": {
+        "role": "assistant",
+        "content": "![Generated Image](https://assets.grok.com/.../image.jpg)",
+        "image_urls": [
+          {
+            "url": "https://assets.grok.com/.../image.jpg",
+            "mime_type": "image/jpeg",
+            "action": "generate",
+            "prompt": "Generate an image of a cat."
+          }
+        ]
+      }
+    }
+  ]
+}
+```
+
+Handling notes:
+
+- If your client already renders Markdown images, `message.content` is enough.
+- If you need structured metadata, read `choices[0].message.image_urls`.
+- In streaming Chat Completions responses, the Markdown image embed is appended
+  as the final text delta, and the final structured image list is also emitted
+  in a bridge-specific `delta.image_urls` chunk.
+
+### How this was derived
+
+On April 3, 2026, CDP inspection of
+`https://grok.com/c/179912ff-0bfc-4fd3-a1df-99ff1b5ceaa8?rid=cc86adcd-0808-40ba-a3c4-835a97db39ee`
+showed:
+
+- Assistant image replies can be pure Grok render tags such as
+  `<grok:render ... card_type="generated_image_card" type="render_generated_image">`
+  or `type="render_edited_image"`.
+- The actual image assets arrive in `cardAttachmentsJson[*].image_chunk.imageUrl`.
+- Final assets are hosted under `https://assets.grok.com/.../generated/.../image.jpg`.
+- Prompt and edit metadata are exposed through the render arguments and
+  `image_chunk.imagePrompt`.
+
 ## Citations and source attribution
 
 The bridge keeps Grok's inline citations by default. Instead of removing
@@ -459,9 +594,12 @@ implements:
 - Multi-turn continuation is exposed via `previous_response_id`.
 - `stream: true` on `/v1/responses` uses typed SSE events such as
   `response.created`, `response.output_text.delta`, and `response.completed`.
+- Responses image output follows the documented `image_generation_call` item
+  pattern from OpenAI's image generation guide.
 
 Reference docs:
 
 - https://developers.openai.com/api/docs/guides/file-inputs/
 - https://developers.openai.com/api/docs/guides/conversation-state/
+- https://developers.openai.com/api/docs/guides/image-generation/
 - https://developers.openai.com/api/docs/guides/streaming-responses/

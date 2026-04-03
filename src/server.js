@@ -15,11 +15,13 @@ import {
 } from "./openai/input.js";
 import {
   createResponseEnvelope,
+  createResponseImageOutputItem,
   createStreamingResponseSnapshot
 } from "./openai/response-object.js";
 import {
   createChatCompletion,
-  createChatCompletionChunk
+  createChatCompletionChunk,
+  renderChatCompletionContent
 } from "./openai/chat-completions.js";
 import { initSse, writeSseEvent } from "./openai/sse.js";
 import { createId, unixTimestampSeconds } from "./lib/ids.js";
@@ -55,6 +57,35 @@ process.on("SIGINT", async () => {
   await grokClient.browser.close();
   process.exit(0);
 });
+
+async function hydrateGeneratedImages(images) {
+  return Promise.all(
+    images.map(async (image) => {
+      if (!image.url) {
+        return {
+          ...image,
+          result: null,
+          resultError: "Missing image url"
+        };
+      }
+
+      try {
+        const asset = await grokClient.fetchAssetAsBase64(image.url);
+        return {
+          ...image,
+          result: asset.base64,
+          mimeType: image.mimeType || asset.contentType
+        };
+      } catch (error) {
+        return {
+          ...image,
+          result: null,
+          resultError: error instanceof Error ? error.message : String(error)
+        };
+      }
+    })
+  );
+}
 
 function maybeHandleStreamingError(req, res, error) {
   const contentType = res.getHeader("Content-Type");
@@ -400,13 +431,14 @@ app.post("/v1/responses", async (req, res, next) => {
       });
       let sawToken = false;
       let emittedText = "";
-      let emittedPrelude = false;
-      const emitPrelude = () => {
-        if (emittedPrelude) {
+      let emittedResponsePrelude = false;
+      let emittedMessagePrelude = false;
+      const emitResponsePrelude = () => {
+        if (emittedResponsePrelude) {
           return;
         }
 
-        emittedPrelude = true;
+        emittedResponsePrelude = true;
         // Grok rejects the upstream request if we emit SSE bytes before it starts streaming.
         writeSseEvent(res, "response.created", {
           type: "response.created",
@@ -416,6 +448,14 @@ app.post("/v1/responses", async (req, res, next) => {
           type: "response.in_progress",
           response: snapshot
         });
+      };
+      const emitMessagePrelude = () => {
+        if (emittedMessagePrelude) {
+          return;
+        }
+
+        emitResponsePrelude();
+        emittedMessagePrelude = true;
         writeSseEvent(res, "response.output_item.added", {
           type: "response.output_item.added",
           output_index: 0,
@@ -446,7 +486,7 @@ app.post("/v1/responses", async (req, res, next) => {
             return;
           }
 
-          emitPrelude();
+          emitMessagePrelude();
           sawToken = true;
           emittedText += visible;
           writeSseEvent(res, "response.output_text.delta", {
@@ -460,7 +500,7 @@ app.post("/v1/responses", async (req, res, next) => {
       });
       const flushed = sanitizer.flush();
       if (flushed) {
-        emitPrelude();
+        emitMessagePrelude();
         sawToken = true;
         emittedText += flushed;
         writeSseEvent(res, "response.output_text.delta", {
@@ -473,13 +513,18 @@ app.post("/v1/responses", async (req, res, next) => {
       }
       const assistantOutput = buildAssistantOutput(
         result.state,
-        parsed.source_attribution
+        parsed.source_attribution,
+        {
+          grokBaseUrl: config.grokBaseUrl
+        }
       );
+      const hydratedImages = await hydrateGeneratedImages(assistantOutput.images);
       const text = assistantOutput.text;
       const pendingText = getStreamingTextSuffix(text, emittedText);
+      const hasMessage = Boolean(text);
 
       if (pendingText) {
-        emitPrelude();
+        emitMessagePrelude();
         sawToken = true;
         writeSseEvent(res, "response.output_text.delta", {
           type: "response.output_text.delta",
@@ -490,41 +535,64 @@ app.post("/v1/responses", async (req, res, next) => {
         });
       }
 
-      emitPrelude();
-      writeSseEvent(res, "response.output_text.done", {
-        type: "response.output_text.done",
-        item_id: messageId,
-        output_index: 0,
-        content_index: 0,
-        text
-      });
-      writeSseEvent(res, "response.content_part.done", {
-        type: "response.content_part.done",
-        item_id: messageId,
-        output_index: 0,
-        content_index: 0,
-        part: {
-          type: "output_text",
-          text,
-          annotations: []
-        }
-      });
-      writeSseEvent(res, "response.output_item.done", {
-        type: "response.output_item.done",
-        output_index: 0,
-        item: {
-          id: messageId,
-          type: "message",
-          status: "completed",
-          role: "assistant",
-          content: [
-            {
-              type: "output_text",
-              text,
-              annotations: []
-            }
-          ]
-        }
+      if (hasMessage) {
+        emitMessagePrelude();
+        writeSseEvent(res, "response.output_text.done", {
+          type: "response.output_text.done",
+          item_id: messageId,
+          output_index: 0,
+          content_index: 0,
+          text
+        });
+        writeSseEvent(res, "response.content_part.done", {
+          type: "response.content_part.done",
+          item_id: messageId,
+          output_index: 0,
+          content_index: 0,
+          part: {
+            type: "output_text",
+            text,
+            annotations: []
+          }
+        });
+        writeSseEvent(res, "response.output_item.done", {
+          type: "response.output_item.done",
+          output_index: 0,
+          item: {
+            id: messageId,
+            type: "message",
+            status: "completed",
+            role: "assistant",
+            content: [
+              {
+                type: "output_text",
+                text,
+                annotations: []
+              }
+            ]
+          }
+        });
+      }
+
+      emitResponsePrelude();
+      hydratedImages.forEach((image, index) => {
+        const outputIndex = hasMessage ? index + 1 : index;
+        writeSseEvent(res, "response.output_item.added", {
+          type: "response.output_item.added",
+          output_index: outputIndex,
+          item: createResponseImageOutputItem({
+            image,
+            status: "in_progress"
+          })
+        });
+        writeSseEvent(res, "response.output_item.done", {
+          type: "response.output_item.done",
+          output_index: outputIndex,
+          item: createResponseImageOutputItem({
+            image,
+            status: "completed"
+          })
+        });
       });
 
       const finalResponse = createResponseEnvelope({
@@ -532,6 +600,7 @@ app.post("/v1/responses", async (req, res, next) => {
         messageId,
         model: publicModel,
         text,
+        images: hydratedImages,
         sourceAttribution: assistantOutput.sourceAttribution,
         instructions,
         previousResponseId: parsed.previous_response_id ?? null,
@@ -549,6 +618,7 @@ app.post("/v1/responses", async (req, res, next) => {
         })
       });
 
+      emitResponsePrelude();
       writeSseEvent(res, "response.completed", {
         type: "response.completed",
         response: finalResponse
@@ -564,14 +634,19 @@ app.post("/v1/responses", async (req, res, next) => {
     const result = await runResponseRequest(parsed);
     const assistantOutput = buildAssistantOutput(
       result.state,
-      parsed.source_attribution
+      parsed.source_attribution,
+      {
+        grokBaseUrl: config.grokBaseUrl
+      }
     );
+    const hydratedImages = await hydrateGeneratedImages(assistantOutput.images);
     const text = assistantOutput.text;
     const finalResponse = createResponseEnvelope({
       id: responseId,
       messageId,
       model: publicModel,
       text,
+      images: hydratedImages,
       sourceAttribution: assistantOutput.sourceAttribution,
       instructions: normalized.instructions,
       previousResponseId: parsed.previous_response_id ?? null,
@@ -681,26 +756,54 @@ app.post("/v1/chat/completions", async (req, res, next) => {
       }
       const assistantOutput = buildAssistantOutput(
         result.state,
-        parsed.source_attribution
+        parsed.source_attribution,
+        {
+          grokBaseUrl: config.grokBaseUrl
+        }
       );
-      const text = assistantOutput.text;
-      const pendingText = getStreamingTextSuffix(text, emittedText);
+      const content = renderChatCompletionContent({
+        text: assistantOutput.text,
+        images: assistantOutput.images
+      });
+      const pendingText = getStreamingTextSuffix(content, emittedText);
       if (pendingText) {
         ensureAssistantRoleEmitted();
         sawToken = true;
         res.write(
           `data: ${JSON.stringify(
-            createChatCompletionChunk({
-              id: chatCompletionId,
-              model: publicModel,
-              delta: { content: pendingText },
-              created
+              createChatCompletionChunk({
+                id: chatCompletionId,
+                model: publicModel,
+                delta: { content: pendingText },
+                created
             })
           )}\n\n`
         );
       }
 
       ensureAssistantRoleEmitted();
+      if (assistantOutput.images.length) {
+        res.write(
+          `data: ${JSON.stringify(
+            createChatCompletionChunk({
+              id: chatCompletionId,
+              model: publicModel,
+              delta: {
+                image_urls: assistantOutput.images.map((image) => ({
+                  url: image.url,
+                  mime_type: image.mimeType ?? null,
+                  title: image.title ?? null,
+                  action: image.action ?? null,
+                  prompt: image.prompt ?? null,
+                  revised_prompt: image.revisedPrompt ?? null,
+                  image_model: image.imageModel ?? null
+                }))
+              },
+              created
+            })
+          )}\n\n`
+        );
+      }
       res.write(
         `data: ${JSON.stringify(
           createChatCompletionChunk({
@@ -721,12 +824,19 @@ app.post("/v1/chat/completions", async (req, res, next) => {
     const result = await runChatCompletionRequest(parsed);
     const assistantOutput = buildAssistantOutput(
       result.state,
-      parsed.source_attribution
+      parsed.source_attribution,
+      {
+        grokBaseUrl: config.grokBaseUrl
+      }
     );
-    const text = assistantOutput.text;
+    const content = renderChatCompletionContent({
+      text: assistantOutput.text,
+      images: assistantOutput.images
+    });
     const response = createChatCompletion({
       model: publicModel,
-      content: text,
+      content,
+      imageUrls: assistantOutput.images,
       sourceAttribution: assistantOutput.sourceAttribution,
       created: unixTimestampSeconds()
     });
