@@ -25,14 +25,13 @@ import { initSse, writeSseEvent } from "./openai/sse.js";
 import { createId, unixTimestampSeconds } from "./lib/ids.js";
 import { GrokClient } from "./grok/client.js";
 import { createGrokMarkupStreamSanitizer } from "./grok/markup.js";
+import { buildAssistantOutput } from "./grok/output.js";
 import { listModels, resolveModel } from "./grok/model-map.js";
 import { buildStoredGrokState } from "./grok/response-state.js";
 import {
-  createSourceAttributionPayload,
-  extractSourceAttribution,
-  renderGrokText,
   resolveSourceAttributionOptions
 } from "./grok/source-attribution.js";
+import { getStreamingTextSuffix } from "./openai/streaming-text.js";
 
 const app = express();
 const upload = multer({
@@ -224,51 +223,6 @@ function buildTranscriptPrompt(messages) {
       return `${role}: ${message.text || ""}${attachmentSuffix}`.trim();
     })
     .join("\n\n");
-}
-
-function buildAssistantOutput(state, sourceAttributionRequest) {
-  const rawText = state.assistantText || state.modelResponse?.message || "";
-  const sourceAttributionOptions = resolveSourceAttributionOptions(
-    sourceAttributionRequest
-  );
-  const sourceAttribution = extractSourceAttribution({
-    assistantText: rawText,
-    modelResponse: state.modelResponse
-  });
-
-  return {
-    text: renderGrokText({
-      text: rawText,
-      sourceAttribution,
-      options: sourceAttributionOptions
-    }),
-    sourceAttribution: createSourceAttributionPayload({
-      sourceAttribution,
-      options: sourceAttributionOptions
-    }),
-    options: sourceAttributionOptions
-  };
-}
-
-function getStreamingTextSuffix(fullText, emittedText) {
-  if (!emittedText) {
-    return fullText;
-  }
-
-  if (fullText.startsWith(emittedText)) {
-    return fullText.slice(emittedText.length);
-  }
-
-  let sharedPrefixLength = 0;
-  while (
-    sharedPrefixLength < fullText.length &&
-    sharedPrefixLength < emittedText.length &&
-    fullText[sharedPrefixLength] === emittedText[sharedPrefixLength]
-  ) {
-    sharedPrefixLength += 1;
-  }
-
-  return fullText.slice(sharedPrefixLength);
 }
 
 async function executeManualHistory({
