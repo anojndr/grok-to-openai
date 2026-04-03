@@ -26,6 +26,7 @@ import { createId, unixTimestampSeconds } from "./lib/ids.js";
 import { GrokClient } from "./grok/client.js";
 import { createGrokMarkupStreamSanitizer } from "./grok/markup.js";
 import { listModels, resolveModel } from "./grok/model-map.js";
+import { buildStoredGrokState } from "./grok/response-state.js";
 import {
   createSourceAttributionPayload,
   extractSourceAttribution,
@@ -411,6 +412,9 @@ app.post("/v1/responses", async (req, res, next) => {
     const responseId = createId("resp");
     const messageId = createId("msg");
     const parsed = responsesCreateSchema.parse(requestBody);
+    const previousRecord = parsed.previous_response_id
+      ? responseStore.get(parsed.previous_response_id)
+      : null;
     const { publicModel } = resolveModel(
       parsed.model,
       parsed.reasoning?.effort,
@@ -585,11 +589,10 @@ app.post("/v1/responses", async (req, res, next) => {
       await responseStore.set({
         id: responseId,
         response: finalResponse,
-        grok: {
-          conversationId: result.state.conversation?.conversationId,
-          assistantResponseId: result.state.modelResponse?.responseId,
-          userResponseId: result.state.userResponse?.responseId
-        }
+        grok: buildStoredGrokState({
+          state: result.state,
+          previousGrok: previousRecord?.grok ?? null
+        })
       });
 
       writeSseEvent(res, "response.completed", {
@@ -626,11 +629,10 @@ app.post("/v1/responses", async (req, res, next) => {
     await responseStore.set({
       id: responseId,
       response: finalResponse,
-      grok: {
-        conversationId: result.state.conversation?.conversationId,
-        assistantResponseId: result.state.modelResponse?.responseId,
-        userResponseId: result.state.userResponse?.responseId
-      }
+      grok: buildStoredGrokState({
+        state: result.state,
+        previousGrok: previousRecord?.grok ?? null
+      })
     });
 
     res.status(200).json(finalResponse);
