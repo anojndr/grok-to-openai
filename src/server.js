@@ -30,9 +30,6 @@ import { createGrokMarkupStreamSanitizer } from "./grok/markup.js";
 import { buildAssistantOutput } from "./grok/output.js";
 import { listModels, resolveModel } from "./grok/model-map.js";
 import { buildStoredGrokState } from "./grok/response-state.js";
-import {
-  resolveSourceAttributionOptions
-} from "./grok/source-attribution.js";
 import { getStreamingTextSuffix } from "./openai/streaming-text.js";
 
 const app = express();
@@ -391,6 +388,17 @@ async function runChatCompletionRequest(reqBody, options = {}) {
   });
 }
 
+function createStreamingSourceAttributionRequest(sourceAttribution) {
+  if (sourceAttribution?.inline_citations === false) {
+    return sourceAttribution;
+  }
+
+  return {
+    ...(sourceAttribution ?? {}),
+    inline_citations: false
+  };
+}
+
 app.post("/v1/responses", async (req, res, next) => {
   try {
     const requestBody = req.body;
@@ -423,13 +431,11 @@ app.post("/v1/responses", async (req, res, next) => {
         request: parsed
       });
 
-      const sourceAttributionOptions = resolveSourceAttributionOptions(
+      const streamingSourceAttribution = createStreamingSourceAttributionRequest(
         parsed.source_attribution
       );
-      const sanitizer = createGrokMarkupStreamSanitizer({
-        stopAtRenderTag: sourceAttributionOptions.inlineCitations
-      });
-      const emittedText = "";
+      const sanitizer = createGrokMarkupStreamSanitizer();
+      let emittedText = "";
       let emittedResponsePrelude = false;
       let emittedMessagePrelude = false;
       const emitResponsePrelude = () => {
@@ -478,45 +484,44 @@ app.post("/v1/responses", async (req, res, next) => {
           }
         });
       };
-      const result = await runResponseRequest(parsed, {
-        onToken(token) {
-          const visible = sanitizer.write(token);
-          if (!visible) {
-            return;
-          }
-
-          // Grok can stream step summaries and draft text that diverge from the
-          // stored canonical message. Buffer the upstream stream internally and
-          // only emit the final canonical text once the request completes.
-          emitResponsePrelude();
+      const emitTextDelta = (delta) => {
+        if (!delta) {
+          return;
         }
-      });
-      const flushed = sanitizer.flush();
-      if (flushed) {
-        emitResponsePrelude();
-      }
-      const assistantOutput = buildAssistantOutput(
-        result.state,
-        parsed.source_attribution,
-        {
-          grokBaseUrl: config.grokBaseUrl
-        }
-      );
-      const hydratedImages = await hydrateGeneratedImages(assistantOutput.images);
-      const text = assistantOutput.text;
-      const pendingText = getStreamingTextSuffix(text, emittedText);
-      const hasMessage = Boolean(text);
 
-      if (pendingText) {
         emitMessagePrelude();
+        emittedText += delta;
         writeSseEvent(res, "response.output_text.delta", {
           type: "response.output_text.delta",
           item_id: messageId,
           output_index: 0,
           content_index: 0,
-          delta: pendingText
+          delta
         });
+      };
+      const result = await runResponseRequest(parsed, {
+        onToken(token) {
+          emitTextDelta(sanitizer.write(token));
+        }
+      });
+      emitTextDelta(sanitizer.flush());
+      const assistantOutput = buildAssistantOutput(
+        result.state,
+        streamingSourceAttribution,
+        {
+          grokBaseUrl: config.grokBaseUrl
+        }
+      );
+      const hydratedImages = await hydrateGeneratedImages(assistantOutput.images);
+      const renderedText = assistantOutput.text;
+      const pendingText = getStreamingTextSuffix(renderedText, emittedText);
+
+      if (pendingText) {
+        emitTextDelta(pendingText);
       }
+
+      const text = emittedText || renderedText;
+      const hasMessage = Boolean(text);
 
       if (hasMessage) {
         emitMessagePrelude();
@@ -672,13 +677,11 @@ app.post("/v1/chat/completions", async (req, res, next) => {
       res.setHeader("Cache-Control", "no-cache, no-transform");
       res.setHeader("Connection", "keep-alive");
 
-      const sourceAttributionOptions = resolveSourceAttributionOptions(
+      const streamingSourceAttribution = createStreamingSourceAttributionRequest(
         parsed.source_attribution
       );
-      const sanitizer = createGrokMarkupStreamSanitizer({
-        stopAtRenderTag: sourceAttributionOptions.inlineCitations
-      });
-      const emittedText = "";
+      const sanitizer = createGrokMarkupStreamSanitizer();
+      let emittedText = "";
       let emittedAssistantRole = false;
       const ensureAssistantRoleEmitted = () => {
         if (emittedAssistantRole) {
@@ -698,26 +701,33 @@ app.post("/v1/chat/completions", async (req, res, next) => {
           )}\n\n`
         );
       };
+      const emitTextDelta = (delta) => {
+        if (!delta) {
+          return;
+        }
+
+        ensureAssistantRoleEmitted();
+        emittedText += delta;
+        res.write(
+          `data: ${JSON.stringify(
+            createChatCompletionChunk({
+              id: chatCompletionId,
+              model: publicModel,
+              delta: { content: delta },
+              created
+            })
+          )}\n\n`
+        );
+      };
       const result = await runChatCompletionRequest(parsed, {
         onToken(token) {
-          const visible = sanitizer.write(token);
-          if (!visible) {
-            return;
-          }
-
-          // Grok can stream step summaries and draft text that diverge from the
-          // stored canonical message. Buffer the upstream stream internally and
-          // only emit the final canonical text once the request completes.
-          ensureAssistantRoleEmitted();
+          emitTextDelta(sanitizer.write(token));
         }
       });
-      const flushed = sanitizer.flush();
-      if (flushed) {
-        ensureAssistantRoleEmitted();
-      }
+      emitTextDelta(sanitizer.flush());
       const assistantOutput = buildAssistantOutput(
         result.state,
-        parsed.source_attribution,
+        streamingSourceAttribution,
         {
           grokBaseUrl: config.grokBaseUrl
         }
@@ -728,17 +738,7 @@ app.post("/v1/chat/completions", async (req, res, next) => {
       });
       const pendingText = getStreamingTextSuffix(content, emittedText);
       if (pendingText) {
-        ensureAssistantRoleEmitted();
-        res.write(
-          `data: ${JSON.stringify(
-              createChatCompletionChunk({
-                id: chatCompletionId,
-                model: publicModel,
-                delta: { content: pendingText },
-                created
-            })
-          )}\n\n`
-        );
+        emitTextDelta(pendingText);
       }
 
       ensureAssistantRoleEmitted();

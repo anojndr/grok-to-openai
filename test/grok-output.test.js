@@ -36,6 +36,44 @@ test("buildAssistantOutput still extracts query provenance from streamed markup"
   ]);
 });
 
+test("buildAssistantOutput can render streaming-friendly text without inline citation rewrites", () => {
+  const output = buildAssistantOutput(
+    {
+      assistantText:
+        "Alpha<grok:render card_id=\"card_1\" card_type=\"citation_card\" type=\"render_inline_citation\"><argument name=\"citation_id\">1</argument></grok:render> beta",
+      modelResponse: {
+        message:
+          "Alpha<grok:render card_id=\"card_1\" card_type=\"citation_card\" type=\"render_inline_citation\"><argument name=\"citation_id\">1</argument></grok:render> beta",
+        cardAttachmentsJson: [
+          JSON.stringify({
+            id: "card_1",
+            type: "render_inline_citation",
+            cardType: "citation_card",
+            url: "https://example.com/report"
+          })
+        ]
+      }
+    },
+    {
+      inline_citations: false,
+      include_sources: true
+    }
+  );
+
+  assert.equal(
+    output.text,
+    "Alpha beta\n\nSources\n1. [example.com/report](https://example.com/report) [cited]"
+  );
+  assert.equal(output.sourceAttribution.inline_citations, "none");
+  assert.deepEqual(output.sourceAttribution.citations, [
+    {
+      card_id: "card_1",
+      url: "https://example.com/report",
+      short_url: "example.com/report"
+    }
+  ]);
+});
+
 test("buildAssistantOutput extracts generated images from Grok image cards", () => {
   const output = buildAssistantOutput(
     {

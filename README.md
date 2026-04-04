@@ -103,6 +103,10 @@ If you omit `model`, the bridge uses `DEFAULT_MODEL`, which defaults to
   images.
 - Usage accounting is `null` for Responses API payloads. Non-streaming Chat
   Completions returns placeholder zero usage.
+- Streaming text deltas are forwarded live from Grok as they arrive. To avoid
+  buffering the stream until citation metadata is finalized, streaming text
+  strips inline citation tags from the text body; completed responses still
+  expose citation metadata through `source_attribution`.
 - Responses streaming currently emits completed image items once Grok has
   produced the final asset URL. It does not yet proxy Grok partial-image
   previews as OpenAI `response.image_generation_call.partial_image` events.
@@ -427,7 +431,8 @@ showed:
 
 ## Citations and source attribution
 
-The bridge keeps Grok's inline citations by default. Instead of removing
+For non-streaming responses, the bridge keeps Grok's inline citations by
+default. Instead of removing
 `<grok:render ... type="render_inline_citation">` tags, it resolves each
 `card_id` against Grok's citation attachment payload and renders a shortened,
 clickable Markdown link inline.
@@ -437,6 +442,16 @@ Example output:
 ```md
 ... enterprise integration and AI spending. ([techcrunch.com/category/artificial-intelligence](https://techcrunch.com/category/artificial-intelligence/))
 ```
+
+Streaming behavior:
+
+- `/v1/responses` and `/v1/chat/completions` now forward sanitized text deltas
+  in real time.
+- Because Grok provides citation URLs separately from the live token stream,
+  streaming text strips inline citation tags instead of buffering the entire
+  reply to rewrite them later.
+- The completed payload still includes structured citation metadata in
+  `source_attribution`.
 
 ### Request options
 
