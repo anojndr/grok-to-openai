@@ -77,6 +77,19 @@ function inferFilenameFromUrl(urlString) {
   }
 }
 
+function inferMimeTypeFromFilename(filename = "") {
+  switch (path.extname(filename).toLowerCase()) {
+    case ".csv":
+      return "text/csv";
+    case ".txt":
+      return "text/plain";
+    case ".tsv":
+      return "text/tab-separated-values";
+    default:
+      return "";
+  }
+}
+
 function inferExtensionFromMimeType(mimeType) {
   switch (mimeType) {
     case "image/png":
@@ -90,6 +103,82 @@ function inferExtensionFromMimeType(mimeType) {
     default:
       return "";
   }
+}
+
+function isTextLikeMimeType(mimeType = "") {
+  return mimeType.startsWith("text/");
+}
+
+function looksLikeBase64(value) {
+  const normalized = value.replace(/\s+/g, "");
+
+  if (!normalized || normalized.length % 4 !== 0) {
+    return false;
+  }
+
+  return /^[A-Za-z0-9+/]+={0,2}$/.test(normalized);
+}
+
+function isMostlyPrintableText(text) {
+  if (!text) {
+    return true;
+  }
+
+  let printableCount = 0;
+
+  for (const char of text) {
+    const code = char.charCodeAt(0);
+    if (code === 9 || code === 10 || code === 13 || (code >= 32 && code !== 127)) {
+      printableCount += 1;
+    }
+  }
+
+  return printableCount / text.length >= 0.85;
+}
+
+function bufferLooksLikeUtf8Text(bytes) {
+  try {
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    return isMostlyPrintableText(text);
+  } catch {
+    return false;
+  }
+}
+
+function decodeInlineFileData({ data, filename }) {
+  const match = /^data:([^;,]+);base64,(.+)$/s.exec(data);
+  if (match) {
+    return {
+      mimeType: match[1] || inferMimeTypeFromFilename(filename) || "application/octet-stream",
+      bytes: Buffer.from(match[2], "base64")
+    };
+  }
+
+  const inferredMimeType = inferMimeTypeFromFilename(filename);
+  if (!looksLikeBase64(data)) {
+    return {
+      mimeType: inferredMimeType || "application/octet-stream",
+      bytes: Buffer.from(data, "utf8")
+    };
+  }
+
+  const decodedBytes = Buffer.from(data.replace(/\s+/g, ""), "base64");
+  const shouldKeepRawText =
+    isTextLikeMimeType(inferredMimeType) &&
+    isMostlyPrintableText(data) &&
+    !bufferLooksLikeUtf8Text(decodedBytes);
+
+  if (shouldKeepRawText) {
+    return {
+      mimeType: inferredMimeType,
+      bytes: Buffer.from(data, "utf8")
+    };
+  }
+
+  return {
+    mimeType: inferredMimeType || "application/octet-stream",
+    bytes: decodedBytes
+  };
 }
 
 function extractImageParts(content) {
@@ -157,14 +246,14 @@ export async function resolveFileParts({
     }
 
     if (filePart.file_data) {
-      const data = filePart.file_data;
-      const match = /^data:([^;,]+);base64,(.+)$/s.exec(data);
-      const mimeType = match?.[1] || "application/octet-stream";
-      const base64 = match?.[2] || data;
+      const decoded = decodeInlineFileData({
+        data: filePart.file_data,
+        filename: filePart.filename || "upload.bin"
+      });
       resolved.push({
         filename: filePart.filename || "upload.bin",
-        mimeType,
-        bytes: Buffer.from(base64, "base64"),
+        mimeType: decoded.mimeType,
+        bytes: decoded.bytes,
         source: "file_data"
       });
       continue;

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   normalizeChatCompletionInput,
   normalizeConversationInput,
+  resolveFileParts,
   splitInstructionsAndMessages
 } from "../src/openai/input.js";
 
@@ -92,6 +93,57 @@ test("normalizeChatCompletionInput keeps developer text as instructions and imag
   assert.equal(result.messages[0].files[0].mimeType, "image/jpeg");
   assert.equal(result.messages[0].files[0].filename, "image.jpg");
   assert.equal(result.messages[0].files[0].bytes.toString(), "bar");
+});
+
+test("resolveFileParts keeps raw CSV file_data as text instead of base64-decoding it", async () => {
+  const [file] = await resolveFileParts({
+    content: [
+      {
+        type: "input_file",
+        filename: "prices.csv",
+        file_data: "date,close\n2026-01-02,123.45"
+      }
+    ],
+    fileStore: {}
+  });
+
+  assert.equal(file.filename, "prices.csv");
+  assert.equal(file.mimeType, "text/csv");
+  assert.equal(file.bytes.toString("utf8"), "date,close\n2026-01-02,123.45");
+});
+
+test("resolveFileParts keeps short raw TXT file_data that happens to look like base64", async () => {
+  const [file] = await resolveFileParts({
+    content: [
+      {
+        type: "input_file",
+        filename: "note.txt",
+        file_data: "test"
+      }
+    ],
+    fileStore: {}
+  });
+
+  assert.equal(file.filename, "note.txt");
+  assert.equal(file.mimeType, "text/plain");
+  assert.equal(file.bytes.toString("utf8"), "test");
+});
+
+test("resolveFileParts still decodes base64 file_data for text files", async () => {
+  const [file] = await resolveFileParts({
+    content: [
+      {
+        type: "input_file",
+        filename: "note.txt",
+        file_data: Buffer.from("hello", "utf8").toString("base64")
+      }
+    ],
+    fileStore: {}
+  });
+
+  assert.equal(file.filename, "note.txt");
+  assert.equal(file.mimeType, "text/plain");
+  assert.equal(file.bytes.toString("utf8"), "hello");
 });
 
 test("history transcript keeps prior turns for follow-up requests", () => {

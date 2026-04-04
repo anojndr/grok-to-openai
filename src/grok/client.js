@@ -1,6 +1,7 @@
 import { createId } from "../lib/ids.js";
 import { HttpError } from "../lib/errors.js";
 import { BrowserSession } from "./browser-session.js";
+import { normalizeFileForGrokUpload } from "./file-upload.js";
 import {
   applyGrokEvent,
   collectGrokStreamingState,
@@ -26,11 +27,16 @@ export class GrokClient {
   }
 
   async uploadFile({ filename, mimeType, bytes }) {
+    const normalizedFile = normalizeFileForGrokUpload({
+      filename,
+      mimeType,
+      bytes
+    });
     const requestId = createId("grokreq");
     const body = {
-      fileName: filename,
-      fileMimeType: mimeType || "application/octet-stream",
-      content: Buffer.from(bytes).toString("base64"),
+      fileName: normalizedFile.filename,
+      fileMimeType: normalizedFile.mimeType || "application/octet-stream",
+      content: Buffer.from(normalizedFile.bytes).toString("base64"),
       fileSource: "SELF_UPLOAD_FILE_SOURCE"
     };
 
