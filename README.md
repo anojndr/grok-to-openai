@@ -82,6 +82,13 @@ If you omit `model`, the bridge uses `DEFAULT_MODEL`, which defaults to
   not translated into equivalent Grok behavior. This includes fields such as
   `tools`, `tool_choice`, `response_format`, `stop`, `max_tokens`,
   `max_completion_tokens`, and `stream_options.include_usage`.
+- If a `previous_response_id` follow-up targets a Grok conversation that does
+  not exist in the active Grok account, the bridge falls back to opening a new
+  Grok conversation and replaying the stored chat history as a single
+  structured message, including stored files and images.
+- That replay fallback only works for responses saved after this behavior was
+  introduced, because older `.data/responses.json` entries do not include the
+  stored history snapshot needed to rebuild prior user attachments.
 - When you manually seed multi-message history without `previous_response_id`,
   the bridge flattens prior turns into a transcript prompt and requires the
   final message to be a user message.

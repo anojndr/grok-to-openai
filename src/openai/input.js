@@ -128,6 +128,7 @@ export async function resolveFileParts({
 
       const bytes = await fileStore.getContent(filePart.file_id);
       resolved.push({
+        fileId: filePart.file_id,
         filename: record.filename,
         mimeType: record.mime_type,
         bytes,

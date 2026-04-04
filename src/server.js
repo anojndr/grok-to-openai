@@ -14,6 +14,10 @@ import {
   normalizeConversationInput
 } from "./openai/input.js";
 import {
+  buildConversationHistory,
+  continueResponseConversation
+} from "./openai/continuation.js";
+import {
   createResponseEnvelope,
   createResponseImageOutputItem,
   createStreamingResponseSnapshot
@@ -280,12 +284,7 @@ async function executeManualHistory({
   });
 }
 
-async function runResponseRequest(reqBody, options = {}) {
-  const parsed = responsesCreateSchema.parse(reqBody);
-  const normalized = await normalizeConversationInput({
-    requestBody: parsed,
-    fileStore
-  });
+async function runResponseRequest(parsed, normalized, options = {}) {
   const onToken = options.onToken ?? null;
 
   if (!normalized.messages.length) {
@@ -308,16 +307,14 @@ async function runResponseRequest(reqBody, options = {}) {
       throw new HttpError(404, `Unknown previous_response_id: ${parsed.previous_response_id}`);
     }
 
-    const lastUserMessage = normalized.messages[normalized.messages.length - 1];
-    const fileAttachments = await uploadFilesToGrok(lastUserMessage.files);
-
-    return grokClient.addResponse({
-      conversationId: previous.grok.conversationId,
-      parentResponseId: previous.grok.assistantResponseId,
+    return continueResponseConversation({
+      previousRecord: previous,
+      currentMessages: normalized.messages,
       instructions: normalized.instructions,
-      model: publicModel,
-      message: lastUserMessage.text,
-      fileAttachments,
+      publicModel,
+      grokClient,
+      uploadFilesToGrok,
+      fileStore,
       onToken
     });
   }
@@ -499,7 +496,7 @@ app.post("/v1/responses", async (req, res, next) => {
           delta
         });
       };
-      const result = await runResponseRequest(parsed, {
+      const result = await runResponseRequest(parsed, normalized, {
         onToken(token) {
           emitTextDelta(sanitizer.write(token));
         }
@@ -597,13 +594,25 @@ app.post("/v1/responses", async (req, res, next) => {
         request: parsed
       });
 
+      const history = await buildConversationHistory({
+        previousHistory: previousRecord?.history ?? null,
+        instructions,
+        inputMessages: normalized.messages,
+        assistantOutput: {
+          text: assistantOutput.text,
+          images: hydratedImages
+        },
+        fileStore
+      });
+
       await responseStore.set({
         id: responseId,
         response: finalResponse,
         grok: buildStoredGrokState({
           state: result.state,
           previousGrok: previousRecord?.grok ?? null
-        })
+        }),
+        history
       });
 
       emitResponsePrelude();
@@ -619,7 +628,7 @@ app.post("/v1/responses", async (req, res, next) => {
       requestBody: parsed,
       fileStore
     });
-    const result = await runResponseRequest(parsed);
+    const result = await runResponseRequest(parsed, normalized);
     const assistantOutput = buildAssistantOutput(
       result.state,
       parsed.source_attribution,
@@ -629,6 +638,16 @@ app.post("/v1/responses", async (req, res, next) => {
     );
     const hydratedImages = await hydrateGeneratedImages(assistantOutput.images);
     const text = assistantOutput.text;
+    const history = await buildConversationHistory({
+      previousHistory: previousRecord?.history ?? null,
+      instructions: normalized.instructions,
+      inputMessages: normalized.messages,
+      assistantOutput: {
+        text: assistantOutput.text,
+        images: hydratedImages
+      },
+      fileStore
+    });
     const finalResponse = createResponseEnvelope({
       id: responseId,
       messageId,
@@ -649,7 +668,8 @@ app.post("/v1/responses", async (req, res, next) => {
       grok: buildStoredGrokState({
         state: result.state,
         previousGrok: previousRecord?.grok ?? null
-      })
+      }),
+      history
     });
 
     res.status(200).json(finalResponse);
