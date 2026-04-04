@@ -3,7 +3,7 @@ import { HttpError } from "../lib/errors.js";
 export function createNdjsonParser(onObject) {
   let buffer = "";
 
-  return (chunk) => {
+  const parser = (chunk) => {
     buffer += chunk;
 
     while (true) {
@@ -22,6 +22,19 @@ export function createNdjsonParser(onObject) {
       onObject(JSON.parse(line));
     }
   };
+
+  parser.flush = () => {
+    const line = buffer.trim();
+    buffer = "";
+
+    if (!line) {
+      return;
+    }
+
+    onObject(JSON.parse(line));
+  };
+
+  return parser;
 }
 
 export function collectGrokStreamingState() {

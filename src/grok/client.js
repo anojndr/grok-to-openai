@@ -244,6 +244,8 @@ export class GrokClient {
       onChunk: parser
     });
 
+    parser.flush();
+
     if (!response.meta || response.meta.status >= 400) {
       throw new HttpError(
         response.meta?.status || 502,

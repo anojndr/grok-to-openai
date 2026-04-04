@@ -118,3 +118,42 @@ test("uploadFile infers CSV text uploads from the filename and sends UTF-8 bytes
     "name,city\nAna,Málaga"
   );
 });
+
+test("createConversationAndRespond captures a delayed final response without a trailing newline", async () => {
+  const client = new GrokClient({
+    grokBaseUrl: "https://grok.com",
+    defaultModel: "grok-4-auto"
+  });
+
+  client.browser = {
+    async request(request) {
+      request.onChunk?.(
+        JSON.stringify({
+          result: {
+            response: {
+              modelResponse: {
+                responseId: "resp_123",
+                message: "Finished after running code."
+              }
+            }
+          }
+        })
+      );
+
+      return {
+        meta: {
+          status: 200
+        },
+        text: ""
+      };
+    }
+  };
+
+  const result = await client.createConversationAndRespond({
+    model: "grok-4-auto",
+    message: "Run this snippet and summarize the result."
+  });
+
+  assert.equal(result.state.modelResponse?.message, "Finished after running code.");
+  assert.equal(result.state.assistantText, "Finished after running code.");
+});
