@@ -311,22 +311,39 @@ export async function buildReplayConversationRequest({
   };
 }
 
-export function isMissingConversationError(error) {
-  if (!(error instanceof HttpError) || ![400, 403, 404].includes(error.status)) {
-    return false;
+function collectErrorMessages(error) {
+  if (!(error instanceof Error)) {
+    return [];
   }
 
-  const message = (error.message || "").toLowerCase();
+  const messages = [];
+  const pushMessage = (value) => {
+    if (typeof value === "string" && value) {
+      messages.push(value.toLowerCase());
+    }
+  };
 
-  return (
-    (message.includes("conversation") &&
-      (message.includes("not found") ||
-        message.includes("missing") ||
-        message.includes("unknown") ||
-        message.includes("does not exist") ||
-        message.includes("not in this account") ||
-        message.includes("not present"))) ||
-    (message.includes("parentresponse") && message.includes("not found"))
+  pushMessage(error.message);
+
+  if (error instanceof HttpError) {
+    pushMessage(error.details?.message);
+    pushMessage(error.details?.error?.message);
+  }
+
+  return messages;
+}
+
+export function isMissingConversationError(error) {
+  return collectErrorMessages(error).some(
+    (message) =>
+      ((message.includes("conversation") &&
+        (message.includes("not found") ||
+          message.includes("missing") ||
+          message.includes("unknown") ||
+          message.includes("does not exist") ||
+          message.includes("not in this account") ||
+          message.includes("not present"))) ||
+        (message.includes("parentresponse") && message.includes("not found")))
   );
 }
 

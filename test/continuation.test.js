@@ -252,3 +252,133 @@ test("continueResponseConversation falls back to replaying history when the Grok
     }
   });
 });
+
+test("continueResponseConversation replays full history for xAI stream missing-conversation errors", async () => {
+  const fileStore = createMemoryFileStore();
+  const priorTextFile = await fileStore.create({
+    filename: "context.txt",
+    bytes: Buffer.from("context"),
+    mimeType: "text/plain"
+  });
+  const priorImageFile = await fileStore.create({
+    filename: "sketch.png",
+    bytes: Buffer.from("sketch"),
+    mimeType: "image/png"
+  });
+  const previousHistory = {
+    instructions: ["Keep the attachment context intact."],
+    messages: [
+      {
+        role: "user",
+        text: "Review the uploaded context.",
+        attachments: [
+          {
+            fileId: priorTextFile.id,
+            filename: "context.txt",
+            mimeType: "text/plain"
+          }
+        ]
+      },
+      {
+        role: "assistant",
+        text: "I reviewed the text and image.",
+        attachments: [
+          {
+            fileId: priorImageFile.id,
+            filename: "sketch.png",
+            mimeType: "image/png"
+          }
+        ]
+      }
+    ]
+  };
+
+  let createConversationArgs = null;
+  const uploadCalls = [];
+  const grokClient = {
+    async addResponse() {
+      throw new HttpError(
+        502,
+        "stream response: consume xAI responses stream: 'Conversation' with ID '355efd4f-4649-409e-9d98-22230329cbb0' was not found. type=server_error: invalid argument"
+      );
+    },
+    async createConversationAndRespond(args) {
+      createConversationArgs = args;
+      return {
+        model: args.model,
+        state: {
+          responses: []
+        }
+      };
+    }
+  };
+  const uploadFilesToGrok = async (files) => {
+    uploadCalls.push(files.map((file) => file.filename));
+    return files.map((_file, index) => `upload_${uploadCalls.length}_${index + 1}`);
+  };
+
+  const result = await continueResponseConversation({
+    previousRecord: {
+      grok: {
+        conversationId: "conversation_old",
+        assistantResponseId: "response_old"
+      },
+      history: previousHistory
+    },
+    currentMessages: [
+      {
+        role: "user",
+        text: "Use all prior context and both new attachments.",
+        files: [
+          {
+            filename: "follow-up.pdf",
+            mimeType: "application/pdf",
+            bytes: Buffer.from("pdf")
+          },
+          {
+            filename: "reference.jpg",
+            mimeType: "image/jpeg",
+            bytes: Buffer.from("image")
+          }
+        ]
+      }
+    ],
+    instructions: "Answer only the latest user message.",
+    publicModel: "grok-4-auto",
+    grokClient,
+    uploadFilesToGrok,
+    fileStore
+  });
+
+  assert.deepEqual(uploadCalls[0], ["follow-up.pdf", "reference.jpg"]);
+  assert.deepEqual(uploadCalls[1], [
+    "turn-001-user-attachment-001-context.txt",
+    "turn-002-assistant-attachment-001-sketch.png",
+    "turn-003-user-attachment-001-follow-up.pdf",
+    "turn-003-user-attachment-002-reference.jpg"
+  ]);
+  assert.deepEqual(createConversationArgs.fileAttachments, [
+    "upload_2_1",
+    "upload_2_2",
+    "upload_2_3",
+    "upload_2_4"
+  ]);
+  assert.match(
+    createConversationArgs.message,
+    /The original Grok conversation could not be found in the active account/
+  );
+  assert.match(
+    createConversationArgs.message,
+    /turn-002-assistant-attachment-001-sketch.png/
+  );
+  assert.match(
+    createConversationArgs.message,
+    /turn-003-user-attachment-002-reference.jpg/
+  );
+  assert.deepEqual(result, {
+    model: "grok-4-auto",
+    state: {
+      responses: []
+    }
+  });
+});
