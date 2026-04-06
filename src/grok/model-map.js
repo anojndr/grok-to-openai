@@ -16,6 +16,12 @@ const MODELS = [
     modeId: "expert",
     object: "model",
     owned_by: "xai-web"
+  },
+  {
+    id: "grok-4-heavy",
+    modeId: "heavy",
+    object: "model",
+    owned_by: "xai-web"
   }
 ];
 
@@ -23,21 +29,26 @@ const aliasToMode = new Map([
   ["auto", "auto"],
   ["fast", "fast"],
   ["expert", "expert"],
+  ["heavy", "heavy"],
   ["grok", "auto"],
   ["grok auto", "auto"],
   ["grok fast", "fast"],
   ["grok expert", "expert"],
+  ["grok heavy", "heavy"],
   ["grok-auto", "auto"],
   ["grok-fast", "fast"],
   ["grok-expert", "expert"],
+  ["grok-heavy", "heavy"],
   ["grok-4", "auto"],
   ["grok-4-auto", "auto"],
   ["grok-4-fast", "fast"],
   ["grok-4-expert", "expert"],
+  ["grok-4-heavy", "heavy"],
   ["grok-3", "auto"],
   ["grok-3-auto", "auto"],
   ["grok-3-fast", "fast"],
   ["grok-3-expert", "expert"],
+  ["grok-3-heavy", "heavy"],
   ["grok-latest", "auto"],
   ["gpt-4o", "auto"],
   ["gpt-4.1", "auto"],
@@ -47,6 +58,10 @@ const aliasToMode = new Map([
 function inferModeFromModelName(normalizedModel) {
   if (!normalizedModel) {
     return null;
+  }
+
+  if (/(\b|[-_ ])heavy(\b|[-_ ])/.test(normalizedModel)) {
+    return "heavy";
   }
 
   if (/(\b|[-_ ])expert(\b|[-_ ])/.test(normalizedModel)) {

@@ -44,6 +44,7 @@ browser session. It does not use the official xAI API.
 - `grok-4-auto`
 - `grok-4-fast`
 - `grok-4-expert`
+- `grok-4-heavy`
 
 The bridge also accepts these aliases:
 
@@ -66,9 +67,17 @@ The bridge also accepts these aliases:
 - `grok expert`
 - `grok-expert`
 - `grok-3-expert`
+- Heavy mode:
+- `grok heavy`
+- `grok-heavy`
+- `grok-3-heavy`
 
-If the model name contains `fast`, `expert`, or `auto`, the bridge routes to
-that Grok mode even if the exact string is not listed above.
+If the model name contains `fast`, `expert`, `heavy`, or `auto`, the bridge
+routes to that Grok mode even if the exact string is not listed above.
+
+`grok-4-heavy` requires a Grok account tier that has Heavy access. If your
+account does not have it, Grok may return an upgrade prompt or reject the
+request.
 
 If you omit `model`, the bridge uses `DEFAULT_MODEL`, which defaults to
 `grok-4-auto`.

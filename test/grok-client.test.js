@@ -157,3 +157,31 @@ test("createConversationAndRespond captures a delayed final response without a t
   assert.equal(result.state.modelResponse?.message, "Finished after running code.");
   assert.equal(result.state.assistantText, "Finished after running code.");
 });
+
+test("createConversationAndRespond forwards heavy mode IDs to Grok", async () => {
+  const requests = [];
+  const client = new GrokClient({
+    grokBaseUrl: "https://grok.com",
+    defaultModel: "grok-4-auto"
+  });
+
+  client.browser = {
+    async request(request) {
+      requests.push(request);
+      return {
+        meta: {
+          status: 200
+        },
+        text: ""
+      };
+    }
+  };
+
+  await client.createConversationAndRespond({
+    model: "grok-4-heavy",
+    message: "Think harder."
+  });
+
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].body.modeId, "heavy");
+});
