@@ -58,3 +58,26 @@ test("applyGrokEvent handles flat follow-up streaming payloads", () => {
   assert.equal(state.finalMetadata.followUpSuggestions[0].label, "Why?");
   assert.equal(state.modelResponse.message, "Your favorite color is cerulean.");
 });
+
+test("applyGrokEvent captures direct assistant response payloads", () => {
+  const state = collectGrokStreamingState();
+
+  applyGrokEvent(state, {
+    result: {
+      responseId: "resp_123",
+      sender: "ASSISTANT",
+      parentResponseId: "user_123",
+      message: "Canonical final answer.",
+      steps: [
+        {
+          text: ["Examining claims"],
+          tags: ["header"]
+        }
+      ]
+    }
+  });
+
+  assert.equal(state.modelResponse.responseId, "resp_123");
+  assert.equal(state.modelResponse.message, "Canonical final answer.");
+  assert.equal(state.assistantText, "Canonical final answer.");
+});

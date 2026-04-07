@@ -396,6 +396,15 @@ function createStreamingSourceAttributionRequest(sourceAttribution) {
   };
 }
 
+function shouldBufferReasoningStream(model, reasoningEffort) {
+  if (reasoningEffort === "high") {
+    return true;
+  }
+
+  const normalizedModel = (model || "").toLowerCase();
+  return /(^|[-_ ])(expert|heavy)(?=$|[-_ ])/.test(normalizedModel);
+}
+
 app.post("/v1/responses", async (req, res, next) => {
   try {
     const requestBody = req.body;
@@ -430,6 +439,10 @@ app.post("/v1/responses", async (req, res, next) => {
 
       const streamingSourceAttribution = createStreamingSourceAttributionRequest(
         parsed.source_attribution
+      );
+      const bufferStreamingOutput = shouldBufferReasoningStream(
+        parsed.model,
+        parsed.reasoning?.effort
       );
       const sanitizer = createGrokMarkupStreamSanitizer();
       let emittedText = "";
@@ -498,10 +511,16 @@ app.post("/v1/responses", async (req, res, next) => {
       };
       const result = await runResponseRequest(parsed, normalized, {
         onToken(token) {
+          if (bufferStreamingOutput) {
+            return;
+          }
+
           emitTextDelta(sanitizer.write(token));
         }
       });
-      emitTextDelta(sanitizer.flush());
+      if (!bufferStreamingOutput) {
+        emitTextDelta(sanitizer.flush());
+      }
       const assistantOutput = buildAssistantOutput(
         result.state,
         streamingSourceAttribution,
@@ -511,13 +530,15 @@ app.post("/v1/responses", async (req, res, next) => {
       );
       const hydratedImages = await hydrateGeneratedImages(assistantOutput.images);
       const renderedText = assistantOutput.text;
-      const pendingText = getStreamingTextSuffix(renderedText, emittedText);
+      const pendingText = bufferStreamingOutput
+        ? renderedText
+        : getStreamingTextSuffix(renderedText, emittedText);
 
       if (pendingText) {
         emitTextDelta(pendingText);
       }
 
-      const text = emittedText || renderedText;
+      const text = bufferStreamingOutput ? renderedText : emittedText || renderedText;
       const hasMessage = Boolean(text);
 
       if (hasMessage) {
@@ -700,6 +721,10 @@ app.post("/v1/chat/completions", async (req, res, next) => {
       const streamingSourceAttribution = createStreamingSourceAttributionRequest(
         parsed.source_attribution
       );
+      const bufferStreamingOutput = shouldBufferReasoningStream(
+        parsed.model,
+        parsed.reasoning_effort
+      );
       const sanitizer = createGrokMarkupStreamSanitizer();
       let emittedText = "";
       let emittedAssistantRole = false;
@@ -741,10 +766,16 @@ app.post("/v1/chat/completions", async (req, res, next) => {
       };
       const result = await runChatCompletionRequest(parsed, {
         onToken(token) {
+          if (bufferStreamingOutput) {
+            return;
+          }
+
           emitTextDelta(sanitizer.write(token));
         }
       });
-      emitTextDelta(sanitizer.flush());
+      if (!bufferStreamingOutput) {
+        emitTextDelta(sanitizer.flush());
+      }
       const assistantOutput = buildAssistantOutput(
         result.state,
         streamingSourceAttribution,
@@ -756,7 +787,9 @@ app.post("/v1/chat/completions", async (req, res, next) => {
         text: assistantOutput.text,
         images: assistantOutput.images
       });
-      const pendingText = getStreamingTextSuffix(content, emittedText);
+      const pendingText = bufferStreamingOutput
+        ? content
+        : getStreamingTextSuffix(content, emittedText);
       if (pendingText) {
         emitTextDelta(pendingText);
       }

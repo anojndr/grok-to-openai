@@ -148,3 +148,80 @@ test("buildAssistantOutput extracts generated images from Grok image cards", () 
     }
   ]);
 });
+
+test("buildAssistantOutput reconstructs Grok Expert answers from streamed thought text", () => {
+  const output = buildAssistantOutput(
+    {
+      assistantText: `Checking CPU query- User likely seeking top CPU recommendation, possibly tagged with a Discord mention.
+- Searching for top CPUs in 2026 to provide current recommendations.
+- Focusing on high-end CPUs for gaming and productivity in April 2026.
+- Planning to search for "best CPU 2026" to find current flagship processors.
+- Teammate Harper suggests AMD Ryzen 7 9850X3D or 9800X3D as top for gaming with 3D V-Cache.
+Confirming top CPUs- Verifying AMD Ryzen 7 9850X3D as leading gaming CPU via search.
+- Latest reviews confirm Ryzen 7 9800X3D as top gaming CPU, with 9850X3D offering slight clock speed improvements.
+- Consensus points to AMD Ryzen 7 9850X3D as the absolute best performing CPU in April 2026.
+- Sources highlight Ryzen 9 9950X3D as best overall, while 9800X3D excels in gaming.
+- Direct answer: AMD Ryzen 7 9800X3D leads for gaming with 3D V-Cache boosting frame rates.
+The best CPU right now is the AMD Ryzen 7 9850X3D. It delivers the highest gaming performance available thanks to its Zen 5 architecture paired with massive 3DFinalizing CPU recommendation- AMD Ryzen 7 9850X3D emerges as the newest fastest gaming CPU per CES announcements.
+ V-Cache, which boosts frame rates far beyond anything else on the market.
+
+For the absolute top end in both gaming and heavy productivity work like video editing or 3D rendering, step up to the AMD Ryzen 9 9950X3D instead. It handles everything without compromise.
+
+Intel's latest Core Ultra chips trail in gaming even if they offer solid value in some productivity scenarios. AMD's AM5 platform also gives you better upgrade options down the line. If your build has a specific budget or focus beyond raw performance, the Ryzen 7 9800X3D is nearly as fast and often easier to find at a lower price.`,
+      modelResponse: {
+        steps: [
+          {
+            text: ["Checking CPU query"],
+            tags: ["header"]
+          },
+          {
+            text: [
+              `- User likely seeking top CPU recommendation, possibly tagged with a Discord mention.
+- Searching for top CPUs in 2026 to provide current recommendations.
+- Focusing on high-end CPUs for gaming and productivity in April 2026.
+- Planning to search for "best CPU 2026" to find current flagship processors.
+- Teammate Harper suggests AMD Ryzen 7 9850X3D or 9800X3D as top for gaming with 3D V-Cache.
+`
+            ],
+            tags: ["summary"]
+          },
+          {
+            text: ["Confirming top CPUs"],
+            tags: ["header"]
+          },
+          {
+            text: [
+              `- Verifying AMD Ryzen 7 9850X3D as leading gaming CPU via search.
+- Latest reviews confirm Ryzen 7 9800X3D as top gaming CPU, with 9850X3D offering slight clock speed improvements.
+- Consensus points to AMD Ryzen 7 9850X3D as the absolute best performing CPU in April 2026.
+- Sources highlight Ryzen 9 9950X3D as best overall, while 9800X3D excels in gaming.
+- Direct answer: AMD Ryzen 7 9800X3D leads for gaming with 3D V-Cache boosting frame rates.
+`
+            ],
+            tags: ["summary"]
+          },
+          {
+            text: ["Finalizing CPU recommendation"],
+            tags: ["header"]
+          },
+          {
+            text: [
+              "- AMD Ryzen 7 9850X3D emerges as the newest fastest gaming CPU per CES announcements.\n"
+            ],
+            tags: ["summary"]
+          }
+        ]
+      }
+    },
+    {}
+  );
+
+  assert.equal(
+    output.text,
+    `The best CPU right now is the AMD Ryzen 7 9850X3D. It delivers the highest gaming performance available thanks to its Zen 5 architecture paired with massive 3D V-Cache, which boosts frame rates far beyond anything else on the market.
+
+For the absolute top end in both gaming and heavy productivity work like video editing or 3D rendering, step up to the AMD Ryzen 9 9950X3D instead. It handles everything without compromise.
+
+Intel's latest Core Ultra chips trail in gaming even if they offer solid value in some productivity scenarios. AMD's AM5 platform also gives you better upgrade options down the line. If your build has a specific budget or focus beyond raw performance, the Ryzen 7 9800X3D is nearly as fast and often easier to find at a lower price.`
+  );
+});

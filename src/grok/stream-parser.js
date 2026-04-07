@@ -50,6 +50,22 @@ export function collectGrokStreamingState() {
   };
 }
 
+function looksLikeDirectAssistantResponse(response) {
+  if (!response || typeof response !== "object" || response.modelResponse) {
+    return false;
+  }
+
+  if (!response.responseId) {
+    return false;
+  }
+
+  if (typeof response.sender === "string") {
+    return response.sender.toLowerCase() === "assistant";
+  }
+
+  return typeof response.message === "string" && Array.isArray(response.steps);
+}
+
 export function applyGrokEvent(state, payload) {
   if (payload.error) {
     throw new HttpError(502, payload.error.message || "Grok request failed", payload.error);
@@ -97,10 +113,14 @@ export function applyGrokEvent(state, payload) {
     state.finalMetadata = response.finalMetadata;
   }
 
-  if (response.modelResponse) {
-    state.modelResponse = response.modelResponse;
-    if (response.modelResponse.message && !state.assistantText) {
-      state.assistantText = response.modelResponse.message;
+  const modelResponse = response.modelResponse ?? (
+    looksLikeDirectAssistantResponse(response) ? response : null
+  );
+
+  if (modelResponse) {
+    state.modelResponse = modelResponse;
+    if (modelResponse.message && !state.assistantText) {
+      state.assistantText = modelResponse.message;
     }
   }
 
