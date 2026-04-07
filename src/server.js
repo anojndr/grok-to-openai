@@ -33,6 +33,7 @@ import { GrokClient } from "./grok/client.js";
 import { createGrokMarkupStreamSanitizer } from "./grok/markup.js";
 import { buildAssistantOutput } from "./grok/output.js";
 import { listModels, resolveModel } from "./grok/model-map.js";
+import { shouldBufferReasoningStream } from "./grok/streaming-policy.js";
 import { buildStoredGrokState } from "./grok/response-state.js";
 import { getStreamingTextSuffix } from "./openai/streaming-text.js";
 
@@ -396,15 +397,6 @@ function createStreamingSourceAttributionRequest(sourceAttribution) {
   };
 }
 
-function shouldBufferReasoningStream(model, reasoningEffort) {
-  if (reasoningEffort === "high") {
-    return true;
-  }
-
-  const normalizedModel = (model || "").toLowerCase();
-  return /(^|[-_ ])(expert|heavy)(?=$|[-_ ])/.test(normalizedModel);
-}
-
 app.post("/v1/responses", async (req, res, next) => {
   try {
     const requestBody = req.body;
@@ -441,8 +433,11 @@ app.post("/v1/responses", async (req, res, next) => {
         parsed.source_attribution
       );
       const bufferStreamingOutput = shouldBufferReasoningStream(
-        parsed.model,
-        parsed.reasoning?.effort
+        {
+          model: publicModel,
+          reasoningEffort: parsed.reasoning?.effort,
+          fallbackModel: config.defaultModel
+        }
       );
       const sanitizer = createGrokMarkupStreamSanitizer();
       let emittedText = "";
@@ -722,8 +717,11 @@ app.post("/v1/chat/completions", async (req, res, next) => {
         parsed.source_attribution
       );
       const bufferStreamingOutput = shouldBufferReasoningStream(
-        parsed.model,
-        parsed.reasoning_effort
+        {
+          model: publicModel,
+          reasoningEffort: parsed.reasoning_effort,
+          fallbackModel: config.defaultModel
+        }
       );
       const sanitizer = createGrokMarkupStreamSanitizer();
       let emittedText = "";
