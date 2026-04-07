@@ -34,6 +34,10 @@ import { createGrokMarkupStreamSanitizer } from "./grok/markup.js";
 import { buildAssistantOutput } from "./grok/output.js";
 import { listModels, resolveModel } from "./grok/model-map.js";
 import { shouldBufferReasoningStream } from "./grok/streaming-policy.js";
+import {
+  createThoughtAndResponseStreamDeltas,
+  renderThoughtAndResponse
+} from "./grok/thought.js";
 import { buildStoredGrokState } from "./grok/response-state.js";
 import { getStreamingTextSuffix } from "./openai/streaming-text.js";
 
@@ -524,13 +528,22 @@ app.post("/v1/responses", async (req, res, next) => {
         }
       );
       const hydratedImages = await hydrateGeneratedImages(assistantOutput.images);
-      const renderedText = assistantOutput.text;
-      const pendingText = bufferStreamingOutput
-        ? renderedText
-        : getStreamingTextSuffix(renderedText, emittedText);
-
-      if (pendingText) {
-        emitTextDelta(pendingText);
+      const renderedText = renderThoughtAndResponse({
+        thoughtText: assistantOutput.thoughtText,
+        responseText: assistantOutput.text
+      });
+      if (bufferStreamingOutput) {
+        for (const delta of createThoughtAndResponseStreamDeltas({
+          thoughtText: assistantOutput.thoughtText,
+          responseText: assistantOutput.text
+        })) {
+          emitTextDelta(delta);
+        }
+      } else {
+        const pendingText = getStreamingTextSuffix(renderedText, emittedText);
+        if (pendingText) {
+          emitTextDelta(pendingText);
+        }
       }
 
       const text = bufferStreamingOutput ? renderedText : emittedText || renderedText;
@@ -782,14 +795,27 @@ app.post("/v1/chat/completions", async (req, res, next) => {
         }
       );
       const content = renderChatCompletionContent({
-        text: assistantOutput.text,
+        text: renderThoughtAndResponse({
+          thoughtText: assistantOutput.thoughtText,
+          responseText: assistantOutput.text
+        }),
         images: assistantOutput.images
       });
-      const pendingText = bufferStreamingOutput
-        ? content
-        : getStreamingTextSuffix(content, emittedText);
-      if (pendingText) {
-        emitTextDelta(pendingText);
+      if (bufferStreamingOutput) {
+        for (const delta of createThoughtAndResponseStreamDeltas({
+          thoughtText: assistantOutput.thoughtText,
+          responseText: renderChatCompletionContent({
+            text: assistantOutput.text,
+            images: assistantOutput.images
+          })
+        })) {
+          emitTextDelta(delta);
+        }
+      } else {
+        const pendingText = getStreamingTextSuffix(content, emittedText);
+        if (pendingText) {
+          emitTextDelta(pendingText);
+        }
       }
 
       ensureAssistantRoleEmitted();
