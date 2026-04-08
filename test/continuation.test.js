@@ -492,3 +492,213 @@ test("continueResponseConversation replays full history on follow-up errors so a
     }
   });
 });
+
+test("continueResponseConversation falls back to grok fast after replay exhausts all accounts on grok auto", async () => {
+  const fileStore = createMemoryFileStore();
+  const priorFile = await fileStore.create({
+    filename: "context.txt",
+    bytes: Buffer.from("context"),
+    mimeType: "text/plain"
+  });
+  const previousHistory = {
+    instructions: ["Keep the conversation intact."],
+    messages: [
+      {
+        role: "user",
+        text: "Read the context first.",
+        attachments: [
+          {
+            fileId: priorFile.id,
+            filename: "context.txt",
+            mimeType: "text/plain"
+          }
+        ]
+      },
+      {
+        role: "assistant",
+        text: "I have it.",
+        attachments: []
+      }
+    ]
+  };
+
+  const replayModels = [];
+  let fallbackCallCount = 0;
+  const grokAccounts = {
+    async withAccount(accountIndex, operation) {
+      const client = {
+        async addResponse() {
+          throw new HttpError(429, "Grok request failed: rate limited");
+        }
+      };
+      return {
+        accountIndex,
+        value: await operation(client, accountIndex)
+      };
+    },
+    async withFallback(operation) {
+      const accountIndex = fallbackCallCount;
+      fallbackCallCount += 1;
+      const client = {
+        async createConversationAndRespond(args) {
+          replayModels.push(args.model);
+
+          if (args.model === "grok-4-auto") {
+            throw new HttpError(503, "Grok request failed: upstream overloaded");
+          }
+
+          return {
+            model: args.model,
+            state: {
+              responses: []
+            }
+          };
+        }
+      };
+
+      return {
+        accountIndex,
+        value: await operation(client, accountIndex)
+      };
+    }
+  };
+  const uploadFilesToGrok = async (_accountClient, files) =>
+    files.map((_file, index) => `upload_${index + 1}`);
+
+  const result = await continueResponseConversation({
+    previousRecord: {
+      grok: {
+        accountIndex: 0,
+        conversationId: "conversation_old",
+        assistantResponseId: "response_old"
+      },
+      history: previousHistory
+    },
+    currentMessages: [
+      {
+        role: "user",
+        text: "Answer with the same context after recovering.",
+        files: []
+      }
+    ],
+    instructions: "Answer only the latest user message.",
+    publicModel: "grok-4-auto",
+    grokAccounts,
+    uploadFilesToGrok,
+    fileStore
+  });
+
+  assert.deepEqual(replayModels, ["grok-4-auto", "grok-4-fast"]);
+  assert.deepEqual(result, {
+    accountIndex: 1,
+    model: "grok-4-fast",
+    state: {
+      responses: []
+    }
+  });
+});
+
+test("continueResponseConversation falls back to grok fast after replay exhausts all accounts on grok heavy", async () => {
+  const fileStore = createMemoryFileStore();
+  const priorFile = await fileStore.create({
+    filename: "context.txt",
+    bytes: Buffer.from("context"),
+    mimeType: "text/plain"
+  });
+  const previousHistory = {
+    instructions: ["Keep the conversation intact."],
+    messages: [
+      {
+        role: "user",
+        text: "Read the context first.",
+        attachments: [
+          {
+            fileId: priorFile.id,
+            filename: "context.txt",
+            mimeType: "text/plain"
+          }
+        ]
+      },
+      {
+        role: "assistant",
+        text: "I have it.",
+        attachments: []
+      }
+    ]
+  };
+
+  const replayModels = [];
+  let fallbackCallCount = 0;
+  const grokAccounts = {
+    async withAccount(accountIndex, operation) {
+      const client = {
+        async addResponse() {
+          throw new HttpError(429, "Grok request failed: rate limited");
+        }
+      };
+      return {
+        accountIndex,
+        value: await operation(client, accountIndex)
+      };
+    },
+    async withFallback(operation) {
+      const accountIndex = fallbackCallCount;
+      fallbackCallCount += 1;
+      const client = {
+        async createConversationAndRespond(args) {
+          replayModels.push(args.model);
+
+          if (args.model === "grok-4-heavy") {
+            throw new HttpError(503, "Grok request failed: upstream overloaded");
+          }
+
+          return {
+            model: args.model,
+            state: {
+              responses: []
+            }
+          };
+        }
+      };
+
+      return {
+        accountIndex,
+        value: await operation(client, accountIndex)
+      };
+    }
+  };
+  const uploadFilesToGrok = async (_accountClient, files) =>
+    files.map((_file, index) => `upload_${index + 1}`);
+
+  const result = await continueResponseConversation({
+    previousRecord: {
+      grok: {
+        accountIndex: 0,
+        conversationId: "conversation_old",
+        assistantResponseId: "response_old"
+      },
+      history: previousHistory
+    },
+    currentMessages: [
+      {
+        role: "user",
+        text: "Answer with the same context after recovering.",
+        files: []
+      }
+    ],
+    instructions: "Answer only the latest user message.",
+    publicModel: "grok-4-heavy",
+    grokAccounts,
+    uploadFilesToGrok,
+    fileStore
+  });
+
+  assert.deepEqual(replayModels, ["grok-4-heavy", "grok-4-fast"]);
+  assert.deepEqual(result, {
+    accountIndex: 1,
+    model: "grok-4-fast",
+    state: {
+      responses: []
+    }
+  });
+});

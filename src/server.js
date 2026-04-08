@@ -30,6 +30,7 @@ import {
 import { initSse, writeSseEvent } from "./openai/sse.js";
 import { createId, unixTimestampSeconds } from "./lib/ids.js";
 import { createGrokMarkupStreamSanitizer } from "./grok/markup.js";
+import { withFastModelFallback } from "./grok/model-fallback.js";
 import { buildAssistantOutput } from "./grok/output.js";
 import { listModels, resolveModel } from "./grok/model-map.js";
 import { shouldBufferReasoningStream } from "./grok/streaming-policy.js";
@@ -255,16 +256,21 @@ async function executeConversationRequest({
   files,
   onToken
 }) {
-  const result = await grokAccounts.withFallback(async (accountClient) => {
-    const fileAttachments = await uploadFilesToGrok(accountClient, files);
+  const result = await withFastModelFallback({
+    publicModel,
+    async operation(model) {
+      return grokAccounts.withFallback(async (accountClient) => {
+        const fileAttachments = await uploadFilesToGrok(accountClient, files);
 
-    return accountClient.createConversationAndRespond({
-      instructions,
-      model: publicModel,
-      message,
-      fileAttachments,
-      onToken
-    });
+        return accountClient.createConversationAndRespond({
+          instructions,
+          model,
+          message,
+          fileAttachments,
+          onToken
+        });
+      });
+    }
   });
 
   return {

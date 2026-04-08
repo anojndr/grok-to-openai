@@ -29,6 +29,8 @@ Playwright browser profile. It does not use the official xAI API.
   many Grok accounts by concatenating multiple Netscape cookie-file blocks.
 - New requests and replay fallbacks iterate configured accounts in deterministic
   top-to-bottom order until one succeeds.
+- If `grok-4-auto`, `grok-4-expert`, or `grok-4-heavy` exhaust every
+  configured account, the bridge retries once in `grok-4-fast`.
 - Follow-up requests first try the account that owns the stored Grok thread. If
   that follow-up fails, the bridge rebuilds the full conversation history,
   including attachments, as one replay message and retries across the account

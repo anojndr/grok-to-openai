@@ -1,6 +1,7 @@
 import path from "node:path";
 import { sanitizeFilename } from "../lib/fs.js";
 import { HttpError } from "../lib/errors.js";
+import { withFastModelFallback } from "../grok/model-fallback.js";
 
 function toInstructionList(previousInstructions = [], instructions = "") {
   const merged = [];
@@ -429,20 +430,25 @@ export async function continueResponseConversation({
     fileStore
   });
 
-  const replayResult = await accounts.withFallback(async (accountClient) => {
-    const replayFileAttachments = await uploadFilesForAccount(
-      uploadFilesToGrok,
-      accountClient,
-      replay.files
-    );
+  const replayResult = await withFastModelFallback({
+    publicModel,
+    async operation(model) {
+      return accounts.withFallback(async (accountClient) => {
+        const replayFileAttachments = await uploadFilesForAccount(
+          uploadFilesToGrok,
+          accountClient,
+          replay.files
+        );
 
-    return accountClient.createConversationAndRespond({
-      instructions,
-      model: publicModel,
-      message: replay.message,
-      fileAttachments: replayFileAttachments,
-      onToken
-    });
+        return accountClient.createConversationAndRespond({
+          instructions,
+          model,
+          message: replay.message,
+          fileAttachments: replayFileAttachments,
+          onToken
+        });
+      });
+    }
   });
 
   return {
