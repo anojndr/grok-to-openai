@@ -45,10 +45,12 @@ export class BrowserSession {
     await this.installBindings();
 
     if (this.config.importCookiesOnBoot) {
-      const cookies = await readCookiesFromSource({
-        filePath: this.config.grokCookieFile,
-        rawText: this.config.grokCookiesText
-      });
+      const cookies = Array.isArray(this.config.grokCookies)
+        ? this.config.grokCookies
+        : await readCookiesFromSource({
+            filePath: this.config.grokCookieFile,
+            rawText: this.config.grokCookiesText
+          });
 
       if (cookies.length) {
         await this.context.addCookies(cookies);

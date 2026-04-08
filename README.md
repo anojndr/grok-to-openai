@@ -25,6 +25,14 @@ Playwright browser profile. It does not use the official xAI API.
 - Multi-turn Responses uses `previous_response_id`.
 - If the original Grok conversation no longer exists, the bridge can replay the
   locally stored conversation history and attachments to continue the thread.
+- A single `GROK_COOKIE_FILE` or `GROK_COOKIES_TEXT` value can define one or
+  many Grok accounts by concatenating multiple Netscape cookie-file blocks.
+- New requests and replay fallbacks iterate configured accounts in deterministic
+  top-to-bottom order until one succeeds.
+- Follow-up requests first try the account that owns the stored Grok thread. If
+  that follow-up fails, the bridge rebuilds the full conversation history,
+  including attachments, as one replay message and retries across the account
+  list.
 - Completed text preserves Grok inline citations as shortened Markdown links by
   default.
 - Optional `source_attribution` can append source lists and search queries.
@@ -174,9 +182,11 @@ Supported configuration:
   Leave empty to disable bearer auth.
 - `CHROME_EXECUTABLE_PATH`, `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH`
 - `GROK_COOKIE_FILE`
-  Netscape-format cookie file.
+  Netscape-format cookie file. You can concatenate multiple Netscape cookie
+  files into one file to define multiple accounts.
 - `GROK_COOKIES_TEXT`
-  Inline Netscape-format cookie text.
+  Inline Netscape-format cookie text. Multiple concatenated Netscape blocks are
+  treated as multiple accounts.
 - `GROK_BASE_URL`
   Defaults to `https://grok.com`.
 - `HEADLESS`, `IMPORT_COOKIES_ON_BOOT`
@@ -197,6 +207,12 @@ profile once with a visible browser:
 export HEADLESS=false
 npm start
 ```
+
+For multi-account setups, concatenate each account's full Netscape cookie file
+into the same secret file in the order you want the bridge to use them. When
+more than one account is configured, `BROWSER_PROFILE_DIR` is automatically
+split into per-account subdirectories such as `account-001`, `account-002`,
+and so on.
 
 Log in manually, then restart with `HEADLESS=true` if you want a headless
 server again.

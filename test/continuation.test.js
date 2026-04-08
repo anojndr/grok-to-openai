@@ -246,6 +246,7 @@ test("continueResponseConversation falls back to replaying history when the Grok
   assert.match(createConversationArgs.message, /Turn 2 \| Assistant/);
   assert.match(createConversationArgs.message, /Turn 3 \| User/);
   assert.deepEqual(result, {
+    accountIndex: 0,
     model: "grok-4-auto",
     state: {
       responses: []
@@ -376,6 +377,115 @@ test("continueResponseConversation replays full history for xAI stream missing-c
     /turn-003-user-attachment-002-reference.jpg/
   );
   assert.deepEqual(result, {
+    accountIndex: 0,
+    model: "grok-4-auto",
+    state: {
+      responses: []
+    }
+  });
+});
+
+test("continueResponseConversation replays full history on follow-up errors so another account can take over", async () => {
+  const fileStore = createMemoryFileStore();
+  const priorFile = await fileStore.create({
+    filename: "context.txt",
+    bytes: Buffer.from("context"),
+    mimeType: "text/plain"
+  });
+  const previousHistory = {
+    instructions: ["Reuse the full context when recovering."],
+    messages: [
+      {
+        role: "user",
+        text: "Read the context first.",
+        attachments: [
+          {
+            fileId: priorFile.id,
+            filename: "context.txt",
+            mimeType: "text/plain"
+          }
+        ]
+      },
+      {
+        role: "assistant",
+        text: "I have it.",
+        attachments: []
+      }
+    ]
+  };
+
+  const uploadCalls = [];
+  const grokAccounts = {
+    async withAccount(accountIndex, operation) {
+      const client = {
+        async addResponse() {
+          throw new HttpError(429, "Grok request failed: rate limited");
+        }
+      };
+      return {
+        accountIndex,
+        value: await operation(client, accountIndex)
+      };
+    },
+    async withFallback(operation) {
+      const accountIndex = 1;
+      const client = {
+        async createConversationAndRespond(args) {
+          return {
+            model: args.model,
+            state: {
+              responses: []
+            }
+          };
+        }
+      };
+      return {
+        accountIndex,
+        value: await operation(client, accountIndex)
+      };
+    }
+  };
+  const uploadFilesToGrok = async (accountClient, files) => {
+    uploadCalls.push(files.map((file) => file.filename));
+    return files.map((_file, index) => `upload_${uploadCalls.length}_${index + 1}`);
+  };
+
+  const result = await continueResponseConversation({
+    previousRecord: {
+      grok: {
+        accountIndex: 0,
+        conversationId: "conversation_old",
+        assistantResponseId: "response_old"
+      },
+      history: previousHistory
+    },
+    currentMessages: [
+      {
+        role: "user",
+        text: "Answer using the same context on another account if needed.",
+        files: [
+          {
+            filename: "follow-up.png",
+            mimeType: "image/png",
+            bytes: Buffer.from("follow-up")
+          }
+        ]
+      }
+    ],
+    instructions: "Answer only the latest user message.",
+    publicModel: "grok-4-auto",
+    grokAccounts,
+    uploadFilesToGrok,
+    fileStore
+  });
+
+  assert.deepEqual(uploadCalls[0], ["follow-up.png"]);
+  assert.deepEqual(uploadCalls[1], [
+    "turn-001-user-attachment-001-context.txt",
+    "turn-003-user-attachment-001-follow-up.png"
+  ]);
+  assert.deepEqual(result, {
+    accountIndex: 1,
     model: "grok-4-auto",
     state: {
       responses: []

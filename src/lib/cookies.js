@@ -34,15 +34,69 @@ export function parseNetscapeCookieText(text) {
     .filter(Boolean);
 }
 
-export async function readCookiesFromSource({ filePath = "", rawText = "" }) {
+export function parseNetscapeCookieTextGroups(text) {
+  const lines = text.split(/\r?\n/);
+  const groups = [];
+  let currentLines = [];
+  let sawCookieLine = false;
+
+  const flush = () => {
+    if (!currentLines.length) {
+      return;
+    }
+
+    const cookies = parseNetscapeCookieText(currentLines.join("\n"));
+    if (cookies.length) {
+      groups.push(cookies);
+    }
+
+    currentLines = [];
+    sawCookieLine = false;
+  };
+
+  for (const rawLine of lines) {
+    const trimmed = rawLine.trim();
+    const isHeader = trimmed === "# Netscape HTTP Cookie File";
+    const isCookieLine = Boolean(trimmed) && !trimmed.startsWith("#");
+
+    if (isHeader && sawCookieLine) {
+      flush();
+    }
+
+    currentLines.push(rawLine);
+
+    if (isCookieLine) {
+      sawCookieLine = true;
+    }
+  }
+
+  flush();
+
+  return groups;
+}
+
+async function readCookieSourceText({ filePath = "", rawText = "" }) {
   if (rawText.trim()) {
-    return parseNetscapeCookieText(rawText);
+    return rawText;
   }
 
   if (filePath) {
-    const content = await fs.readFile(filePath, "utf8");
-    return parseNetscapeCookieText(content);
+    return fs.readFile(filePath, "utf8");
   }
 
-  return [];
+  return "";
+}
+
+export async function readCookieSetsFromSource({ filePath = "", rawText = "" }) {
+  const content = await readCookieSourceText({ filePath, rawText });
+  if (!content.trim()) {
+    return [];
+  }
+
+  return parseNetscapeCookieTextGroups(content);
+}
+
+export async function readCookiesFromSource({ filePath = "", rawText = "" }) {
+  const groups = await readCookieSetsFromSource({ filePath, rawText });
+  return groups[0] ?? [];
 }

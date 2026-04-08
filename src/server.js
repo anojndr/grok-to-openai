@@ -29,7 +29,6 @@ import {
 } from "./openai/chat-completions.js";
 import { initSse, writeSseEvent } from "./openai/sse.js";
 import { createId, unixTimestampSeconds } from "./lib/ids.js";
-import { GrokClient } from "./grok/client.js";
 import { createGrokMarkupStreamSanitizer } from "./grok/markup.js";
 import { buildAssistantOutput } from "./grok/output.js";
 import { listModels, resolveModel } from "./grok/model-map.js";
@@ -40,6 +39,7 @@ import {
 } from "./grok/thought.js";
 import { buildStoredGrokState } from "./grok/response-state.js";
 import { getStreamingTextSuffix } from "./openai/streaming-text.js";
+import { GrokAccountPool } from "./grok/account-pool.js";
 
 const app = express();
 const upload = multer({
@@ -57,14 +57,14 @@ await fileStore.init();
 const responseStore = new ResponseStore(config.dataDir);
 await responseStore.init();
 
-const grokClient = new GrokClient(config);
+const grokAccounts = new GrokAccountPool(config);
 
 process.on("SIGINT", async () => {
-  await grokClient.browser.close();
+  await grokAccounts.close();
   process.exit(0);
 });
 
-async function hydrateGeneratedImages(images) {
+async function hydrateGeneratedImages(images, accountIndex = 0) {
   return Promise.all(
     images.map(async (image) => {
       if (!image.url) {
@@ -76,7 +76,9 @@ async function hydrateGeneratedImages(images) {
       }
 
       try {
-        const asset = await grokClient.fetchAssetAsBase64(image.url);
+        const asset = await grokAccounts.fetchAssetAsBase64(image.url, {
+          accountIndex
+        });
         return {
           ...image,
           result: asset.base64,
@@ -226,11 +228,11 @@ app.get("/v1/responses/:responseId", async (req, res, next) => {
   }
 });
 
-async function uploadFilesToGrok(files) {
+async function uploadFilesToGrok(accountClient, files) {
   const uploaded = [];
 
   for (const file of files) {
-    const upload = await grokClient.uploadFile({
+    const upload = await accountClient.uploadFile({
       filename: file.filename,
       mimeType: file.mimeType,
       bytes: file.bytes
@@ -244,6 +246,31 @@ async function uploadFilesToGrok(files) {
   }
 
   return uploaded;
+}
+
+async function executeConversationRequest({
+  instructions,
+  publicModel,
+  message,
+  files,
+  onToken
+}) {
+  const result = await grokAccounts.withFallback(async (accountClient) => {
+    const fileAttachments = await uploadFilesToGrok(accountClient, files);
+
+    return accountClient.createConversationAndRespond({
+      instructions,
+      model: publicModel,
+      message,
+      fileAttachments,
+      onToken
+    });
+  });
+
+  return {
+    accountIndex: result.accountIndex,
+    ...result.value
+  };
 }
 
 function buildTranscriptPrompt(messages) {
@@ -274,17 +301,16 @@ async function executeManualHistory({
   }
 
   const priorMessages = messages.slice(0, -1);
-  const fileAttachments = await uploadFilesToGrok(lastMessage.files);
   const transcript = buildTranscriptPrompt(priorMessages);
   const combinedMessage = transcript
     ? `${transcript}\n\nUser: ${lastMessage.text}\n\nRespond to the latest user message.`
     : lastMessage.text;
 
-  return grokClient.createConversationAndRespond({
+  return executeConversationRequest({
     instructions,
-    model: publicModel,
+    publicModel,
     message: combinedMessage,
-    fileAttachments,
+    files: lastMessage.files,
     onToken
   });
 }
@@ -317,7 +343,7 @@ async function runResponseRequest(parsed, normalized, options = {}) {
       currentMessages: normalized.messages,
       instructions: normalized.instructions,
       publicModel,
-      grokClient,
+      grokAccounts,
       uploadFilesToGrok,
       fileStore,
       onToken
@@ -326,13 +352,11 @@ async function runResponseRequest(parsed, normalized, options = {}) {
 
   if (normalized.messages.length === 1 && normalized.messages[0].role === "user") {
     const message = normalized.messages[0];
-    const fileAttachments = await uploadFilesToGrok(message.files);
-
-    return grokClient.createConversationAndRespond({
+    return executeConversationRequest({
       instructions: normalized.instructions,
-      model: publicModel,
+      publicModel,
       message: message.text,
-      fileAttachments,
+      files: message.files,
       onToken
     });
   }
@@ -371,15 +395,15 @@ async function runChatCompletionRequest(reqBody, options = {}) {
 
   if (normalized.messages.length === 1 && normalized.messages[0].role === "user") {
     const message = normalized.messages[0];
-    const fileAttachments = await uploadFilesToGrok(message.files);
-
-    return grokClient.createConversationAndRespond({
+    const result = await executeConversationRequest({
       instructions: normalized.instructions,
-      model: publicModel,
+      publicModel,
       message: message.text,
-      fileAttachments,
+      files: message.files,
       onToken
     });
+
+    return result;
   }
 
   return executeManualHistory({
@@ -527,7 +551,10 @@ app.post("/v1/responses", async (req, res, next) => {
           grokBaseUrl: config.grokBaseUrl
         }
       );
-      const hydratedImages = await hydrateGeneratedImages(assistantOutput.images);
+      const hydratedImages = await hydrateGeneratedImages(
+        assistantOutput.images,
+        result.accountIndex
+      );
       const renderedText = renderThoughtAndResponse({
         thoughtText: assistantOutput.thoughtText,
         responseText: assistantOutput.text
@@ -639,6 +666,7 @@ app.post("/v1/responses", async (req, res, next) => {
         response: finalResponse,
         grok: buildStoredGrokState({
           state: result.state,
+          accountIndex: result.accountIndex,
           previousGrok: previousRecord?.grok ?? null
         }),
         history
@@ -665,7 +693,10 @@ app.post("/v1/responses", async (req, res, next) => {
         grokBaseUrl: config.grokBaseUrl
       }
     );
-    const hydratedImages = await hydrateGeneratedImages(assistantOutput.images);
+    const hydratedImages = await hydrateGeneratedImages(
+      assistantOutput.images,
+      result.accountIndex
+    );
     const text = assistantOutput.text;
     const history = await buildConversationHistory({
       previousHistory: previousRecord?.history ?? null,
@@ -696,6 +727,7 @@ app.post("/v1/responses", async (req, res, next) => {
       response: finalResponse,
       grok: buildStoredGrokState({
         state: result.state,
+        accountIndex: result.accountIndex,
         previousGrok: previousRecord?.grok ?? null
       }),
       history

@@ -347,11 +347,37 @@ export function isMissingConversationError(error) {
   );
 }
 
+function createSingleAccountAdapter(grokClient) {
+  return {
+    async withAccount(accountIndex, operation) {
+      return {
+        accountIndex: Number.isInteger(accountIndex) ? accountIndex : 0,
+        value: await operation(grokClient, accountIndex)
+      };
+    },
+    async withFallback(operation) {
+      return {
+        accountIndex: 0,
+        value: await operation(grokClient, 0)
+      };
+    }
+  };
+}
+
+async function uploadFilesForAccount(uploadFilesToGrok, accountClient, files) {
+  if (uploadFilesToGrok.length >= 2) {
+    return uploadFilesToGrok(accountClient, files);
+  }
+
+  return uploadFilesToGrok(files);
+}
+
 export async function continueResponseConversation({
   previousRecord,
   currentMessages,
   instructions,
   publicModel,
+  grokAccounts = null,
   grokClient,
   uploadFilesToGrok,
   fileStore,
@@ -362,20 +388,37 @@ export async function continueResponseConversation({
     throw new HttpError(400, "The final message must be a user message");
   }
 
-  const fileAttachments = await uploadFilesToGrok(lastUserMessage.files);
+  const accounts = grokAccounts ?? createSingleAccountAdapter(grokClient);
+  const preferredAccountIndex = previousRecord.grok?.accountIndex ?? 0;
 
   try {
-    return await grokClient.addResponse({
-      conversationId: previousRecord.grok.conversationId,
-      parentResponseId: previousRecord.grok.assistantResponseId,
-      instructions,
-      model: publicModel,
-      message: lastUserMessage.text,
-      fileAttachments,
-      onToken
-    });
+    const result = await accounts.withAccount(
+      preferredAccountIndex,
+      async (accountClient) => {
+        const fileAttachments = await uploadFilesForAccount(
+          uploadFilesToGrok,
+          accountClient,
+          lastUserMessage.files
+        );
+
+        return accountClient.addResponse({
+          conversationId: previousRecord.grok.conversationId,
+          parentResponseId: previousRecord.grok.assistantResponseId,
+          instructions,
+          model: publicModel,
+          message: lastUserMessage.text,
+          fileAttachments,
+          onToken
+        });
+      }
+    );
+
+    return {
+      accountIndex: result.accountIndex,
+      ...result.value
+    };
   } catch (error) {
-    if (!isMissingConversationError(error) || !previousRecord.history?.messages?.length) {
+    if (!previousRecord.history?.messages?.length) {
       throw error;
     }
   }
@@ -385,13 +428,25 @@ export async function continueResponseConversation({
     currentMessages,
     fileStore
   });
-  const replayFileAttachments = await uploadFilesToGrok(replay.files);
 
-  return grokClient.createConversationAndRespond({
-    instructions,
-    model: publicModel,
-    message: replay.message,
-    fileAttachments: replayFileAttachments,
-    onToken
+  const replayResult = await accounts.withFallback(async (accountClient) => {
+    const replayFileAttachments = await uploadFilesForAccount(
+      uploadFilesToGrok,
+      accountClient,
+      replay.files
+    );
+
+    return accountClient.createConversationAndRespond({
+      instructions,
+      model: publicModel,
+      message: replay.message,
+      fileAttachments: replayFileAttachments,
+      onToken
+    });
   });
+
+  return {
+    accountIndex: replayResult.accountIndex,
+    ...replayResult.value
+  };
 }
