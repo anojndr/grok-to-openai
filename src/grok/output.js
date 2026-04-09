@@ -5,7 +5,7 @@ import {
   resolveSourceAttributionOptions
 } from "./source-attribution.js";
 import { extractGeneratedImages } from "./generated-images.js";
-import { renderGrokThought } from "./thought.js";
+import { renderGrokThought, shouldSuppressGrokThought } from "./thought.js";
 
 function extractStepTextFragments(modelResponse) {
   const fragments = [];
@@ -60,13 +60,16 @@ export function buildAssistantOutput(
   const sourceAttributionOptions = resolveSourceAttributionOptions(
     sourceAttributionRequest
   );
+  const rawThoughtText = renderGrokThought(state?.modelResponse ?? null);
   const sourceAttribution = extractSourceAttribution({
     assistantText: streamedText || canonicalText,
     modelResponse: state?.modelResponse ?? null
   });
 
   return {
-    thoughtText: renderGrokThought(state?.modelResponse ?? null),
+    thoughtText: shouldSuppressGrokThought(state?.modelResponse ?? null)
+      ? ""
+      : rawThoughtText,
     text: renderGrokText({
       text: canonicalText,
       sourceAttribution,

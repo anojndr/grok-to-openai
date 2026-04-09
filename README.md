@@ -123,11 +123,14 @@ structured image metadata in a bridge-specific `message.image_urls` field:
   keep working.
 - Responses usage is `null`. Non-streaming Chat Completions returns placeholder
   zero usage.
-- `grok-4-fast` streams text live. `grok-4-auto`, `grok-4-expert`,
-  `grok-4-heavy`, or explicit high reasoning are buffered until the final text
-  is available.
-- If Grok exposes intermediate reasoning steps, buffered streaming emits that
-  text before the final answer and separates it with `**thought complete**`.
+- Streaming forwards Grok token deltas live for every model instead of
+  buffering `auto`, `expert`, or `heavy` responses until completion.
+- Live streaming suppresses Grok thinking-phase tokens. This uses Grok's actual
+  stream metadata, so `grok-4-auto` also hides thought when it internally
+  escalates to Expert or Heavy behavior.
+- If Grok's final normalized answer differs from the raw live stream, the
+  closing `/v1/responses` events still carry the canonical final text, with
+  Grok Expert and Heavy thought sections removed from bridge output.
 - Streaming text strips inline citation tags instead of rewriting them on the
   fly.
 - Streaming `/v1/responses` still returns final source attribution metadata in

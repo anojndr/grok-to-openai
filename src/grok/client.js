@@ -229,7 +229,7 @@ export class GrokClient {
     const parser = createNdjsonParser((payload) => {
       const delta = applyGrokEvent(state, payload);
       if (delta?.type === "token" && delta.token) {
-        onToken?.(delta.token);
+        onToken?.(delta.token, delta);
       }
     });
 

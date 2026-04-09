@@ -19,7 +19,15 @@ test("applyGrokEvent handles nested conversation-new streaming payloads", () => 
     }
   });
 
-  assert.deepEqual(delta, { type: "token", token: "Hello" });
+  assert.deepEqual(delta, {
+    type: "token",
+    token: "Hello",
+    isThinking: false,
+    messageTag: null,
+    messageStepId: null,
+    responseId: null,
+    rolloutId: null
+  });
   assert.equal(state.conversation.conversationId, "conv_123");
   assert.equal(state.userResponse.responseId, "user_123");
   assert.equal(state.assistantText, "Hello");
@@ -53,10 +61,46 @@ test("applyGrokEvent handles flat follow-up streaming payloads", () => {
     }
   });
 
-  assert.deepEqual(tokenDelta, { type: "token", token: "Your" });
+  assert.deepEqual(tokenDelta, {
+    type: "token",
+    token: "Your",
+    isThinking: false,
+    messageTag: null,
+    messageStepId: null,
+    responseId: "resp_123",
+    rolloutId: null
+  });
   assert.equal(state.assistantText, "Your");
   assert.equal(state.finalMetadata.followUpSuggestions[0].label, "Why?");
   assert.equal(state.modelResponse.message, "Your favorite color is cerulean.");
+});
+
+test("applyGrokEvent preserves thinking metadata for streamed expert tokens", () => {
+  const state = collectGrokStreamingState();
+
+  const delta = applyGrokEvent(state, {
+    result: {
+      response: {
+        token: "Identifying popularity metrics",
+        isThinking: true,
+        messageTag: "header",
+        messageStepId: 1,
+        responseId: "resp_123",
+        rolloutId: "Grok"
+      }
+    }
+  });
+
+  assert.deepEqual(delta, {
+    type: "token",
+    token: "Identifying popularity metrics",
+    isThinking: true,
+    messageTag: "header",
+    messageStepId: 1,
+    responseId: "resp_123",
+    rolloutId: "Grok"
+  });
+  assert.equal(state.assistantText, "Identifying popularity metrics");
 });
 
 test("applyGrokEvent captures direct assistant response payloads", () => {

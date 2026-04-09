@@ -33,9 +33,7 @@ import { createGrokMarkupStreamSanitizer } from "./grok/markup.js";
 import { withFastModelFallback } from "./grok/model-fallback.js";
 import { buildAssistantOutput } from "./grok/output.js";
 import { listModels, resolveModel } from "./grok/model-map.js";
-import { shouldBufferReasoningStream } from "./grok/streaming-policy.js";
 import {
-  createThoughtAndResponseStreamDeltas,
   renderThoughtAndResponse
 } from "./grok/thought.js";
 import { buildStoredGrokState } from "./grok/response-state.js";
@@ -466,13 +464,6 @@ app.post("/v1/responses", async (req, res, next) => {
       const streamingSourceAttribution = createStreamingSourceAttributionRequest(
         parsed.source_attribution
       );
-      const bufferStreamingOutput = shouldBufferReasoningStream(
-        {
-          model: publicModel,
-          reasoningEffort: parsed.reasoning?.effort,
-          fallbackModel: config.defaultModel
-        }
-      );
       const sanitizer = createGrokMarkupStreamSanitizer();
       let emittedText = "";
       let emittedResponsePrelude = false;
@@ -539,17 +530,15 @@ app.post("/v1/responses", async (req, res, next) => {
         });
       };
       const result = await runResponseRequest(parsed, normalized, {
-        onToken(token) {
-          if (bufferStreamingOutput) {
+        onToken(token, meta) {
+          if (meta?.isThinking) {
             return;
           }
 
           emitTextDelta(sanitizer.write(token));
         }
       });
-      if (!bufferStreamingOutput) {
-        emitTextDelta(sanitizer.flush());
-      }
+      emitTextDelta(sanitizer.flush());
       const assistantOutput = buildAssistantOutput(
         result.state,
         streamingSourceAttribution,
@@ -565,21 +554,12 @@ app.post("/v1/responses", async (req, res, next) => {
         thoughtText: assistantOutput.thoughtText,
         responseText: assistantOutput.text
       });
-      if (bufferStreamingOutput) {
-        for (const delta of createThoughtAndResponseStreamDeltas({
-          thoughtText: assistantOutput.thoughtText,
-          responseText: assistantOutput.text
-        })) {
-          emitTextDelta(delta);
-        }
-      } else {
-        const pendingText = getStreamingTextSuffix(renderedText, emittedText);
-        if (pendingText) {
-          emitTextDelta(pendingText);
-        }
+      const pendingText = getStreamingTextSuffix(renderedText, emittedText);
+      if (pendingText) {
+        emitTextDelta(pendingText);
       }
 
-      const text = bufferStreamingOutput ? renderedText : emittedText || renderedText;
+      const text = renderedText || emittedText;
       const hasMessage = Boolean(text);
 
       if (hasMessage) {
@@ -767,13 +747,6 @@ app.post("/v1/chat/completions", async (req, res, next) => {
       const streamingSourceAttribution = createStreamingSourceAttributionRequest(
         parsed.source_attribution
       );
-      const bufferStreamingOutput = shouldBufferReasoningStream(
-        {
-          model: publicModel,
-          reasoningEffort: parsed.reasoning_effort,
-          fallbackModel: config.defaultModel
-        }
-      );
       const sanitizer = createGrokMarkupStreamSanitizer();
       let emittedText = "";
       let emittedAssistantRole = false;
@@ -814,17 +787,15 @@ app.post("/v1/chat/completions", async (req, res, next) => {
         );
       };
       const result = await runChatCompletionRequest(parsed, {
-        onToken(token) {
-          if (bufferStreamingOutput) {
+        onToken(token, meta) {
+          if (meta?.isThinking) {
             return;
           }
 
           emitTextDelta(sanitizer.write(token));
         }
       });
-      if (!bufferStreamingOutput) {
-        emitTextDelta(sanitizer.flush());
-      }
+      emitTextDelta(sanitizer.flush());
       const assistantOutput = buildAssistantOutput(
         result.state,
         streamingSourceAttribution,
@@ -839,21 +810,9 @@ app.post("/v1/chat/completions", async (req, res, next) => {
         }),
         images: assistantOutput.images
       });
-      if (bufferStreamingOutput) {
-        for (const delta of createThoughtAndResponseStreamDeltas({
-          thoughtText: assistantOutput.thoughtText,
-          responseText: renderChatCompletionContent({
-            text: assistantOutput.text,
-            images: assistantOutput.images
-          })
-        })) {
-          emitTextDelta(delta);
-        }
-      } else {
-        const pendingText = getStreamingTextSuffix(content, emittedText);
-        if (pendingText) {
-          emitTextDelta(pendingText);
-        }
+      const pendingText = getStreamingTextSuffix(content, emittedText);
+      if (pendingText) {
+        emitTextDelta(pendingText);
       }
 
       ensureAssistantRoleEmitted();

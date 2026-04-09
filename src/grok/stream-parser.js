@@ -105,7 +105,12 @@ export function applyGrokEvent(state, payload) {
     state.assistantText += response.token;
     return {
       type: "token",
-      token: response.token
+      token: response.token,
+      isThinking: response.isThinking === true,
+      messageTag: response.messageTag ?? null,
+      messageStepId: response.messageStepId ?? null,
+      responseId: response.responseId ?? null,
+      rolloutId: response.rolloutId ?? null
     };
   }
 

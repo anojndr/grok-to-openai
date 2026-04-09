@@ -7,6 +7,43 @@ function normalizeThoughtBlock(text) {
   return output.trim();
 }
 
+function normalizeMetadataMode(mode) {
+  return typeof mode === "string" ? mode.trim().toLowerCase() : "";
+}
+
+function normalizeMetadataEffort(effort) {
+  return typeof effort === "string" ? effort.trim().toLowerCase() : "";
+}
+
+export function shouldSuppressGrokThought(modelResponse = null) {
+  const modes = [
+    modelResponse?.requestMetadata?.mode,
+    modelResponse?.metadata?.request_metadata?.mode
+  ]
+    .map(normalizeMetadataMode)
+    .filter(Boolean);
+
+  if (modes.some((mode) => mode.includes("expert") || mode.includes("heavy"))) {
+    return true;
+  }
+
+  const efforts = [
+    modelResponse?.requestMetadata?.effort,
+    modelResponse?.metadata?.request_metadata?.effort
+  ]
+    .map(normalizeMetadataEffort)
+    .filter(Boolean);
+
+  if (efforts.includes("high")) {
+    return true;
+  }
+
+  return Boolean(
+    modelResponse?.uiLayout?.willThinkLong ??
+      modelResponse?.metadata?.ui_layout?.willThinkLong
+  );
+}
+
 export function renderGrokThought(modelResponse = null) {
   const sections = [];
   const seen = new Set();
