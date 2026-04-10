@@ -210,7 +210,7 @@ export async function resolveFileParts({
 
   for (const filePart of fileParts) {
     if (filePart.file_id) {
-      const record = fileStore.getRecord(filePart.file_id);
+      const record = await fileStore.getRecord(filePart.file_id);
       if (!record) {
         throw new HttpError(400, `Unknown file_id: ${filePart.file_id}`);
       }

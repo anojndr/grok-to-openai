@@ -39,7 +39,8 @@ Playwright browser profile. It does not use the official xAI API.
   default.
 - Optional `source_attribution` can append source lists and search queries.
 - Grok image generation and image edits are exposed instead of being dropped.
-- Uploaded files and Responses state are persisted under `.data/`.
+- Uploaded files and Responses state are persisted under `.data/` by default
+  or in PostgreSQL when `DATABASE_URL` is set.
 
 ## Model routing
 
@@ -143,8 +144,9 @@ structured image metadata in a bridge-specific `message.image_urls` field:
   final Grok asset. If that fetch fails, the item keeps `result_url` and
   exposes `result_error`.
 - Automated login with `GROK_EMAIL` or `GROK_PASSWORD` is not implemented.
-- Older `responses.json` records created before history snapshots were stored
-  may not be replayable if a continuation has to rebuild missing attachments.
+- Older filesystem `responses.json` records created before history snapshots
+  were stored may not be replayable if a continuation has to rebuild missing
+  attachments.
 
 ## Requirements
 
@@ -176,6 +178,7 @@ HEADLESS=true
 IMPORT_COOKIES_ON_BOOT=true
 BROWSER_PROFILE_DIR=.browser-profile
 DATA_DIR=.data
+DATABASE_URL=postgresql://user:pass@db.example.com:5432/groktoopenai?sslmode=disable
 DEFAULT_MODEL=grok-4-auto
 ALLOW_ORIGINS=*
 ```
@@ -196,6 +199,9 @@ Supported configuration:
   Defaults to `https://grok.com`.
 - `HEADLESS`, `IMPORT_COOKIES_ON_BOOT`
 - `BROWSER_PROFILE_DIR`, `DATA_DIR`
+- `DATABASE_URL`, `POSTGRES_URL`
+  When set to a `postgres://` or `postgresql://` URL, uploaded files and stored
+  Responses move from `.data/` into PostgreSQL.
 - `DEFAULT_MODEL`
 - `ALLOW_ORIGINS`
 
@@ -363,3 +369,7 @@ By default the bridge writes:
   Metadata returned by `/v1/files`.
 - `.data/responses.json`
   Stored Responses payloads plus Grok conversation state and replay history.
+
+When `DATABASE_URL` or `POSTGRES_URL` is set, uploaded files and stored
+Responses are kept in PostgreSQL tables `bridge_files` and `bridge_responses`
+instead, and only the Playwright browser profile remains on disk.

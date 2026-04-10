@@ -46,7 +46,7 @@ export class FileStore {
     return this.toOpenAIFile(record);
   }
 
-  get(id) {
+  async get(id) {
     const record = this.index.files[id];
     return record ? this.toOpenAIFile(record) : null;
   }
@@ -60,7 +60,7 @@ export class FileStore {
     return fs.readFile(record.path);
   }
 
-  getRecord(id) {
+  async getRecord(id) {
     return this.index.files[id] ?? null;
   }
 

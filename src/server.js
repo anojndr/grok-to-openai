@@ -1,10 +1,8 @@
 import express from "express";
 import multer from "multer";
 import { config } from "./config.js";
-import { ensureDir } from "./lib/fs.js";
 import { HttpError, toOpenAIError } from "./lib/errors.js";
-import { FileStore } from "./store/file-store.js";
-import { ResponseStore } from "./store/response-store.js";
+import { createStores } from "./store/index.js";
 import {
   chatCompletionsCreateSchema,
   responsesCreateSchema
@@ -48,17 +46,16 @@ const upload = multer({
   }
 });
 
-await ensureDir(config.dataDir);
-
-const fileStore = new FileStore(config.dataDir);
-await fileStore.init();
-
-const responseStore = new ResponseStore(config.dataDir);
-await responseStore.init();
+const {
+  fileStore,
+  responseStore,
+  close: closeStores
+} = await createStores(config);
 
 const grokAccounts = new GrokAccountPool(config);
 
 process.on("SIGINT", async () => {
+  await closeStores();
   await grokAccounts.close();
   process.exit(0);
 });
@@ -188,7 +185,7 @@ app.post("/v1/files", upload.single("file"), async (req, res, next) => {
 
 app.get("/v1/files/:fileId", async (req, res, next) => {
   try {
-    const file = fileStore.get(req.params.fileId);
+    const file = await fileStore.get(req.params.fileId);
     if (!file) {
       throw new HttpError(404, "File not found");
     }
@@ -202,7 +199,7 @@ app.get("/v1/files/:fileId", async (req, res, next) => {
 app.get("/v1/files/:fileId/content", async (req, res, next) => {
   try {
     const content = await fileStore.getContent(req.params.fileId);
-    const record = fileStore.getRecord(req.params.fileId);
+    const record = await fileStore.getRecord(req.params.fileId);
     if (!content || !record) {
       throw new HttpError(404, "File not found");
     }
@@ -216,7 +213,7 @@ app.get("/v1/files/:fileId/content", async (req, res, next) => {
 
 app.get("/v1/responses/:responseId", async (req, res, next) => {
   try {
-    const record = responseStore.get(req.params.responseId);
+    const record = await responseStore.get(req.params.responseId);
     if (!record) {
       throw new HttpError(404, "Response not found");
     }
@@ -337,7 +334,7 @@ async function runResponseRequest(parsed, normalized, options = {}) {
   }
 
   if (parsed.previous_response_id) {
-    const previous = responseStore.get(parsed.previous_response_id);
+    const previous = await responseStore.get(parsed.previous_response_id);
     if (!previous) {
       throw new HttpError(404, `Unknown previous_response_id: ${parsed.previous_response_id}`);
     }
@@ -436,7 +433,7 @@ app.post("/v1/responses", async (req, res, next) => {
     const messageId = createId("msg");
     const parsed = responsesCreateSchema.parse(requestBody);
     const previousRecord = parsed.previous_response_id
-      ? responseStore.get(parsed.previous_response_id)
+      ? await responseStore.get(parsed.previous_response_id)
       : null;
     const { publicModel } = resolveModel(
       parsed.model,

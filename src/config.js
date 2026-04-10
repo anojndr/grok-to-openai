@@ -35,6 +35,7 @@ export const config = {
   dataDir: process.env.DATA_DIR
     ? path.resolve(process.env.DATA_DIR)
     : path.join(cwd, ".data"),
+  databaseUrl: process.env.DATABASE_URL ?? process.env.POSTGRES_URL ?? "",
   grokBaseUrl: process.env.GROK_BASE_URL ?? "https://grok.com",
   grokCookieFile: resolveOptionalPath(process.env.GROK_COOKIE_FILE ?? ""),
   grokCookiesText: process.env.GROK_COOKIES_TEXT ?? "",

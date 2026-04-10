@@ -46,7 +46,7 @@ function createMemoryFileStore() {
         status: "processed"
       };
     },
-    getRecord(id) {
+    async getRecord(id) {
       return records.get(id)?.record ?? null;
     },
     async getContent(id) {

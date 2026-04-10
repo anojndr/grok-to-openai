@@ -68,7 +68,7 @@ function inferAssistantAttachmentFilename(image, index) {
 
 async function persistAttachment(file, fileStore) {
   if (file.fileId) {
-    const record = fileStore.getRecord(file.fileId);
+    const record = await fileStore.getRecord(file.fileId);
     if (record) {
       return {
         fileId: file.fileId,
@@ -84,7 +84,7 @@ async function persistAttachment(file, fileStore) {
     purpose: "conversation_history",
     mimeType: file.mimeType || "application/octet-stream"
   });
-  const stored = fileStore.getRecord(record.id);
+  const stored = await fileStore.getRecord(record.id);
 
   return {
     fileId: record.id,
@@ -130,7 +130,7 @@ async function persistAssistantMessage(assistantOutput, fileStore) {
       purpose: "conversation_history",
       mimeType: image.mimeType || "application/octet-stream"
     });
-    const stored = fileStore.getRecord(record.id);
+    const stored = await fileStore.getRecord(record.id);
 
     attachments.push({
       fileId: record.id,

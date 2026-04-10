@@ -18,7 +18,7 @@ export class ResponseStore {
     return record;
   }
 
-  get(id) {
+  async get(id) {
     return this.state.responses[id] ?? null;
   }
 }
