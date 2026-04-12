@@ -2,6 +2,56 @@ import fs from "node:fs/promises";
 import { chromium } from "playwright-core";
 import { readCookiesFromSource } from "../lib/cookies.js";
 
+export const ERROR_RESPONSE_TEXT_LIMIT = 128 * 1024;
+
+function clearTextBuffer(buffer) {
+  buffer.chunks.length = 0;
+  buffer.length = 0;
+}
+
+function setTextBufferLimit(buffer, limit) {
+  buffer.limit = limit;
+
+  if (limit === 0) {
+    clearTextBuffer(buffer);
+    return;
+  }
+
+  if (Number.isFinite(limit) && buffer.length > limit) {
+    const trimmed = buffer.chunks.join("").slice(0, limit);
+    buffer.chunks.length = 0;
+    if (trimmed) {
+      buffer.chunks.push(trimmed);
+    }
+    buffer.length = trimmed.length;
+  }
+}
+
+function appendTextChunk(buffer, chunk) {
+  if (!chunk || buffer.limit === 0) {
+    return;
+  }
+
+  if (!Number.isFinite(buffer.limit)) {
+    buffer.chunks.push(chunk);
+    buffer.length += chunk.length;
+    return;
+  }
+
+  const remaining = buffer.limit - buffer.length;
+  if (remaining <= 0) {
+    return;
+  }
+
+  const nextChunk = chunk.slice(0, remaining);
+  if (!nextChunk) {
+    return;
+  }
+
+  buffer.chunks.push(nextChunk);
+  buffer.length += nextChunk.length;
+}
+
 export class BrowserSession {
   constructor(config) {
     this.config = config;
@@ -259,7 +309,11 @@ export class BrowserSession {
     const statsigChunkSource = await this.loadStatsigChunkSource();
 
     let meta = null;
-    const chunks = [];
+    const textBuffer = {
+      chunks: [],
+      length: 0,
+      limit: onChunk ? 0 : Number.POSITIVE_INFINITY
+    };
     const payload = {
       requestId,
       url,
@@ -274,10 +328,17 @@ export class BrowserSession {
         this.pending.set(requestId, {
           onMeta(payload) {
             meta = payload;
+
+            if (payload.status >= 400) {
+              setTextBufferLimit(textBuffer, ERROR_RESPONSE_TEXT_LIMIT);
+            } else if (onChunk) {
+              setTextBufferLimit(textBuffer, 0);
+            }
+
             onMeta?.(payload);
           },
           onChunk(chunk) {
-            chunks.push(chunk);
+            appendTextChunk(textBuffer, chunk);
             onChunk?.(chunk);
           },
           resolve,
@@ -304,7 +365,11 @@ export class BrowserSession {
         message.includes("Target closed")
       ) {
         meta = null;
-        chunks.length = 0;
+        setTextBufferLimit(
+          textBuffer,
+          onChunk ? 0 : Number.POSITIVE_INFINITY
+        );
+        clearTextBuffer(textBuffer);
         const page = await this.recreatePage();
         await run(page);
       } else {
@@ -314,7 +379,7 @@ export class BrowserSession {
 
     return {
       meta,
-      text: chunks.join("")
+      text: textBuffer.chunks.join("")
     };
   }
 
