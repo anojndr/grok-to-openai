@@ -223,30 +223,27 @@ test("resolveImageParts streams image_url bodies without using arrayBuffer", asy
   }
 });
 
-test("resolveFileParts rejects oversized inline file_data and points callers to file uploads", async () => {
+test("resolveFileParts accepts inline file_data larger than xAI's 6 MiB cap", async () => {
   const largeBase64 = Buffer.alloc(7 * 1024 * 1024, 0x61).toString("base64");
 
-  await assert.rejects(
-    () =>
-      resolveFileParts({
-        content: [
-          {
-            type: "input_file",
-            filename: "large.bin",
-            file_data: largeBase64
-          }
-        ],
-        fileStore: {}
-      }),
-    (error) =>
-      error instanceof HttpError &&
-      error.status === 400 &&
-      /\/v1\/files/.test(error.message) &&
-      /file_id/.test(error.message)
-  );
+  const [file] = await resolveFileParts({
+    content: [
+      {
+        type: "input_file",
+        filename: "large.bin",
+        file_data: largeBase64
+      }
+    ],
+    fileStore: {}
+  });
+
+  assert.equal(file.filename, "large.bin");
+  assert.equal(file.mimeType, "application/octet-stream");
+  assert.equal(file.bytes.length, 7 * 1024 * 1024);
+  assert.equal(file.bytes[0], 0x61);
 });
 
-test("resolveFileParts rejects oversized remote file_url responses with file upload guidance", async () => {
+test("resolveFileParts rejects remote file_url responses above the bridge upload cap", async () => {
   const originalFetch = globalThis.fetch;
 
   globalThis.fetch = async () =>
@@ -272,6 +269,7 @@ test("resolveFileParts rejects oversized remote file_url responses with file upl
       (error) =>
         error instanceof HttpError &&
         error.status === 400 &&
+        /50 MiB/.test(error.message) &&
         /\/v1\/files/.test(error.message) &&
         /file_id/.test(error.message)
     );

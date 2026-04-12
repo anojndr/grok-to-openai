@@ -120,7 +120,7 @@ async function stopServer({ child, dataDir }) {
   await fs.rm(dataDir, { recursive: true, force: true });
 }
 
-test("server rejects oversized JSON bodies with guidance to use /v1/files and file_id", async () => {
+test("server accepts JSON bodies larger than the former 8mb cap", async () => {
   const server = await startServer();
 
   try {
@@ -135,11 +135,10 @@ test("server rejects oversized JSON bodies with guidance to use /v1/files and fi
       })
     });
 
-    assert.equal(response.status, 413);
+    assert.equal(response.status, 400);
 
     const payload = await response.json();
-    assert.match(payload.error.message, /\/v1\/files/);
-    assert.match(payload.error.message, /file_id/);
+    assert.match(payload.error.message, /input must include at least one user message/);
   } finally {
     await stopServer(server);
   }

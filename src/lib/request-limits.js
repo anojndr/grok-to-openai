@@ -1,7 +1,8 @@
-export const JSON_BODY_LIMIT = "8mb";
-export const MAX_DIRECT_FILE_BYTES = 6 * 1024 * 1024;
-export const MAX_DIRECT_IMAGE_BYTES = 6 * 1024 * 1024;
 export const UPLOAD_FILE_SIZE_LIMIT = 50 * 1024 * 1024;
+export const MAX_DIRECT_FILE_BYTES = UPLOAD_FILE_SIZE_LIMIT;
+export const MAX_DIRECT_IMAGE_BYTES = 6 * 1024 * 1024;
+export const JSON_BODY_LIMIT =
+  Math.ceil((MAX_DIRECT_FILE_BYTES * 4) / 3) + 4 * 1024 * 1024;
 
 function formatBinaryMegabytes(bytes) {
   return `${Math.round(bytes / (1024 * 1024))} MiB`;
@@ -9,10 +10,10 @@ function formatBinaryMegabytes(bytes) {
 
 export function buildLargeFileInputMessage() {
   return (
-    "Large file inputs must be uploaded via /v1/files and referenced with file_id. " +
-    `Direct file_data and file_url inputs are capped at ${formatBinaryMegabytes(
+    `File inputs are capped at ${formatBinaryMegabytes(
       MAX_DIRECT_FILE_BYTES
-    )}.`
+    )}. ` +
+    "Use /v1/files and file_id to avoid large inline JSON payloads."
   );
 }
 
@@ -27,7 +28,7 @@ export function buildLargeImageInputMessage() {
 
 export function buildJsonBodyTooLargeMessage() {
   return (
-    `JSON request bodies are capped at ${JSON_BODY_LIMIT}. ` +
+    `JSON request bodies are capped at ${formatBinaryMegabytes(JSON_BODY_LIMIT)}. ` +
     "Upload large files via /v1/files and reference them with file_id instead of embedding them inline."
   );
 }
