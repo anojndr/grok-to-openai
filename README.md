@@ -144,9 +144,9 @@ structured image metadata in a bridge-specific `message.image_urls` field:
   final Grok asset. If that fetch fails, the item keeps `result_url` and
   exposes `result_error`.
 - Automated login with `GROK_EMAIL` or `GROK_PASSWORD` is not implemented.
-- Older filesystem `responses.json` records created before history snapshots
-  were stored may not be replayable if a continuation has to rebuild missing
-  attachments.
+- Older monolithic filesystem `responses.json` records created before history
+  snapshots were added may not be replayable if a continuation has to rebuild
+  missing attachments.
 
 ## Requirements
 
@@ -367,8 +367,10 @@ By default the bridge writes:
   Uploaded file contents.
 - `.data/files-index.json`
   Metadata returned by `/v1/files`.
-- `.data/responses.json`
-  Stored Responses payloads plus Grok conversation state and replay history.
+- `.data/responses/`
+  One compact JSON file per stored Response, containing the OpenAI payload plus
+  Grok conversation state and replay history. Older monolithic
+  `.data/responses.json` records are still read and migrated on first access.
 
 When `DATABASE_URL` or `POSTGRES_URL` is set, uploaded files and stored
 Responses are kept in PostgreSQL tables `bridge_files` and `bridge_responses`

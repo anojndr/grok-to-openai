@@ -1,24 +1,42 @@
 import path from "node:path";
-import { ensureDir, readJson, writeJson } from "../lib/fs.js";
+import { ensureDir, readJson, sanitizeFilename, writeJson } from "../lib/fs.js";
 
 export class ResponseStore {
   constructor(dataDir) {
-    this.path = path.join(dataDir, "responses.json");
-    this.state = { responses: {} };
+    this.responsesDir = path.join(dataDir, "responses");
+    this.legacyPath = path.join(dataDir, "responses.json");
   }
 
   async init() {
-    await ensureDir(path.dirname(this.path));
-    this.state = await readJson(this.path, { responses: {} });
+    await ensureDir(this.responsesDir);
   }
 
   async set(record) {
-    this.state.responses[record.id] = record;
-    await writeJson(this.path, this.state);
+    await writeJson(this.getRecordPath(record.id), record);
     return record;
   }
 
   async get(id) {
-    return this.state.responses[id] ?? null;
+    const record = await readJson(this.getRecordPath(id), null);
+    if (record) {
+      return record;
+    }
+
+    const legacyRecord = await this.getLegacyRecord(id);
+    if (!legacyRecord) {
+      return null;
+    }
+
+    await writeJson(this.getRecordPath(id), legacyRecord);
+    return legacyRecord;
+  }
+
+  getRecordPath(id) {
+    return path.join(this.responsesDir, `${sanitizeFilename(id)}.json`);
+  }
+
+  async getLegacyRecord(id) {
+    const state = await readJson(this.legacyPath, null);
+    return state?.responses?.[id] ?? null;
   }
 }

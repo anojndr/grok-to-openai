@@ -20,7 +20,7 @@ export async function readJson(filePath, fallback) {
 
 export async function writeJson(filePath, value) {
   await ensureDir(path.dirname(filePath));
-  await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  await fs.writeFile(filePath, `${JSON.stringify(value)}\n`, "utf8");
 }
 
 export function sanitizeFilename(name) {
