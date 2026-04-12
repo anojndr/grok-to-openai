@@ -61,7 +61,6 @@ export function createResponseImageOutputItem({
     id: image.id,
     type: "image_generation_call",
     status,
-    ...(status === "completed" ? { result: image.result ?? null } : {}),
     ...(image.url ? { result_url: image.url } : {}),
     ...(image.mimeType ? { mime_type: image.mimeType } : {}),
     ...(image.prompt ? { prompt: image.prompt } : {}),
@@ -72,6 +71,106 @@ export function createResponseImageOutputItem({
     ...(image.resultError ? { result_error: image.resultError } : {}),
     ...(outputFormat ? { output_format: outputFormat } : {})
   };
+}
+
+function isImageOutputItem(item) {
+  return item?.type === "image_generation_call";
+}
+
+export function stripImageResultsFromResponse(response) {
+  const output = response?.output;
+
+  if (!Array.isArray(output) || !output.some((item) => isImageOutputItem(item) && "result" in item)) {
+    return response;
+  }
+
+  return {
+    ...response,
+    output: output.map((item) => {
+      if (!isImageOutputItem(item) || !("result" in item)) {
+        return item;
+      }
+
+      const { result: _result, ...withoutResult } = item;
+      return withoutResult;
+    })
+  };
+}
+
+function getLatestAssistantAttachments(history) {
+  const messages = history?.messages ?? [];
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === "assistant") {
+      return messages[index].attachments ?? [];
+    }
+  }
+
+  return [];
+}
+
+export async function hydrateResponseImageResults({
+  response,
+  history,
+  fileStore
+}) {
+  const output = response?.output;
+
+  if (!Array.isArray(output) || !output.some(isImageOutputItem)) {
+    return response;
+  }
+
+  const attachments = getLatestAssistantAttachments(history);
+  if (!attachments.length) {
+    return response;
+  }
+
+  let attachmentIndex = 0;
+  let changed = false;
+  const hydratedOutput = await Promise.all(
+    output.map(async (item) => {
+      if (!isImageOutputItem(item)) {
+        return item;
+      }
+
+      const attachment = attachments[attachmentIndex++];
+
+      if (typeof item.result === "string" && item.result) {
+        return item;
+      }
+
+      if (!attachment?.fileId) {
+        return item;
+      }
+
+      const bytes = await fileStore.getContent(attachment.fileId);
+      if (!bytes) {
+        if (item.result_error) {
+          return item;
+        }
+
+        changed = true;
+        return {
+          ...item,
+          result_error: `Stored conversation attachment is missing: ${attachment.fileId}`
+        };
+      }
+
+      changed = true;
+      return {
+        ...item,
+        result: bytes.toString("base64"),
+        ...(item.mime_type ? {} : { mime_type: attachment.mimeType || "application/octet-stream" })
+      };
+    })
+  );
+
+  return changed
+    ? {
+        ...response,
+        output: hydratedOutput
+      }
+    : response;
 }
 
 export function createResponseOutputItems({

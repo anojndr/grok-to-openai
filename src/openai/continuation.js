@@ -113,22 +113,69 @@ async function persistConversationMessages(messages, fileStore) {
   return storedMessages;
 }
 
-async function persistAssistantMessage(assistantOutput, fileStore) {
+async function resolveAssistantImageAsset(image, loadAssistantImageAsset) {
+  if (image?.bytes) {
+    return {
+      bytes: Buffer.isBuffer(image.bytes) ? image.bytes : Buffer.from(image.bytes),
+      mimeType: image.mimeType || "application/octet-stream"
+    };
+  }
+
+  if (image?.result) {
+    return {
+      bytes: Buffer.from(image.result, "base64"),
+      mimeType: image.mimeType || "application/octet-stream"
+    };
+  }
+
+  if (!image?.url || typeof loadAssistantImageAsset !== "function") {
+    return null;
+  }
+
+  let asset;
+  try {
+    asset = await loadAssistantImageAsset(image);
+  } catch {
+    return null;
+  }
+
+  if (!asset?.bytes) {
+    return null;
+  }
+
+  return {
+    bytes: Buffer.isBuffer(asset.bytes) ? asset.bytes : Buffer.from(asset.bytes),
+    mimeType:
+      image.mimeType ||
+      asset.mimeType ||
+      asset.contentType ||
+      "application/octet-stream"
+  };
+}
+
+async function persistAssistantMessage(
+  assistantOutput,
+  fileStore,
+  loadAssistantImageAsset
+) {
   const text = assistantOutput?.text || "";
   const images = assistantOutput?.images ?? [];
   const attachments = [];
 
   for (const [index, image] of images.entries()) {
-    if (!image.result) {
+    const asset = await resolveAssistantImageAsset(
+      image,
+      loadAssistantImageAsset
+    );
+    if (!asset) {
       continue;
     }
 
-    const bytes = Buffer.from(image.result, "base64");
     const record = await fileStore.create({
       filename: inferAssistantAttachmentFilename(image, index),
-      bytes,
+      bytes: asset.bytes,
       purpose: "conversation_history",
-      mimeType: image.mimeType || "application/octet-stream"
+      mimeType: asset.mimeType
     });
     const stored = await fileStore.getRecord(record.id);
 
@@ -155,10 +202,15 @@ export async function buildConversationHistory({
   instructions = "",
   inputMessages = [],
   assistantOutput = null,
-  fileStore
+  fileStore,
+  loadAssistantImageAsset = null
 }) {
   const storedMessages = await persistConversationMessages(inputMessages, fileStore);
-  const assistantMessage = await persistAssistantMessage(assistantOutput, fileStore);
+  const assistantMessage = await persistAssistantMessage(
+    assistantOutput,
+    fileStore,
+    loadAssistantImageAsset
+  );
 
   return {
     instructions: toInstructionList(previousHistory?.instructions ?? [], instructions),

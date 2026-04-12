@@ -64,7 +64,9 @@ Accepted aliases are intentionally broad:
 ## Response shapes
 
 Responses image output follows the OpenAI-style `image_generation_call` item
-pattern and also includes a bridge-specific `result_url`:
+pattern and includes a bridge-specific `result_url`. Fresh `/v1/responses`
+creates return `result_url` by default and avoid embedding inline Base64 image
+bytes:
 
 ```json
 {
@@ -73,7 +75,6 @@ pattern and also includes a bridge-specific `result_url`:
       "id": "ig_...",
       "type": "image_generation_call",
       "status": "completed",
-      "result": "<base64 image bytes>",
       "result_url": "https://assets.grok.com/.../image.jpg",
       "mime_type": "image/jpeg",
       "action": "generate"
@@ -140,9 +141,9 @@ structured image metadata in a bridge-specific `message.image_urls` field:
   metadata chunk.
 - Responses streaming emits completed image items only after the final asset
   URL is known. Partial image preview events are not proxied.
-- Responses image items try to hydrate `result` with Base64 bytes from the
-  final Grok asset. If that fetch fails, the item keeps `result_url` and
-  exposes `result_error`.
+- `GET /v1/responses/:response_id` reconstructs image `result` lazily from the
+  stored assistant attachment when available, so retrieval stays compatible
+  without persisting duplicate inline image bytes.
 - Automated login with `GROK_EMAIL` or `GROK_PASSWORD` is not implemented.
 - Older monolithic filesystem `responses.json` records created before history
   snapshots were added may not be replayable if a continuation has to rebuild

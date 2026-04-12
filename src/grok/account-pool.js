@@ -122,6 +122,13 @@ export class GrokAccountPool {
     return result.value;
   }
 
+  async fetchAsset(url, { accountIndex = 0 } = {}) {
+    const result = await this.withAccount(accountIndex, (client) =>
+      client.fetchAsset(url)
+    );
+    return result.value;
+  }
+
   async close() {
     const accounts = await this.getAccounts();
     await Promise.all(accounts.map((account) => account.client.close?.()));

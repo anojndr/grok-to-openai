@@ -21,7 +21,9 @@ import {
 import {
   createResponseEnvelope,
   createResponseImageOutputItem,
-  createStreamingResponseSnapshot
+  createStreamingResponseSnapshot,
+  hydrateResponseImageResults,
+  stripImageResultsFromResponse
 } from "./openai/response-object.js";
 import {
   createChatCompletion,
@@ -100,37 +102,6 @@ process.on("SIGINT", () => {
 process.on("SIGTERM", () => {
   void shutdown();
 });
-
-async function hydrateGeneratedImages(images, accountIndex = 0) {
-  return Promise.all(
-    images.map(async (image) => {
-      if (!image.url) {
-        return {
-          ...image,
-          result: null,
-          resultError: "Missing image url"
-        };
-      }
-
-      try {
-        const asset = await grokAccounts.fetchAssetAsBase64(image.url, {
-          accountIndex
-        });
-        return {
-          ...image,
-          result: asset.base64,
-          mimeType: image.mimeType || asset.contentType
-        };
-      } catch (error) {
-        return {
-          ...image,
-          result: null,
-          resultError: error instanceof Error ? error.message : String(error)
-        };
-      }
-    })
-  );
-}
 
 function maybeHandleStreamingError(req, res, error) {
   const contentType = res.getHeader("Content-Type");
@@ -264,7 +235,13 @@ app.get("/v1/responses/:responseId", async (req, res, next) => {
       throw new HttpError(404, "Response not found");
     }
 
-    res.json(record.response);
+    const response = await hydrateResponseImageResults({
+      response: record.response,
+      history: record.history,
+      fileStore
+    });
+
+    res.json(response);
   } catch (error) {
     next(error);
   }
@@ -589,10 +566,7 @@ app.post("/v1/responses", async (req, res, next) => {
           grokBaseUrl: config.grokBaseUrl
         }
       );
-      const hydratedImages = await hydrateGeneratedImages(
-        assistantOutput.images,
-        result.accountIndex
-      );
+      const images = assistantOutput.images;
       const renderedText = renderThoughtAndResponse({
         thoughtText: assistantOutput.thoughtText,
         responseText: assistantOutput.text
@@ -645,7 +619,7 @@ app.post("/v1/responses", async (req, res, next) => {
       }
 
       emitResponsePrelude();
-      hydratedImages.forEach((image, index) => {
+      images.forEach((image, index) => {
         const outputIndex = hasMessage ? index + 1 : index;
         writeSseEvent(res, "response.output_item.added", {
           type: "response.output_item.added",
@@ -670,7 +644,7 @@ app.post("/v1/responses", async (req, res, next) => {
         messageId,
         model: publicModel,
         text,
-        images: hydratedImages,
+        images,
         sourceAttribution: assistantOutput.sourceAttribution,
         instructions,
         previousResponseId: parsed.previous_response_id ?? null,
@@ -685,14 +659,18 @@ app.post("/v1/responses", async (req, res, next) => {
         inputMessages: normalized.messages,
         assistantOutput: {
           text: assistantOutput.text,
-          images: hydratedImages
+          images
         },
-        fileStore
+        fileStore,
+        loadAssistantImageAsset: (image) =>
+          grokAccounts.fetchAsset(image.url, {
+            accountIndex: result.accountIndex
+          })
       });
 
       await responseStore.set({
         id: responseId,
-        response: finalResponse,
+        response: stripImageResultsFromResponse(finalResponse),
         grok: buildStoredGrokState({
           state: result.state,
           accountIndex: result.accountIndex,
@@ -722,10 +700,7 @@ app.post("/v1/responses", async (req, res, next) => {
         grokBaseUrl: config.grokBaseUrl
       }
     );
-    const hydratedImages = await hydrateGeneratedImages(
-      assistantOutput.images,
-      result.accountIndex
-    );
+    const images = assistantOutput.images;
     const text = assistantOutput.text;
     const history = await buildConversationHistory({
       previousHistory: previousRecord?.history ?? null,
@@ -733,16 +708,20 @@ app.post("/v1/responses", async (req, res, next) => {
       inputMessages: normalized.messages,
       assistantOutput: {
         text: assistantOutput.text,
-        images: hydratedImages
+        images
       },
-      fileStore
+      fileStore,
+      loadAssistantImageAsset: (image) =>
+        grokAccounts.fetchAsset(image.url, {
+          accountIndex: result.accountIndex
+        })
     });
     const finalResponse = createResponseEnvelope({
       id: responseId,
       messageId,
       model: publicModel,
       text,
-      images: hydratedImages,
+      images,
       sourceAttribution: assistantOutput.sourceAttribution,
       instructions: normalized.instructions,
       previousResponseId: parsed.previous_response_id ?? null,
@@ -753,7 +732,7 @@ app.post("/v1/responses", async (req, res, next) => {
 
     await responseStore.set({
       id: responseId,
-      response: finalResponse,
+      response: stripImageResultsFromResponse(finalResponse),
       grok: buildStoredGrokState({
         state: result.state,
         accountIndex: result.accountIndex,

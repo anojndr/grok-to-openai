@@ -383,7 +383,7 @@ export class BrowserSession {
     };
   }
 
-  async fetchBase64(url) {
+  async fetchAsset(url) {
     await this.init();
 
     const headers = {
@@ -408,9 +408,20 @@ export class BrowserSession {
       throw new Error(`Asset fetch failed with status ${response.status}`);
     }
 
+    const bytes = Buffer.from(await response.arrayBuffer());
+
     return {
       contentType: response.headers.get("content-type") || "application/octet-stream",
-      base64: Buffer.from(await response.arrayBuffer()).toString("base64")
+      bytes
+    };
+  }
+
+  async fetchBase64(url) {
+    const asset = await this.fetchAsset(url);
+
+    return {
+      contentType: asset.contentType,
+      base64: asset.bytes.toString("base64")
     };
   }
 

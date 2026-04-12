@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createResponseEnvelope } from "../src/openai/response-object.js";
 
-test("createResponseEnvelope adds image generation items after text output", () => {
+test("createResponseEnvelope defaults image outputs to result_url without inline bytes", () => {
   const response = createResponseEnvelope({
     id: "resp_123",
     messageId: "msg_123",
@@ -25,7 +25,7 @@ test("createResponseEnvelope adds image generation items after text output", () 
 
   assert.equal(response.output[0].type, "message");
   assert.equal(response.output[1].type, "image_generation_call");
-  assert.equal(response.output[1].result, "YmFzZTY0");
+  assert.equal("result" in response.output[1], false);
   assert.equal(
     response.output[1].result_url,
     "https://assets.grok.com/generated/cat.jpg"

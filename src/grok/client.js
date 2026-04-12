@@ -263,6 +263,10 @@ export class GrokClient {
     return this.browser.fetchBase64(url);
   }
 
+  async fetchAsset(url) {
+    return this.browser.fetchAsset(url);
+  }
+
   async close() {
     await this.browser.close();
   }

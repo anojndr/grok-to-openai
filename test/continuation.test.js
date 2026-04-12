@@ -93,14 +93,23 @@ test("buildReplayConversationRequest includes the full stored history and all at
       text: "The draft is more detailed.",
       images: [
         {
-          result: Buffer.from("preview-image").toString("base64"),
           mimeType: "image/png",
           title: "draft-preview",
           url: "https://assets.grok.com/generated/draft-preview.png"
         }
       ]
     },
-    fileStore
+    fileStore,
+    loadAssistantImageAsset: async (image) => {
+      assert.equal(
+        image.url,
+        "https://assets.grok.com/generated/draft-preview.png"
+      );
+      return {
+        bytes: Buffer.from("preview-image"),
+        contentType: "image/png"
+      };
+    }
   });
 
   const replay = await buildReplayConversationRequest({
