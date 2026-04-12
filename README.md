@@ -27,8 +27,11 @@ Playwright browser profile. It does not use the official xAI API.
   locally stored conversation history and attachments to continue the thread.
 - A single `GROK_COOKIE_FILE` or `GROK_COOKIES_TEXT` value can define one or
   many Grok accounts by concatenating multiple Netscape cookie-file blocks.
-- New requests and replay fallbacks iterate configured accounts in deterministic
-  top-to-bottom order until one succeeds.
+- New requests and replay fallbacks always try the primary account first, then
+  the current active fallback account. Failed fallback accounts are closed,
+  fallback selection advances in deterministic top-to-bottom order, wraps back
+  to the secondary account after the last fallback, and raises after two full
+  fallback passes fail.
 - If `grok-4-auto`, `grok-4-expert`, or `grok-4-heavy` exhaust every
   configured account, the bridge retries once in `grok-4-fast`.
 - Follow-up requests first try the account that owns the stored Grok thread. If
@@ -224,7 +227,9 @@ For multi-account setups, concatenate each account's full Netscape cookie file
 into the same secret file in the order you want the bridge to use them. When
 more than one account is configured, `BROWSER_PROFILE_DIR` is automatically
 split into per-account subdirectories such as `account-001`, `account-002`,
-and so on.
+and so on. At runtime the bridge keeps the primary account profile alive and
+only one fallback profile active at a time; failed fallback profiles are
+closed and reinitialized on demand.
 
 Log in manually, then restart with `HEADLESS=true` if you want a headless
 server again.

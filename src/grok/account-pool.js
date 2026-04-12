@@ -20,6 +20,7 @@ export class GrokAccountPool {
     this.clientFactory =
       options.clientFactory ?? ((accountConfig) => new GrokClient(accountConfig));
     this.accountsPromise = null;
+    this.activeFallbackAccountIndex = null;
   }
 
   async getAccounts() {
@@ -82,33 +83,73 @@ export class GrokAccountPool {
       throw new Error(`Unknown Grok account index: ${accountIndex}`);
     }
 
-    return {
-      accountIndex: account.index,
-      value: await operation(account.client, account.index)
-    };
+    try {
+      const result = {
+        accountIndex: account.index,
+        value: await operation(account.client, account.index)
+      };
+
+      await this.activateFallbackAccount(account, accounts);
+      return result;
+    } catch (error) {
+      await this.handleFailure(account, accounts);
+      throw error;
+    }
   }
 
   async withFallback(operation, options = {}) {
     const accounts = await this.getAccounts();
-    const requestedOrder = options.accountIndices ?? accounts.map((account) => account.index);
-    const accountOrder = requestedOrder.map((accountIndex) => {
-      const account = accounts[accountIndex];
-      if (!account) {
-        throw new Error(`Unknown Grok account index: ${accountIndex}`);
+    const primaryAccount = accounts[0];
+
+    if (!primaryAccount) {
+      throw new Error("No Grok accounts configured");
+    }
+
+    const fallbackAccounts = this.getFallbackAccounts(accounts);
+
+    if (!fallbackAccounts.length) {
+      let lastError = null;
+
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          return {
+            accountIndex: primaryAccount.index,
+            value: await operation(primaryAccount.client, primaryAccount.index)
+          };
+        } catch (error) {
+          lastError = error;
+        }
       }
-      return account;
-    });
+
+      throw lastError ?? new Error("No Grok accounts configured");
+    }
 
     let lastError = null;
+    let exhaustedPasses = 0;
 
-    for (const account of accountOrder) {
+    while (exhaustedPasses < 2) {
       try {
         return {
-          accountIndex: account.index,
-          value: await operation(account.client, account.index)
+          accountIndex: primaryAccount.index,
+          value: await operation(primaryAccount.client, primaryAccount.index)
         };
       } catch (error) {
         lastError = error;
+      }
+
+      const fallbackAccount = this.getActiveFallbackAccount(fallbackAccounts);
+
+      try {
+        return {
+          accountIndex: fallbackAccount.index,
+          value: await operation(fallbackAccount.client, fallbackAccount.index)
+        };
+      } catch (error) {
+        lastError = error;
+        const failure = await this.handleFailure(fallbackAccount, accounts);
+        if (failure.wrapped) {
+          exhaustedPasses += 1;
+        }
       }
     }
 
@@ -132,5 +173,84 @@ export class GrokAccountPool {
   async close() {
     const accounts = await this.getAccounts();
     await Promise.all(accounts.map((account) => account.client.close?.()));
+  }
+
+  getFallbackAccounts(accounts) {
+    return accounts.slice(1);
+  }
+
+  getActiveFallbackAccount(fallbackAccounts) {
+    if (!fallbackAccounts.length) {
+      return null;
+    }
+
+    const activeIndex = fallbackAccounts.findIndex(
+      (account) => account.index === this.activeFallbackAccountIndex
+    );
+    if (activeIndex !== -1) {
+      return fallbackAccounts[activeIndex];
+    }
+
+    this.activeFallbackAccountIndex = fallbackAccounts[0].index;
+    return fallbackAccounts[0];
+  }
+
+  async activateFallbackAccount(account, accounts) {
+    const primaryAccount = accounts[0];
+    if (!primaryAccount || account.index === primaryAccount.index) {
+      return;
+    }
+
+    const fallbackAccounts = this.getFallbackAccounts(accounts);
+    const previousActiveAccount = fallbackAccounts.find(
+      (fallbackAccount) => fallbackAccount.index === this.activeFallbackAccountIndex
+    );
+
+    this.activeFallbackAccountIndex = account.index;
+
+    if (
+      previousActiveAccount &&
+      previousActiveAccount.index !== account.index
+    ) {
+      await previousActiveAccount.client.close?.();
+    }
+  }
+
+  async handleFailure(account, accounts) {
+    const primaryAccount = accounts[0];
+    if (!primaryAccount || account.index === primaryAccount.index) {
+      return { wrapped: false };
+    }
+
+    await account.client.close?.();
+
+    const fallbackAccounts = this.getFallbackAccounts(accounts);
+    if (!fallbackAccounts.length) {
+      this.activeFallbackAccountIndex = null;
+      return { wrapped: false };
+    }
+
+    const activeFallbackExists = fallbackAccounts.some(
+      (fallbackAccount) => fallbackAccount.index === this.activeFallbackAccountIndex
+    );
+    if (
+      this.activeFallbackAccountIndex !== null &&
+      activeFallbackExists &&
+      account.index !== this.activeFallbackAccountIndex
+    ) {
+      return { wrapped: false };
+    }
+
+    const currentPosition = fallbackAccounts.findIndex(
+      (fallbackAccount) => fallbackAccount.index === account.index
+    );
+    if (currentPosition === -1) {
+      this.activeFallbackAccountIndex = fallbackAccounts[0].index;
+      return { wrapped: false };
+    }
+
+    const nextPosition = (currentPosition + 1) % fallbackAccounts.length;
+    this.activeFallbackAccountIndex = fallbackAccounts[nextPosition].index;
+    return { wrapped: nextPosition === 0 };
   }
 }
