@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import { Pool } from "pg";
 import { sanitizeFilename } from "../lib/fs.js";
 import { createId, unixTimestampSeconds } from "../lib/ids.js";
@@ -92,6 +93,21 @@ export class PostgresFileStore {
     );
 
     return this.toOpenAIFile(record);
+  }
+
+  async createFromPath({
+    filename,
+    sourcePath,
+    purpose = "user_data",
+    mimeType = "application/octet-stream"
+  }) {
+    const bytes = await fs.readFile(sourcePath);
+    return this.create({
+      filename,
+      bytes,
+      purpose,
+      mimeType
+    });
   }
 
   async get(id) {

@@ -1,8 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { HttpError } from "../src/lib/errors.js";
 import {
   normalizeChatCompletionInput,
   normalizeConversationInput,
+  resolveImageParts,
   resolveFileParts,
   splitInstructionsAndMessages
 } from "../src/openai/input.js";
@@ -144,6 +146,138 @@ test("resolveFileParts still decodes base64 file_data for text files", async () 
   assert.equal(file.filename, "note.txt");
   assert.equal(file.mimeType, "text/plain");
   assert.equal(file.bytes.toString("utf8"), "hello");
+});
+
+test("resolveFileParts streams file_url bodies without using arrayBuffer", async () => {
+  const originalFetch = globalThis.fetch;
+  let arrayBufferCalled = false;
+
+  globalThis.fetch = async () => {
+    const response = new Response("streamed file", {
+      headers: {
+        "content-type": "text/plain",
+        "content-length": "13"
+      }
+    });
+    response.arrayBuffer = async () => {
+      arrayBufferCalled = true;
+      throw new Error("arrayBuffer should not be called");
+    };
+    return response;
+  };
+
+  try {
+    const [file] = await resolveFileParts({
+      content: [
+        {
+          type: "input_file",
+          file_url: "https://example.com/report.txt"
+        }
+      ],
+      fileStore: {}
+    });
+
+    assert.equal(file.filename, "report.txt");
+    assert.equal(file.mimeType, "text/plain");
+    assert.equal(file.bytes.toString("utf8"), "streamed file");
+    assert.equal(arrayBufferCalled, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("resolveImageParts streams image_url bodies without using arrayBuffer", async () => {
+  const originalFetch = globalThis.fetch;
+  let arrayBufferCalled = false;
+
+  globalThis.fetch = async () => {
+    const response = new Response("image-bytes", {
+      headers: {
+        "content-type": "image/png",
+        "content-length": "11"
+      }
+    });
+    response.arrayBuffer = async () => {
+      arrayBufferCalled = true;
+      throw new Error("arrayBuffer should not be called");
+    };
+    return response;
+  };
+
+  try {
+    const [image] = await resolveImageParts({
+      content: [
+        {
+          type: "input_image",
+          image_url: "https://example.com/diagram.png"
+        }
+      ]
+    });
+
+    assert.equal(image.filename, "diagram.png");
+    assert.equal(image.mimeType, "image/png");
+    assert.equal(image.bytes.toString("utf8"), "image-bytes");
+    assert.equal(arrayBufferCalled, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("resolveFileParts rejects oversized inline file_data and points callers to file uploads", async () => {
+  const largeBase64 = Buffer.alloc(7 * 1024 * 1024, 0x61).toString("base64");
+
+  await assert.rejects(
+    () =>
+      resolveFileParts({
+        content: [
+          {
+            type: "input_file",
+            filename: "large.bin",
+            file_data: largeBase64
+          }
+        ],
+        fileStore: {}
+      }),
+    (error) =>
+      error instanceof HttpError &&
+      error.status === 400 &&
+      /\/v1\/files/.test(error.message) &&
+      /file_id/.test(error.message)
+  );
+});
+
+test("resolveFileParts rejects oversized remote file_url responses with file upload guidance", async () => {
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = async () =>
+    new Response("ok", {
+      headers: {
+        "content-type": "application/pdf",
+        "content-length": String(99 * 1024 * 1024)
+      }
+    });
+
+  try {
+    await assert.rejects(
+      () =>
+        resolveFileParts({
+          content: [
+            {
+              type: "input_file",
+              file_url: "https://example.com/large.pdf"
+            }
+          ],
+          fileStore: {}
+        }),
+      (error) =>
+        error instanceof HttpError &&
+        error.status === 400 &&
+        /\/v1\/files/.test(error.message) &&
+        /file_id/.test(error.message)
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("history transcript keeps prior turns for follow-up requests", () => {

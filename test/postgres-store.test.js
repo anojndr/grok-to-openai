@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import {
   buildPostgresPoolOptions,
   PostgresFileStore,
@@ -148,6 +151,35 @@ test("PostgresFileStore stores metadata and bytes", async () => {
 
   const openaiFile = await store.get(created.id);
   assert.deepEqual(openaiFile, created);
+});
+
+test("PostgresFileStore can create a record from a temp upload path", async () => {
+  const pool = new FakePool();
+  const store = new PostgresFileStore(pool);
+  await store.init();
+
+  const tempDir = await fs.mkdtemp(
+    path.join(os.tmpdir(), "grok-to-openai-postgres-store-")
+  );
+  const uploadPath = path.join(tempDir, "upload.txt");
+  await fs.writeFile(uploadPath, "hello from disk");
+
+  try {
+    const created = await store.createFromPath({
+      filename: "upload.txt",
+      sourcePath: uploadPath,
+      mimeType: "text/plain"
+    });
+
+    assert.match(created.id, /^file_/);
+    assert.equal(created.bytes, 15);
+    assert.equal(created.filename, "upload.txt");
+
+    const content = await store.getContent(created.id);
+    assert.equal(content?.toString("utf8"), "hello from disk");
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
 });
 
 test("PostgresResponseStore stores full response records", async () => {

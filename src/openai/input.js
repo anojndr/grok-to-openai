@@ -1,5 +1,11 @@
 import path from "node:path";
 import { HttpError } from "../lib/errors.js";
+import {
+  buildLargeFileInputMessage,
+  buildLargeImageInputMessage,
+  MAX_DIRECT_FILE_BYTES,
+  MAX_DIRECT_IMAGE_BYTES
+} from "../lib/request-limits.js";
 
 function ensureArray(value) {
   if (Array.isArray(value)) {
@@ -145,30 +151,117 @@ function bufferLooksLikeUtf8Text(bytes) {
   }
 }
 
+function formatInputTooLargeError(actualBytes, maxBytes, message) {
+  if (actualBytes > maxBytes) {
+    throw new HttpError(400, message);
+  }
+}
+
+function estimateBase64DecodedBytes(value) {
+  const normalized = value.replace(/\s+/g, "");
+
+  if (!normalized) {
+    return 0;
+  }
+
+  let padding = 0;
+  if (normalized.endsWith("==")) {
+    padding = 2;
+  } else if (normalized.endsWith("=")) {
+    padding = 1;
+  }
+
+  return Math.max(0, Math.floor((normalized.length * 3) / 4) - padding);
+}
+
+async function readResponseBytes(response, { maxBytes, tooLargeMessage }) {
+  const contentLengthHeader = response.headers.get("content-length");
+  if (contentLengthHeader) {
+    const contentLength = Number(contentLengthHeader);
+    if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+      throw new HttpError(400, tooLargeMessage);
+    }
+  }
+
+  if (!response.body) {
+    return Buffer.alloc(0);
+  }
+
+  const reader = response.body.getReader();
+  const chunks = [];
+  let totalBytes = 0;
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) {
+      break;
+    }
+
+    if (!value?.byteLength) {
+      continue;
+    }
+
+    totalBytes += value.byteLength;
+    if (totalBytes > maxBytes) {
+      try {
+        await reader.cancel();
+      } catch {}
+      throw new HttpError(400, tooLargeMessage);
+    }
+
+    chunks.push(Buffer.from(value));
+  }
+
+  return Buffer.concat(chunks, totalBytes);
+}
+
 function decodeInlineFileData({ data, filename }) {
+  const tooLargeMessage = buildLargeFileInputMessage();
   const match = /^data:([^;,]+);base64,(.+)$/s.exec(data);
   if (match) {
+    const normalized = match[2].replace(/\s+/g, "");
+    formatInputTooLargeError(
+      estimateBase64DecodedBytes(normalized),
+      MAX_DIRECT_FILE_BYTES,
+      tooLargeMessage
+    );
     return {
       mimeType: match[1] || inferMimeTypeFromFilename(filename) || "application/octet-stream",
-      bytes: Buffer.from(match[2], "base64")
+      bytes: Buffer.from(normalized, "base64")
     };
   }
 
   const inferredMimeType = inferMimeTypeFromFilename(filename);
   if (!looksLikeBase64(data)) {
+    formatInputTooLargeError(
+      Buffer.byteLength(data, "utf8"),
+      MAX_DIRECT_FILE_BYTES,
+      tooLargeMessage
+    );
     return {
       mimeType: inferredMimeType || "application/octet-stream",
       bytes: Buffer.from(data, "utf8")
     };
   }
 
-  const decodedBytes = Buffer.from(data.replace(/\s+/g, ""), "base64");
+  const normalized = data.replace(/\s+/g, "");
+  formatInputTooLargeError(
+    estimateBase64DecodedBytes(normalized),
+    MAX_DIRECT_FILE_BYTES,
+    tooLargeMessage
+  );
+  const decodedBytes = Buffer.from(normalized, "base64");
   const shouldKeepRawText =
     isTextLikeMimeType(inferredMimeType) &&
     isMostlyPrintableText(data) &&
     !bufferLooksLikeUtf8Text(decodedBytes);
 
   if (shouldKeepRawText) {
+    formatInputTooLargeError(
+      Buffer.byteLength(data, "utf8"),
+      MAX_DIRECT_FILE_BYTES,
+      tooLargeMessage
+    );
     return {
       mimeType: inferredMimeType,
       bytes: Buffer.from(data, "utf8")
@@ -235,7 +328,10 @@ export async function resolveFileParts({
         );
       }
 
-      const buffer = Buffer.from(await response.arrayBuffer());
+      const buffer = await readResponseBytes(response, {
+        maxBytes: MAX_DIRECT_FILE_BYTES,
+        tooLargeMessage: buildLargeFileInputMessage()
+      });
       resolved.push({
         filename: filePart.filename || inferFilenameFromUrl(filePart.file_url),
         mimeType: response.headers.get("content-type") || "application/octet-stream",
@@ -278,10 +374,16 @@ export async function resolveImageParts({ content }) {
     const match = /^data:([^;,]+);base64,(.+)$/s.exec(imageUrl);
     if (match) {
       const mimeType = match[1] || "application/octet-stream";
+      const normalized = match[2].replace(/\s+/g, "");
+      formatInputTooLargeError(
+        estimateBase64DecodedBytes(normalized),
+        MAX_DIRECT_IMAGE_BYTES,
+        buildLargeImageInputMessage()
+      );
       resolved.push({
         filename: `image${inferExtensionFromMimeType(mimeType) || ".bin"}`,
         mimeType,
-        bytes: Buffer.from(match[2], "base64"),
+        bytes: Buffer.from(normalized, "base64"),
         source: "image_data_url"
       });
       continue;
@@ -297,7 +399,10 @@ export async function resolveImageParts({ content }) {
     const filename =
       inferFilenameFromUrl(imageUrl) ||
       `image${inferExtensionFromMimeType(mimeType) || ".bin"}`;
-    const buffer = Buffer.from(await response.arrayBuffer());
+    const buffer = await readResponseBytes(response, {
+      maxBytes: MAX_DIRECT_IMAGE_BYTES,
+      tooLargeMessage: buildLargeImageInputMessage()
+    });
 
     resolved.push({
       filename,

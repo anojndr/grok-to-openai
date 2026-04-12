@@ -1,7 +1,10 @@
+import fs from "node:fs/promises";
+import path from "node:path";
 import express from "express";
 import multer from "multer";
 import { config } from "./config.js";
 import { HttpError, toOpenAIError } from "./lib/errors.js";
+import { ensureDir, sanitizeFilename } from "./lib/fs.js";
 import { createStores } from "./store/index.js";
 import {
   chatCompletionsCreateSchema,
@@ -37,12 +40,30 @@ import {
 import { buildStoredGrokState } from "./grok/response-state.js";
 import { getStreamingTextSuffix } from "./openai/streaming-text.js";
 import { GrokAccountPool } from "./grok/account-pool.js";
+import {
+  buildJsonBodyTooLargeMessage,
+  buildUploadedFileTooLargeMessage,
+  JSON_BODY_LIMIT,
+  UPLOAD_FILE_SIZE_LIMIT
+} from "./lib/request-limits.js";
 
 const app = express();
+const uploadTempDir = path.join(config.dataDir, "tmp-uploads");
+await ensureDir(uploadTempDir);
 const upload = multer({
-  storage: multer.memoryStorage(),
+  storage: multer.diskStorage({
+    destination(_req, _file, callback) {
+      callback(null, uploadTempDir);
+    },
+    filename(_req, file, callback) {
+      callback(
+        null,
+        `${createId("upload")}-${sanitizeFilename(file.originalname || "upload.bin")}`
+      );
+    }
+  }),
   limits: {
-    fileSize: 50 * 1024 * 1024
+    fileSize: UPLOAD_FILE_SIZE_LIMIT
   }
 });
 
@@ -54,10 +75,30 @@ const {
 
 const grokAccounts = new GrokAccountPool(config);
 
-process.on("SIGINT", async () => {
-  await closeStores();
-  await grokAccounts.close();
-  process.exit(0);
+let server;
+let shutdownPromise = null;
+
+async function shutdown() {
+  if (shutdownPromise) {
+    return shutdownPromise;
+  }
+
+  shutdownPromise = (async () => {
+    server?.close();
+    await closeStores();
+    await grokAccounts.close();
+    process.exit(0);
+  })();
+
+  return shutdownPromise;
+}
+
+process.on("SIGINT", () => {
+  void shutdown();
+});
+
+process.on("SIGTERM", () => {
+  void shutdown();
 });
 
 async function hydrateGeneratedImages(images, accountIndex = 0) {
@@ -122,7 +163,7 @@ function maybeHandleStreamingError(req, res, error) {
   return false;
 }
 
-app.use(express.json({ limit: "60mb" }));
+app.use(express.json({ limit: JSON_BODY_LIMIT }));
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", config.allowOrigins);
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
@@ -167,11 +208,12 @@ app.post("/v1/files", upload.single("file"), async (req, res, next) => {
     }
 
     const purpose = req.body.purpose || "user_data";
-    const record = await fileStore.create({
+    const record = await fileStore.createFromPath({
       filename: req.file.originalname,
-      bytes: req.file.buffer,
+      sourcePath: req.file.path,
       purpose,
-      mimeType: req.file.mimetype
+      mimeType: req.file.mimetype,
+      size: req.file.size
     });
 
     res.status(200).json(record);
@@ -180,6 +222,10 @@ app.post("/v1/files", upload.single("file"), async (req, res, next) => {
       return;
     }
     next(error);
+  } finally {
+    if (req.file?.path) {
+      await fs.rm(req.file.path, { force: true }).catch(() => {});
+    }
   }
 });
 
@@ -893,11 +939,31 @@ app.use((error, req, res, _next) => {
     return;
   }
 
+  if (error?.type === "entity.too.large") {
+    const payload = toOpenAIError(
+      new HttpError(413, buildJsonBodyTooLargeMessage(), {
+        code: "request_too_large"
+      })
+    );
+    res.status(payload.status).json(payload.body);
+    return;
+  }
+
+  if (error?.code === "LIMIT_FILE_SIZE") {
+    const payload = toOpenAIError(
+      new HttpError(413, buildUploadedFileTooLargeMessage(), {
+        code: "request_too_large"
+      })
+    );
+    res.status(payload.status).json(payload.body);
+    return;
+  }
+
   const payload = toOpenAIError(error);
   res.status(payload.status).json(payload.body);
 });
 
-app.listen(config.port, config.host, () => {
+server = app.listen(config.port, config.host, () => {
   console.log(
     `grok-to-openai listening on http://${config.host}:${config.port}`
   );
