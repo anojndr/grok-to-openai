@@ -1,6 +1,6 @@
 export const UPLOAD_FILE_SIZE_LIMIT = 50 * 1024 * 1024;
 export const MAX_DIRECT_FILE_BYTES = UPLOAD_FILE_SIZE_LIMIT;
-export const MAX_DIRECT_IMAGE_BYTES = 6 * 1024 * 1024;
+export const MAX_DIRECT_IMAGE_BYTES = UPLOAD_FILE_SIZE_LIMIT;
 export const JSON_BODY_LIMIT =
   Math.ceil((MAX_DIRECT_FILE_BYTES * 4) / 3) + 4 * 1024 * 1024;
 
@@ -19,10 +19,10 @@ export function buildLargeFileInputMessage() {
 
 export function buildLargeImageInputMessage() {
   return (
-    "Large image inputs are capped before they are fetched into memory. " +
-    `Provide a smaller image_url or resize the image to stay under ${formatBinaryMegabytes(
+    `Image inputs are capped at ${formatBinaryMegabytes(
       MAX_DIRECT_IMAGE_BYTES
-    )}.`
+    )}. ` +
+    "Use a remote image_url instead of inline base64 when possible to avoid large JSON payloads."
   );
 }
 

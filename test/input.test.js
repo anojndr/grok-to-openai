@@ -223,6 +223,24 @@ test("resolveImageParts streams image_url bodies without using arrayBuffer", asy
   }
 });
 
+test("resolveImageParts accepts inline image data larger than xAI's 6 MiB cap", async () => {
+  const largeBase64 = Buffer.alloc(7 * 1024 * 1024, 0x89).toString("base64");
+
+  const [image] = await resolveImageParts({
+    content: [
+      {
+        type: "input_image",
+        image_url: `data:image/png;base64,${largeBase64}`
+      }
+    ]
+  });
+
+  assert.equal(image.filename, "image.png");
+  assert.equal(image.mimeType, "image/png");
+  assert.equal(image.bytes.length, 7 * 1024 * 1024);
+  assert.equal(image.bytes[0], 0x89);
+});
+
 test("resolveFileParts accepts inline file_data larger than xAI's 6 MiB cap", async () => {
   const largeBase64 = Buffer.alloc(7 * 1024 * 1024, 0x61).toString("base64");
 
@@ -241,6 +259,39 @@ test("resolveFileParts accepts inline file_data larger than xAI's 6 MiB cap", as
   assert.equal(file.mimeType, "application/octet-stream");
   assert.equal(file.bytes.length, 7 * 1024 * 1024);
   assert.equal(file.bytes[0], 0x61);
+});
+
+test("resolveImageParts rejects remote image_url responses above the bridge upload cap", async () => {
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = async () =>
+    new Response("ok", {
+      headers: {
+        "content-type": "image/png",
+        "content-length": String(99 * 1024 * 1024)
+      }
+    });
+
+  try {
+    await assert.rejects(
+      () =>
+        resolveImageParts({
+          content: [
+            {
+              type: "input_image",
+              image_url: "https://example.com/large.png"
+            }
+          ]
+        }),
+      (error) =>
+        error instanceof HttpError &&
+        error.status === 400 &&
+        /50 MiB/.test(error.message) &&
+        /image_url/.test(error.message)
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("resolveFileParts rejects remote file_url responses above the bridge upload cap", async () => {
