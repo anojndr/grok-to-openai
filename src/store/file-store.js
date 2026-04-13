@@ -7,17 +7,55 @@ export class FileStore {
   constructor(dataDir) {
     this.dataDir = dataDir;
     this.filesDir = path.join(dataDir, "files");
+    this.metadataDir = path.join(dataDir, "file-metadata");
     this.indexPath = path.join(dataDir, "files-index.json");
     this.index = { files: {} };
   }
 
   async init() {
-    await ensureDir(this.filesDir);
-    this.index = await readJson(this.indexPath, { files: {} });
+    await Promise.all([
+      ensureDir(this.filesDir),
+      ensureDir(this.metadataDir)
+    ]);
+
+    const [legacyIndex, metadataIndex] = await Promise.all([
+      readJson(this.indexPath, { files: {} }),
+      this.readMetadataIndex()
+    ]);
+
+    this.index = {
+      files: {
+        ...(legacyIndex.files ?? {}),
+        ...(metadataIndex.files ?? {})
+      }
+    };
   }
 
-  async saveIndex() {
-    await writeJson(this.indexPath, this.index);
+  async readMetadataIndex() {
+    const entries = await fs.readdir(this.metadataDir, { withFileTypes: true });
+    const records = await Promise.all(
+      entries
+        .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+        .map(async (entry) =>
+          readJson(path.join(this.metadataDir, entry.name), null)
+        )
+    );
+
+    return {
+      files: Object.fromEntries(
+        records
+          .filter((record) => record?.id)
+          .map((record) => [record.id, record])
+      )
+    };
+  }
+
+  metadataPathForId(id) {
+    return path.join(this.metadataDir, `${id}.json`);
+  }
+
+  async saveRecord(record) {
+    await writeJson(this.metadataPathForId(record.id), record);
   }
 
   buildRecord({
@@ -61,8 +99,8 @@ export class FileStore {
       filePath
     });
 
+    await this.saveRecord(record);
     this.index.files[id] = record;
-    await this.saveIndex();
 
     return this.toOpenAIFile(record);
   }
@@ -102,8 +140,8 @@ export class FileStore {
       filePath
     });
 
+    await this.saveRecord(record);
     this.index.files[id] = record;
-    await this.saveIndex();
 
     return this.toOpenAIFile(record);
   }

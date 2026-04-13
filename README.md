@@ -371,8 +371,9 @@ By default the bridge writes:
   Persistent Playwright profile used for Grok web auth.
 - `.data/files/`
   Uploaded file contents.
-- `.data/files-index.json`
-  Metadata returned by `/v1/files`.
+- `.data/file-metadata/`
+  One JSON metadata record per uploaded file returned by `/v1/files`. Older
+  `.data/files-index.json` snapshots are still read for compatibility.
 - `.data/responses/`
   One compact JSON file per stored Response, containing the OpenAI payload plus
   Grok conversation state and replay history. Older monolithic
