@@ -7,13 +7,15 @@ import { HttpError, toOpenAIError } from "./lib/errors.js";
 import { ensureDir, sanitizeFilename } from "./lib/fs.js";
 import { createStores } from "./store/index.js";
 import {
-  chatCompletionsCreateSchema,
   responsesCreateSchema
 } from "./openai/schema.js";
 import {
-  normalizeChatCompletionInput,
   normalizeConversationInput
 } from "./openai/input.js";
+import {
+  prepareChatCompletionRequest,
+  runPreparedChatCompletionRequest
+} from "./openai/chat-completion-request.js";
 import {
   buildConversationHistory,
   continueResponseConversation
@@ -404,47 +406,10 @@ async function runResponseRequest(parsed, normalized, options = {}) {
 }
 
 async function runChatCompletionRequest(reqBody, options = {}) {
-  const parsed = chatCompletionsCreateSchema.parse(reqBody);
-  const normalized = await normalizeChatCompletionInput({
-    requestBody: parsed,
-    fileStore
-  });
-  const onToken = options.onToken ?? null;
-
-  if (!normalized.messages.length) {
-    throw new HttpError(400, "messages must include at least one user message");
-  }
-
-  if (parsed.n && parsed.n !== 1) {
-    throw new HttpError(400, "Only n=1 is supported");
-  }
-
-  const { publicModel } = resolveModel(
-    parsed.model,
-    parsed.reasoning_effort === "none" || parsed.reasoning_effort === "minimal"
-      ? undefined
-      : parsed.reasoning_effort,
-    config.defaultModel
-  );
-
-  if (normalized.messages.length === 1 && normalized.messages[0].role === "user") {
-    const message = normalized.messages[0];
-    const result = await executeConversationRequest({
-      instructions: normalized.instructions,
-      publicModel,
-      message: message.text,
-      files: message.files,
-      onToken
-    });
-
-    return result;
-  }
-
-  return executeManualHistory({
-    messages: normalized.messages,
-    instructions: normalized.instructions,
-    publicModel,
-    onToken
+  return runPreparedChatCompletionRequest(reqBody, {
+    executeConversationRequest,
+    executeManualHistory,
+    onToken: options.onToken ?? null
   });
 }
 
@@ -781,14 +746,11 @@ app.post("/v1/responses", async (req, res, next) => {
 
 app.post("/v1/chat/completions", async (req, res, next) => {
   try {
-    const parsed = chatCompletionsCreateSchema.parse(req.body);
-    const { publicModel } = resolveModel(
-      parsed.model,
-      parsed.reasoning_effort === "none" || parsed.reasoning_effort === "minimal"
-        ? undefined
-        : parsed.reasoning_effort,
-      config.defaultModel
-    );
+    const prepared = await prepareChatCompletionRequest(req.body, {
+      fileStore,
+      defaultModel: config.defaultModel
+    });
+    const { parsed, publicModel } = prepared;
 
     if (parsed.stream) {
       const chatCompletionId = createId("chatcmpl");
@@ -840,7 +802,7 @@ app.post("/v1/chat/completions", async (req, res, next) => {
           )}\n\n`
         );
       };
-      const result = await runChatCompletionRequest(parsed, {
+      const result = await runChatCompletionRequest(prepared, {
         onToken(token, meta) {
           if (meta?.isThinking) {
             return;
@@ -909,7 +871,7 @@ app.post("/v1/chat/completions", async (req, res, next) => {
       return;
     }
 
-    const result = await runChatCompletionRequest(parsed);
+    const result = await runChatCompletionRequest(prepared);
     const assistantOutput = buildAssistantOutput(
       result.state,
       parsed.source_attribution,
