@@ -299,9 +299,7 @@ export async function resolveFileParts({
   fileStore
 }) {
   const fileParts = extractFileParts(content);
-  const resolved = [];
-
-  for (const filePart of fileParts) {
+  return Promise.all(fileParts.map(async (filePart) => {
     if (filePart.file_id) {
       const record = await fileStore.getRecord(filePart.file_id);
       if (!record) {
@@ -309,14 +307,13 @@ export async function resolveFileParts({
       }
 
       const bytes = await fileStore.getContent(filePart.file_id);
-      resolved.push({
+      return {
         fileId: filePart.file_id,
         filename: record.filename,
         mimeType: record.mime_type,
         bytes,
         source: "file_id"
-      });
-      continue;
+      };
     }
 
     if (filePart.file_url) {
@@ -332,13 +329,12 @@ export async function resolveFileParts({
         maxBytes: MAX_DIRECT_FILE_BYTES,
         tooLargeMessage: buildLargeFileInputMessage()
       });
-      resolved.push({
+      return {
         filename: filePart.filename || inferFilenameFromUrl(filePart.file_url),
         mimeType: response.headers.get("content-type") || "application/octet-stream",
         bytes: buffer,
         source: "file_url"
-      });
-      continue;
+      };
     }
 
     if (filePart.file_data) {
@@ -346,26 +342,21 @@ export async function resolveFileParts({
         data: filePart.file_data,
         filename: filePart.filename || "upload.bin"
       });
-      resolved.push({
+      return {
         filename: filePart.filename || "upload.bin",
         mimeType: decoded.mimeType,
         bytes: decoded.bytes,
         source: "file_data"
-      });
-      continue;
+      };
     }
 
     throw new HttpError(400, "input_file requires file_id, file_url, or file_data");
-  }
-
-  return resolved;
+  }));
 }
 
 export async function resolveImageParts({ content }) {
   const imageParts = extractImageParts(content);
-  const resolved = [];
-
-  for (const imagePart of imageParts) {
+  return Promise.all(imageParts.map(async (imagePart) => {
     const imageUrl = getImageUrlValue(imagePart);
     if (!imageUrl) {
       throw new HttpError(400, "image input requires image_url");
@@ -380,13 +371,12 @@ export async function resolveImageParts({ content }) {
         MAX_DIRECT_IMAGE_BYTES,
         buildLargeImageInputMessage()
       );
-      resolved.push({
+      return {
         filename: `image${inferExtensionFromMimeType(mimeType) || ".bin"}`,
         mimeType,
         bytes: Buffer.from(normalized, "base64"),
         source: "image_data_url"
-      });
-      continue;
+      };
     }
 
     const response = await fetch(imageUrl);
@@ -404,15 +394,13 @@ export async function resolveImageParts({ content }) {
       tooLargeMessage: buildLargeImageInputMessage()
     });
 
-    resolved.push({
+    return {
       filename,
       mimeType,
       bytes: buffer,
       source: "image_url"
-    });
-  }
-
-  return resolved;
+    };
+  }));
 }
 
 export async function normalizeConversationInput({
@@ -425,24 +413,24 @@ export async function normalizeConversationInput({
     requestBody.instructions
   );
 
-  const normalizedMessages = [];
-
-  for (const message of messages) {
+  const normalizedMessages = await Promise.all(messages.map(async (message) => {
     const text = extractTextContent(message.content);
-    const files = await resolveFileParts({
-      content: message.content,
-      fileStore
-    });
-    const images = await resolveImageParts({
-      content: message.content
-    });
+    const [files, images] = await Promise.all([
+      resolveFileParts({
+        content: message.content,
+        fileStore
+      }),
+      resolveImageParts({
+        content: message.content
+      })
+    ]);
 
-    normalizedMessages.push({
+    return {
       role: message.role,
       text,
       files: [...files, ...images]
-    });
-  }
+    };
+  }));
 
   return {
     instructions,
@@ -459,28 +447,26 @@ export async function normalizeChatCompletionInput({
     ""
   );
 
-  const normalizedMessages = [];
-
-  for (const message of messages) {
-    if (message.role === "tool") {
-      continue;
-    }
-
+  const normalizedMessages = await Promise.all(messages
+    .filter((message) => message.role !== "tool")
+    .map(async (message) => {
     const text = extractTextContent(message.content ?? "");
-    const files = await resolveFileParts({
-      content: message.content ?? "",
-      fileStore
-    });
-    const images = await resolveImageParts({
-      content: message.content ?? ""
-    });
+    const [files, images] = await Promise.all([
+      resolveFileParts({
+        content: message.content ?? "",
+        fileStore
+      }),
+      resolveImageParts({
+        content: message.content ?? ""
+      })
+    ]);
 
-    normalizedMessages.push({
+    return {
       role: message.role,
       text,
       files: [...files, ...images]
-    });
-  }
+    };
+  }));
 
   return {
     instructions,

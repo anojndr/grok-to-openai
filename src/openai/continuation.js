@@ -94,23 +94,17 @@ async function persistAttachment(file, fileStore) {
 }
 
 async function persistConversationMessages(messages, fileStore) {
-  const storedMessages = [];
+  return Promise.all(messages.map(async (message) => {
+    const attachments = await Promise.all(
+      (message.files ?? []).map((file) => persistAttachment(file, fileStore))
+    );
 
-  for (const message of messages) {
-    const attachments = [];
-
-    for (const file of message.files ?? []) {
-      attachments.push(await persistAttachment(file, fileStore));
-    }
-
-    storedMessages.push({
+    return {
       role: message.role,
       text: message.text || "",
       attachments
-    });
-  }
-
-  return storedMessages;
+    };
+  }));
 }
 
 async function resolveAssistantImageAsset(image, loadAssistantImageAsset) {
@@ -160,15 +154,13 @@ async function persistAssistantMessage(
 ) {
   const text = assistantOutput?.text || "";
   const images = assistantOutput?.images ?? [];
-  const attachments = [];
-
-  for (const [index, image] of images.entries()) {
+  const attachments = (await Promise.all(images.map(async (image, index) => {
     const asset = await resolveAssistantImageAsset(
       image,
       loadAssistantImageAsset
     );
     if (!asset) {
-      continue;
+      return null;
     }
 
     const record = await fileStore.create({
@@ -179,12 +171,12 @@ async function persistAssistantMessage(
     });
     const stored = await fileStore.getRecord(record.id);
 
-    attachments.push({
+    return {
       fileId: record.id,
       filename: stored?.filename || record.filename,
       mimeType: stored?.mime_type || image.mimeType || "application/octet-stream"
-    });
-  }
+    };
+  }))).filter(Boolean);
 
   if (!text && attachments.length === 0) {
     return null;
@@ -205,12 +197,14 @@ export async function buildConversationHistory({
   fileStore,
   loadAssistantImageAsset = null
 }) {
-  const storedMessages = await persistConversationMessages(inputMessages, fileStore);
-  const assistantMessage = await persistAssistantMessage(
-    assistantOutput,
-    fileStore,
-    loadAssistantImageAsset
-  );
+  const [storedMessages, assistantMessage] = await Promise.all([
+    persistConversationMessages(inputMessages, fileStore),
+    persistAssistantMessage(
+      assistantOutput,
+      fileStore,
+      loadAssistantImageAsset
+    )
+  ]);
 
   return {
     version: 2,
@@ -223,9 +217,7 @@ export async function buildConversationHistory({
 }
 
 async function hydrateStoredMessage(storedMessage, fileStore) {
-  const files = [];
-
-  for (const attachment of storedMessage.attachments ?? []) {
+  const files = await Promise.all((storedMessage.attachments ?? []).map(async (attachment) => {
     const bytes = await fileStore.getContent(attachment.fileId);
     if (!bytes) {
       throw new HttpError(
@@ -234,12 +226,12 @@ async function hydrateStoredMessage(storedMessage, fileStore) {
       );
     }
 
-    files.push({
+    return {
       filename: attachment.filename,
       mimeType: attachment.mimeType || "application/octet-stream",
       bytes
-    });
-  }
+    };
+  }));
 
   return {
     role: storedMessage.role,

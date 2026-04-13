@@ -25,6 +25,21 @@ function buildTranscriptPrompt(messages) {
     .join("\n\n");
 }
 
+function createDeferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+async function flushAsyncOperations() {
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
 test("splitInstructionsAndMessages keeps system text in instructions", () => {
   const result = splitInstructionsAndMessages(
     [
@@ -186,6 +201,55 @@ test("resolveFileParts streams file_url bodies without using arrayBuffer", async
   }
 });
 
+test("resolveFileParts resolves multiple file_id attachments in parallel while preserving order", async () => {
+  const deferredById = new Map([
+    ["file_1", createDeferred()],
+    ["file_2", createDeferred()]
+  ]);
+  const getContentCalls = [];
+
+  const pending = resolveFileParts({
+    content: [
+      {
+        type: "input_file",
+        file_id: "file_1"
+      },
+      {
+        type: "input_file",
+        file_id: "file_2"
+      }
+    ],
+    fileStore: {
+      async getRecord(id) {
+        return {
+          filename: `${id}.txt`,
+          mime_type: "text/plain"
+        };
+      },
+      async getContent(id) {
+        getContentCalls.push(id);
+        return deferredById.get(id).promise;
+      }
+    }
+  });
+
+  await flushAsyncOperations();
+  assert.deepEqual(getContentCalls, ["file_1", "file_2"]);
+
+  deferredById.get("file_2").resolve(Buffer.from("second"));
+  deferredById.get("file_1").resolve(Buffer.from("first"));
+
+  const files = await pending;
+  assert.deepEqual(
+    files.map((file) => file.filename),
+    ["file_1.txt", "file_2.txt"]
+  );
+  assert.deepEqual(
+    files.map((file) => file.bytes.toString("utf8")),
+    ["first", "second"]
+  );
+});
+
 test("resolveImageParts streams image_url bodies without using arrayBuffer", async () => {
   const originalFetch = globalThis.fetch;
   let arrayBufferCalled = false;
@@ -218,6 +282,268 @@ test("resolveImageParts streams image_url bodies without using arrayBuffer", asy
     assert.equal(image.mimeType, "image/png");
     assert.equal(image.bytes.toString("utf8"), "image-bytes");
     assert.equal(arrayBufferCalled, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("resolveImageParts fetches multiple image_url attachments in parallel while preserving order", async () => {
+  const originalFetch = globalThis.fetch;
+  const responseByUrl = new Map([
+    ["https://example.com/first.png", createDeferred()],
+    ["https://example.com/second.png", createDeferred()]
+  ]);
+  const fetchCalls = [];
+
+  globalThis.fetch = async (url) => {
+    fetchCalls.push(url);
+    return responseByUrl.get(url).promise;
+  };
+
+  try {
+    const pending = resolveImageParts({
+      content: [
+        {
+          type: "input_image",
+          image_url: "https://example.com/first.png"
+        },
+        {
+          type: "input_image",
+          image_url: "https://example.com/second.png"
+        }
+      ]
+    });
+
+    await flushAsyncOperations();
+    assert.deepEqual(fetchCalls, [
+      "https://example.com/first.png",
+      "https://example.com/second.png"
+    ]);
+
+    responseByUrl.get("https://example.com/second.png").resolve(
+      new Response("second-image", {
+        headers: {
+          "content-type": "image/png",
+          "content-length": "12"
+        }
+      })
+    );
+    responseByUrl.get("https://example.com/first.png").resolve(
+      new Response("first-image", {
+        headers: {
+          "content-type": "image/png",
+          "content-length": "11"
+        }
+      })
+    );
+
+    const images = await pending;
+    assert.deepEqual(
+      images.map((image) => image.filename),
+      ["first.png", "second.png"]
+    );
+    assert.deepEqual(
+      images.map((image) => image.bytes.toString("utf8")),
+      ["first-image", "second-image"]
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("normalizeConversationInput resolves independent attachment fetches in parallel while preserving message order", async () => {
+  const originalFetch = globalThis.fetch;
+  const responseByUrl = new Map([
+    ["https://example.com/notes.txt", createDeferred()],
+    ["https://example.com/diagram.png", createDeferred()],
+    ["https://example.com/appendix.txt", createDeferred()]
+  ]);
+  const fetchCalls = [];
+
+  globalThis.fetch = async (url) => {
+    fetchCalls.push(url);
+    return responseByUrl.get(url).promise;
+  };
+
+  try {
+    const pending = normalizeConversationInput({
+      requestBody: {
+        input: [
+          {
+            role: "user",
+            content: [
+              { type: "input_text", text: "Compare both attachments." },
+              {
+                type: "input_file",
+                file_url: "https://example.com/notes.txt"
+              },
+              {
+                type: "input_image",
+                image_url: "https://example.com/diagram.png"
+              }
+            ]
+          },
+          {
+            role: "user",
+            content: [
+              { type: "input_text", text: "Also include the appendix." },
+              {
+                type: "input_file",
+                file_url: "https://example.com/appendix.txt"
+              }
+            ]
+          }
+        ]
+      },
+      fileStore: {}
+    });
+
+    await flushAsyncOperations();
+    assert.deepEqual(fetchCalls, [
+      "https://example.com/notes.txt",
+      "https://example.com/diagram.png",
+      "https://example.com/appendix.txt"
+    ]);
+
+    responseByUrl.get("https://example.com/appendix.txt").resolve(
+      new Response("appendix", {
+        headers: {
+          "content-type": "text/plain",
+          "content-length": "8"
+        }
+      })
+    );
+    responseByUrl.get("https://example.com/diagram.png").resolve(
+      new Response("diagram-bytes", {
+        headers: {
+          "content-type": "image/png",
+          "content-length": "13"
+        }
+      })
+    );
+    responseByUrl.get("https://example.com/notes.txt").resolve(
+      new Response("notes", {
+        headers: {
+          "content-type": "text/plain",
+          "content-length": "5"
+        }
+      })
+    );
+
+    const result = await pending;
+    assert.deepEqual(
+      result.messages.map((message) => message.text),
+      ["Compare both attachments.", "Also include the appendix."]
+    );
+    assert.deepEqual(
+      result.messages[0].files.map((file) => file.filename),
+      ["notes.txt", "diagram.png"]
+    );
+    assert.deepEqual(
+      result.messages[1].files.map((file) => file.filename),
+      ["appendix.txt"]
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("normalizeChatCompletionInput resolves independent attachment fetches in parallel while preserving message order", async () => {
+  const originalFetch = globalThis.fetch;
+  const responseByUrl = new Map([
+    ["https://example.com/summary.txt", createDeferred()],
+    ["https://example.com/reference.png", createDeferred()],
+    ["https://example.com/context.txt", createDeferred()]
+  ]);
+  const fetchCalls = [];
+
+  globalThis.fetch = async (url) => {
+    fetchCalls.push(url);
+    return responseByUrl.get(url).promise;
+  };
+
+  try {
+    const pending = normalizeChatCompletionInput({
+      requestBody: {
+        messages: [
+          { role: "developer", content: "Use every attachment." },
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "Review the summary and image." },
+              {
+                type: "input_file",
+                file_url: "https://example.com/summary.txt"
+              },
+              {
+                type: "image_url",
+                image_url: {
+                  url: "https://example.com/reference.png"
+                }
+              }
+            ]
+          },
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "Then incorporate the context file." },
+              {
+                type: "input_file",
+                file_url: "https://example.com/context.txt"
+              }
+            ]
+          }
+        ]
+      },
+      fileStore: {}
+    });
+
+    await flushAsyncOperations();
+    assert.deepEqual(fetchCalls, [
+      "https://example.com/summary.txt",
+      "https://example.com/reference.png",
+      "https://example.com/context.txt"
+    ]);
+
+    responseByUrl.get("https://example.com/context.txt").resolve(
+      new Response("context", {
+        headers: {
+          "content-type": "text/plain",
+          "content-length": "7"
+        }
+      })
+    );
+    responseByUrl.get("https://example.com/reference.png").resolve(
+      new Response("reference-image", {
+        headers: {
+          "content-type": "image/png",
+          "content-length": "15"
+        }
+      })
+    );
+    responseByUrl.get("https://example.com/summary.txt").resolve(
+      new Response("summary", {
+        headers: {
+          "content-type": "text/plain",
+          "content-length": "7"
+        }
+      })
+    );
+
+    const result = await pending;
+    assert.equal(result.instructions, "Use every attachment.");
+    assert.deepEqual(
+      result.messages.map((message) => message.text),
+      ["Review the summary and image.", "Then incorporate the context file."]
+    );
+    assert.deepEqual(
+      result.messages[0].files.map((file) => file.filename),
+      ["summary.txt", "reference.png"]
+    );
+    assert.deepEqual(
+      result.messages[1].files.map((file) => file.filename),
+      ["context.txt"]
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }

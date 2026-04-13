@@ -55,6 +55,21 @@ function createMemoryFileStore() {
   };
 }
 
+function createDeferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+async function flushAsyncOperations() {
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
 test("buildConversationHistory stores only the current turn delta", async () => {
   const fileStore = createMemoryFileStore();
   const existingFile = await fileStore.create({
@@ -119,6 +134,144 @@ test("buildConversationHistory stores only the current turn delta", async () => 
   assert.equal(history.messages[1].role, "assistant");
   assert.equal(history.messages[0].attachments.length, 1);
   assert.equal(history.messages[1].attachments.length, 1);
+});
+
+test("buildConversationHistory persists input attachments in parallel while preserving message order", async () => {
+  const createDeferredByFilename = new Map([
+    ["first.txt", createDeferred()],
+    ["second.txt", createDeferred()]
+  ]);
+  const createCalls = [];
+
+  const historyPromise = buildConversationHistory({
+    instructions: "",
+    inputMessages: [
+      {
+        role: "user",
+        text: "First attachment.",
+        files: [
+          {
+            filename: "first.txt",
+            mimeType: "text/plain",
+            bytes: Buffer.from("first")
+          }
+        ]
+      },
+      {
+        role: "user",
+        text: "Second attachment.",
+        files: [
+          {
+            filename: "second.txt",
+            mimeType: "text/plain",
+            bytes: Buffer.from("second")
+          }
+        ]
+      }
+    ],
+    assistantOutput: null,
+    fileStore: {
+      async create({ filename }) {
+        createCalls.push(filename);
+        return createDeferredByFilename.get(filename).promise;
+      },
+      async getRecord(id) {
+        return {
+          filename: id.replace(/^stored:/, ""),
+          mime_type: "text/plain"
+        };
+      }
+    }
+  });
+
+  await flushAsyncOperations();
+  assert.deepEqual(createCalls, ["first.txt", "second.txt"]);
+
+  createDeferredByFilename.get("second.txt").resolve({
+    id: "stored:second.txt",
+    filename: "second.txt"
+  });
+  createDeferredByFilename.get("first.txt").resolve({
+    id: "stored:first.txt",
+    filename: "first.txt"
+  });
+
+  const history = await historyPromise;
+  assert.deepEqual(
+    history.messages.map((message) => message.text),
+    ["First attachment.", "Second attachment."]
+  );
+  assert.deepEqual(
+    history.messages.map((message) => message.attachments[0].filename),
+    ["first.txt", "second.txt"]
+  );
+});
+
+test("buildConversationHistory persists assistant images in parallel while preserving order", async () => {
+  const assetDeferredByTitle = new Map([
+    ["first-preview", createDeferred()],
+    ["second-preview", createDeferred()]
+  ]);
+  const loadCalls = [];
+
+  const historyPromise = buildConversationHistory({
+    instructions: "",
+    inputMessages: [],
+    assistantOutput: {
+      text: "",
+      images: [
+        {
+          title: "first-preview",
+          mimeType: "image/png",
+          url: "https://assets.grok.com/generated/first-preview.png"
+        },
+        {
+          title: "second-preview",
+          mimeType: "image/png",
+          url: "https://assets.grok.com/generated/second-preview.png"
+        }
+      ]
+    },
+    fileStore: {
+      async create({ filename }) {
+        return {
+          id: `stored:${filename}`,
+          filename
+        };
+      },
+      async getRecord(id) {
+        const filename = id.replace(/^stored:/, "");
+        return {
+          filename,
+          mime_type: "image/png"
+        };
+      }
+    },
+    loadAssistantImageAsset: async (image) => {
+      loadCalls.push(image.title);
+      return assetDeferredByTitle.get(image.title).promise;
+    }
+  });
+
+  await flushAsyncOperations();
+  assert.deepEqual(loadCalls, ["first-preview", "second-preview"]);
+
+  assetDeferredByTitle.get("second-preview").resolve({
+    bytes: Buffer.from("second-image"),
+    contentType: "image/png"
+  });
+  assetDeferredByTitle.get("first-preview").resolve({
+    bytes: Buffer.from("first-image"),
+    contentType: "image/png"
+  });
+
+  const history = await historyPromise;
+  assert.equal(history.messages.length, 1);
+  assert.equal(history.messages[0].role, "assistant");
+  assert.deepEqual(
+    history.messages[0].attachments.map((attachment) => attachment.filename),
+    ["first-preview.png", "second-preview.png"]
+  );
 });
 
 test("buildReplayConversationRequest includes the full stored history and all attachments", async () => {
@@ -200,6 +353,64 @@ test("buildReplayConversationRequest includes the full stored history and all at
     /turn-003-assistant-attachment-001-draft-preview.png/
   );
   assert.match(replay.message, /turn-004-user-attachment-001-diff.png/);
+});
+
+test("buildReplayConversationRequest hydrates stored attachments in parallel while preserving order", async () => {
+  const attachmentDeferredById = new Map([
+    ["file_1", createDeferred()],
+    ["file_2", createDeferred()]
+  ]);
+  const getContentCalls = [];
+
+  const replayPromise = buildReplayConversationRequest({
+    previousHistory: {
+      instructions: [],
+      messages: [
+        {
+          role: "user",
+          text: "Compare the stored files.",
+          attachments: [
+            {
+              fileId: "file_1",
+              filename: "one.txt",
+              mimeType: "text/plain"
+            },
+            {
+              fileId: "file_2",
+              filename: "two.txt",
+              mimeType: "text/plain"
+            }
+          ]
+        }
+      ]
+    },
+    currentMessages: [],
+    fileStore: {
+      async getContent(id) {
+        getContentCalls.push(id);
+        return attachmentDeferredById.get(id).promise;
+      }
+    }
+  });
+
+  await flushAsyncOperations();
+  assert.deepEqual(getContentCalls, ["file_1", "file_2"]);
+
+  attachmentDeferredById.get("file_2").resolve(Buffer.from("second"));
+  attachmentDeferredById.get("file_1").resolve(Buffer.from("first"));
+
+  const replay = await replayPromise;
+  assert.deepEqual(
+    replay.files.map((file) => file.filename),
+    [
+      "turn-001-user-attachment-001-one.txt",
+      "turn-001-user-attachment-002-two.txt"
+    ]
+  );
+  assert.deepEqual(
+    replay.files.map((file) => file.bytes.toString("utf8")),
+    ["first", "second"]
+  );
 });
 
 test("continueResponseConversation falls back to replaying history when the Grok conversation is missing", async () => {
