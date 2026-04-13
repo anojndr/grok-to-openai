@@ -34,6 +34,7 @@ import {
 } from "./openai/chat-completions.js";
 import { initSse, writeSseEvent } from "./openai/sse.js";
 import { createId, unixTimestampSeconds } from "./lib/ids.js";
+import { createTextAccumulator } from "./lib/text-accumulator.js";
 import { createGrokMarkupStreamSanitizer } from "./grok/markup.js";
 import { withFastModelFallback } from "./grok/model-fallback.js";
 import { buildAssistantOutput } from "./grok/output.js";
@@ -463,7 +464,7 @@ app.post("/v1/responses", async (req, res, next) => {
         parsed.source_attribution
       );
       const sanitizer = createGrokMarkupStreamSanitizer();
-      let emittedText = "";
+      const emittedText = createTextAccumulator();
       let emittedResponsePrelude = false;
       let emittedMessagePrelude = false;
       const emitResponsePrelude = () => {
@@ -518,7 +519,7 @@ app.post("/v1/responses", async (req, res, next) => {
         }
 
         emitMessagePrelude();
-        emittedText += delta;
+        emittedText.append(delta);
         writeSseEvent(res, "response.output_text.delta", {
           type: "response.output_text.delta",
           item_id: messageId,
@@ -558,12 +559,13 @@ app.post("/v1/responses", async (req, res, next) => {
         thoughtText: assistantOutput.thoughtText,
         responseText: assistantOutput.text
       });
-      const pendingText = getStreamingTextSuffix(renderedText, emittedText);
+      const emittedTextValue = emittedText.toString();
+      const pendingText = getStreamingTextSuffix(renderedText, emittedTextValue);
       if (pendingText) {
         emitTextDelta(pendingText);
       }
 
-      const text = renderedText || emittedText;
+      const text = renderedText || emittedText.toString();
       const hasMessage = Boolean(text);
 
       if (hasMessage) {
@@ -764,7 +766,7 @@ app.post("/v1/chat/completions", async (req, res, next) => {
         parsed.source_attribution
       );
       const sanitizer = createGrokMarkupStreamSanitizer();
-      let emittedText = "";
+      const emittedText = createTextAccumulator();
       let emittedAssistantRole = false;
       const ensureAssistantRoleEmitted = () => {
         if (emittedAssistantRole) {
@@ -790,7 +792,7 @@ app.post("/v1/chat/completions", async (req, res, next) => {
         }
 
         ensureAssistantRoleEmitted();
-        emittedText += delta;
+        emittedText.append(delta);
         res.write(
           `data: ${JSON.stringify(
             createChatCompletionChunk({
@@ -826,7 +828,7 @@ app.post("/v1/chat/completions", async (req, res, next) => {
         }),
         images: assistantOutput.images
       });
-      const pendingText = getStreamingTextSuffix(content, emittedText);
+      const pendingText = getStreamingTextSuffix(content, emittedText.toString());
       if (pendingText) {
         emitTextDelta(pendingText);
       }

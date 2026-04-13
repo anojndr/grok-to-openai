@@ -34,7 +34,13 @@ export function createGrokMarkupStreamSanitizer(options = {}) {
   const stopAtRenderTag = options.stopAtRenderTag ?? false;
 
   function consumeVisiblePrefix() {
-    let output = "";
+    const output = [];
+    const appendOutput = (chunk) => {
+      if (chunk) {
+        output.push(chunk);
+      }
+    };
+    const flushOutput = () => output.join("");
 
     while (!halted && buffer.length > 0) {
       if (hidden) {
@@ -42,7 +48,7 @@ export function createGrokMarkupStreamSanitizer(options = {}) {
         if (endIndex === -1) {
           const keep = Math.max(hidden.end.length - 1, 0);
           buffer = keep > 0 ? buffer.slice(-keep) : "";
-          return output;
+          return flushOutput();
         }
 
         buffer = buffer.slice(endIndex + hidden.end.length);
@@ -63,33 +69,33 @@ export function createGrokMarkupStreamSanitizer(options = {}) {
       if (!nextMarker) {
         const safeLength = Math.max(buffer.length - (MAX_START_LENGTH - 1), 0);
         if (safeLength === 0) {
-          return output;
+          return flushOutput();
         }
 
-        output += buffer.slice(0, safeLength);
+        appendOutput(buffer.slice(0, safeLength));
         buffer = buffer.slice(safeLength);
-        return output;
+        return flushOutput();
       }
 
       if (nextIndex > 0) {
-        output += buffer.slice(0, nextIndex);
+        appendOutput(buffer.slice(0, nextIndex));
         buffer = buffer.slice(nextIndex);
       }
 
       if (!buffer.startsWith(nextMarker.start)) {
-        return output;
+        return flushOutput();
       }
 
       if (stopAtRenderTag && nextMarker.kind === "render") {
         halted = true;
-        return output;
+        return flushOutput();
       }
 
       buffer = buffer.slice(nextMarker.start.length);
       hidden = nextMarker;
     }
 
-    return output;
+    return flushOutput();
   }
 
   return {

@@ -31,12 +31,36 @@ function stripStepTextFromStream(streamedText, modelResponse) {
     return streamedText;
   }
 
-  let output = streamedText;
+  const output = [];
+  let cursor = 0;
+  let searchStart = 0;
+  let removedAny = false;
+
   for (const fragment of fragments) {
-    output = output.split(fragment).join("");
+    const index = streamedText.indexOf(fragment, searchStart);
+    if (index === -1) {
+      continue;
+    }
+
+    removedAny = true;
+    if (index > cursor) {
+      output.push(streamedText.slice(cursor, index));
+    }
+
+    cursor = index + fragment.length;
+    searchStart = cursor;
   }
 
-  return output.trim() ? output : streamedText;
+  if (!removedAny) {
+    return streamedText;
+  }
+
+  if (cursor < streamedText.length) {
+    output.push(streamedText.slice(cursor));
+  }
+
+  const strippedText = output.join("");
+  return strippedText.trim() ? strippedText : streamedText;
 }
 
 function resolveCanonicalText(state) {

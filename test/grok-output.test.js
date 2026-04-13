@@ -74,6 +74,24 @@ test("buildAssistantOutput can render streaming-friendly text without inline cit
   ]);
 });
 
+test("buildAssistantOutput strips streamed thought fragments that contain regex-like punctuation", () => {
+  const output = buildAssistantOutput(
+    {
+      assistantText: "Plan [1/2] (draft)?Final answer.",
+      modelResponse: {
+        steps: [
+          {
+            text: ["Plan [1/2] (draft)?"]
+          }
+        ]
+      }
+    },
+    {}
+  );
+
+  assert.equal(output.text, "Final answer.");
+});
+
 test("buildAssistantOutput extracts generated images from Grok image cards", () => {
   const output = buildAssistantOutput(
     {

@@ -1,4 +1,7 @@
 import { HttpError } from "../lib/errors.js";
+import { createTextAccumulator } from "../lib/text-accumulator.js";
+
+const ASSISTANT_TEXT = Symbol("assistantText");
 
 export function createNdjsonParser(onObject) {
   let buffer = "";
@@ -38,16 +41,31 @@ export function createNdjsonParser(onObject) {
 }
 
 export function collectGrokStreamingState() {
-  return {
+  const assistantText = createTextAccumulator();
+  const state = {
     conversation: null,
     userResponse: null,
     modelResponse: null,
-    assistantText: "",
     title: null,
     finalMetadata: null,
     uiLayout: null,
     llmInfo: null
   };
+
+  Object.defineProperty(state, ASSISTANT_TEXT, {
+    value: assistantText
+  });
+  Object.defineProperty(state, "assistantText", {
+    enumerable: true,
+    get() {
+      return assistantText.toString();
+    },
+    set(value) {
+      assistantText.set(value);
+    }
+  });
+
+  return state;
 }
 
 function looksLikeDirectAssistantResponse(response) {
@@ -102,7 +120,7 @@ export function applyGrokEvent(state, payload) {
   }
 
   if (typeof response.token === "string") {
-    state.assistantText += response.token;
+    state[ASSISTANT_TEXT].append(response.token);
     return {
       type: "token",
       token: response.token,
@@ -124,7 +142,7 @@ export function applyGrokEvent(state, payload) {
 
   if (modelResponse) {
     state.modelResponse = modelResponse;
-    if (modelResponse.message && !state.assistantText) {
+    if (modelResponse.message && state[ASSISTANT_TEXT].isEmpty()) {
       state.assistantText = modelResponse.message;
     }
   }
