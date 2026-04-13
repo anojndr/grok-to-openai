@@ -9,15 +9,17 @@ import {
 } from "./stream-parser.js";
 import { resolveModel } from "./model-map.js";
 
+const DEVICE_ENV_INFO = Object.freeze({
+  darkModeEnabled: false,
+  devicePixelRatio: 1,
+  screenWidth: 1920,
+  screenHeight: 1080,
+  viewportWidth: 1280,
+  viewportHeight: 720
+});
+
 function makeDeviceEnvInfo() {
-  return {
-    darkModeEnabled: false,
-    devicePixelRatio: 1,
-    screenWidth: 1920,
-    screenHeight: 1080,
-    viewportWidth: 1280,
-    viewportHeight: 720
-  };
+  return DEVICE_ENV_INFO;
 }
 
 export class GrokClient {

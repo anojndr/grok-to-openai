@@ -185,3 +185,40 @@ test("createConversationAndRespond forwards heavy mode IDs to Grok", async () =>
   assert.equal(requests.length, 1);
   assert.equal(requests[0].body.modeId, "heavy");
 });
+
+test("conversation requests reuse the same deviceEnvInfo object", async () => {
+  const requests = [];
+  const client = new GrokClient({
+    grokBaseUrl: "https://grok.com",
+    defaultModel: "grok-4-auto"
+  });
+
+  client.browser = {
+    async request(request) {
+      requests.push(request);
+      return {
+        meta: {
+          status: 200
+        },
+        text: ""
+      };
+    }
+  };
+
+  await client.createConversationAndRespond({
+    model: "grok-4-auto",
+    message: "First"
+  });
+  await client.addResponse({
+    conversationId: "conv_123",
+    parentResponseId: "resp_123",
+    model: "grok-4-auto",
+    message: "Second"
+  });
+
+  assert.equal(requests.length, 2);
+  assert.strictEqual(
+    requests[0].body.deviceEnvInfo,
+    requests[1].body.deviceEnvInfo
+  );
+});

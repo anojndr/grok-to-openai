@@ -57,6 +57,7 @@ export class BrowserSession {
     this.config = config;
     this.context = null;
     this.page = null;
+    this.pageUserAgent = null;
     this.pending = new Map();
     this.statsigChunkSource = null;
     this.bindingsInstalled = false;
@@ -272,16 +273,25 @@ export class BrowserSession {
       return this.page;
     }
 
-    this.page = await this.context.newPage();
-    this.page.on("close", () => {
-      if (this.page && this.page.isClosed()) {
+    const page = await this.context.newPage();
+    this.page = page;
+    page.on("close", () => {
+      if (this.page === page) {
         this.page = null;
+        this.pageUserAgent = null;
       }
     });
-    await this.page.goto(this.config.grokBaseUrl, {
+    await page.goto(this.config.grokBaseUrl, {
       waitUntil: "domcontentloaded"
     });
-    return this.page;
+
+    try {
+      this.pageUserAgent = await page.evaluate(() => navigator.userAgent);
+    } catch {
+      this.pageUserAgent = null;
+    }
+
+    return page;
   }
 
   async recreatePage() {
@@ -396,11 +406,17 @@ export class BrowserSession {
       headers.Cookie = cookies.map((cookie) => `${cookie.name}=${cookie.value}`).join("; ");
     }
 
-    try {
-      const page = await this.ensurePage();
-      headers["User-Agent"] = await page.evaluate(() => navigator.userAgent);
-    } catch {
-      // Fall back to Node's default user agent if page access fails.
+    if (!this.pageUserAgent) {
+      try {
+        const page = await this.ensurePage();
+        this.pageUserAgent = await page.evaluate(() => navigator.userAgent);
+      } catch {
+        // Fall back to Node's default user agent if page access fails.
+      }
+    }
+
+    if (this.pageUserAgent) {
+      headers["User-Agent"] = this.pageUserAgent;
     }
 
     const response = await fetch(url, { headers });
@@ -429,5 +445,6 @@ export class BrowserSession {
     await this.context?.close();
     this.context = null;
     this.page = null;
+    this.pageUserAgent = null;
   }
 }
