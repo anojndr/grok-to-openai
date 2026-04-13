@@ -198,7 +198,7 @@ async function persistAssistantMessage(
 }
 
 export async function buildConversationHistory({
-  previousHistory = null,
+  previousHistory: _previousHistory = null,
   instructions = "",
   inputMessages = [],
   assistantOutput = null,
@@ -213,9 +213,9 @@ export async function buildConversationHistory({
   );
 
   return {
-    instructions: toInstructionList(previousHistory?.instructions ?? [], instructions),
+    version: 2,
+    instructions: toInstructionList([], instructions),
     messages: [
-      ...(previousHistory?.messages ?? []),
       ...storedMessages,
       ...(assistantMessage ? [assistantMessage] : [])
     ]
@@ -434,7 +434,8 @@ export async function continueResponseConversation({
   grokClient,
   uploadFilesToGrok,
   fileStore,
-  onToken = null
+  onToken = null,
+  loadPreviousHistory = null
 }) {
   const lastUserMessage = currentMessages[currentMessages.length - 1];
   if (!lastUserMessage || lastUserMessage.role !== "user") {
@@ -443,6 +444,7 @@ export async function continueResponseConversation({
 
   const accounts = grokAccounts ?? createSingleAccountAdapter(grokClient);
   const preferredAccountIndex = previousRecord.grok?.accountIndex ?? 0;
+  let followUpError = null;
 
   try {
     const result = await accounts.withAccount(
@@ -474,10 +476,20 @@ export async function continueResponseConversation({
     if (!previousRecord.history?.messages?.length) {
       throw error;
     }
+
+    followUpError = error;
+  }
+
+  const previousHistory = loadPreviousHistory
+    ? await loadPreviousHistory()
+    : previousRecord.history;
+
+  if (!previousHistory?.messages?.length) {
+    throw followUpError;
   }
 
   const replay = await buildReplayConversationRequest({
-    previousHistory: previousRecord.history,
+    previousHistory,
     currentMessages,
     fileStore
   });

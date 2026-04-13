@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import { Pool } from "pg";
 import { sanitizeFilename } from "../lib/fs.js";
 import { createId, unixTimestampSeconds } from "../lib/ids.js";
+import { materializeResponseRecord } from "./history.js";
 
 const FILES_TABLE = "bridge_files";
 const RESPONSES_TABLE = "bridge_responses";
@@ -183,6 +184,11 @@ export class PostgresResponseStore {
     );
 
     return result.rows[0]?.record ?? null;
+  }
+
+  async getWithHistory(id) {
+    const record = await this.get(id);
+    return materializeResponseRecord(record, (previousId) => this.get(previousId));
   }
 }
 

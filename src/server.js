@@ -341,6 +341,8 @@ async function executeManualHistory({
 
 async function runResponseRequest(parsed, normalized, options = {}) {
   const onToken = options.onToken ?? null;
+  const previousRecordOption = options.previousRecord;
+  const loadPreviousHistoryOption = options.loadPreviousHistory ?? null;
 
   if (!normalized.messages.length) {
     throw new HttpError(400, "input must include at least one user message");
@@ -357,7 +359,9 @@ async function runResponseRequest(parsed, normalized, options = {}) {
   }
 
   if (parsed.previous_response_id) {
-    const previous = await responseStore.get(parsed.previous_response_id);
+    const previous =
+      previousRecordOption ??
+      (await responseStore.get(parsed.previous_response_id));
     if (!previous) {
       throw new HttpError(404, `Unknown previous_response_id: ${parsed.previous_response_id}`);
     }
@@ -370,7 +374,13 @@ async function runResponseRequest(parsed, normalized, options = {}) {
       grokAccounts,
       uploadFilesToGrok,
       fileStore,
-      onToken
+      onToken,
+      loadPreviousHistory:
+        loadPreviousHistoryOption ??
+        (async () => {
+          const record = await responseStore.getWithHistory(parsed.previous_response_id);
+          return record?.history ?? null;
+        })
     });
   }
 
@@ -458,6 +468,9 @@ app.post("/v1/responses", async (req, res, next) => {
     const previousRecord = parsed.previous_response_id
       ? await responseStore.get(parsed.previous_response_id)
       : null;
+    if (parsed.previous_response_id && !previousRecord) {
+      throw new HttpError(404, `Unknown previous_response_id: ${parsed.previous_response_id}`);
+    }
     const { publicModel } = resolveModel(
       parsed.model,
       parsed.reasoning?.effort,
@@ -550,6 +563,15 @@ app.post("/v1/responses", async (req, res, next) => {
         });
       };
       const result = await runResponseRequest(parsed, normalized, {
+        previousRecord,
+        loadPreviousHistory: parsed.previous_response_id
+          ? async () => {
+              const record = await responseStore.getWithHistory(
+                parsed.previous_response_id
+              );
+              return record?.history ?? null;
+            }
+          : null,
         onToken(token, meta) {
           if (meta?.isThinking) {
             return;
@@ -654,7 +676,6 @@ app.post("/v1/responses", async (req, res, next) => {
       });
 
       const history = await buildConversationHistory({
-        previousHistory: previousRecord?.history ?? null,
         instructions,
         inputMessages: normalized.messages,
         assistantOutput: {
@@ -670,6 +691,7 @@ app.post("/v1/responses", async (req, res, next) => {
 
       await responseStore.set({
         id: responseId,
+        previous_response_id: parsed.previous_response_id ?? null,
         response: stripImageResultsFromResponse(finalResponse),
         grok: buildStoredGrokState({
           state: result.state,
@@ -692,7 +714,17 @@ app.post("/v1/responses", async (req, res, next) => {
       requestBody: parsed,
       fileStore
     });
-    const result = await runResponseRequest(parsed, normalized);
+    const result = await runResponseRequest(parsed, normalized, {
+      previousRecord,
+      loadPreviousHistory: parsed.previous_response_id
+        ? async () => {
+            const record = await responseStore.getWithHistory(
+              parsed.previous_response_id
+            );
+            return record?.history ?? null;
+          }
+        : null
+    });
     const assistantOutput = buildAssistantOutput(
       result.state,
       parsed.source_attribution,
@@ -703,7 +735,6 @@ app.post("/v1/responses", async (req, res, next) => {
     const images = assistantOutput.images;
     const text = assistantOutput.text;
     const history = await buildConversationHistory({
-      previousHistory: previousRecord?.history ?? null,
       instructions: normalized.instructions,
       inputMessages: normalized.messages,
       assistantOutput: {
@@ -732,6 +763,7 @@ app.post("/v1/responses", async (req, res, next) => {
 
     await responseStore.set({
       id: responseId,
+      previous_response_id: parsed.previous_response_id ?? null,
       response: stripImageResultsFromResponse(finalResponse),
       grok: buildStoredGrokState({
         state: result.state,

@@ -55,7 +55,7 @@ function createMemoryFileStore() {
   };
 }
 
-test("buildReplayConversationRequest includes the full stored history and all attachments", async () => {
+test("buildConversationHistory stores only the current turn delta", async () => {
   const fileStore = createMemoryFileStore();
   const existingFile = await fileStore.create({
     filename: "note.txt",
@@ -63,7 +63,7 @@ test("buildReplayConversationRequest includes the full stored history and all at
     mimeType: "text/plain"
   });
 
-  const previousHistory = await buildConversationHistory({
+  const history = await buildConversationHistory({
     previousHistory: {
       instructions: ["Be exact."],
       messages: [
@@ -112,6 +112,61 @@ test("buildReplayConversationRequest includes the full stored history and all at
     }
   });
 
+  assert.equal(history.version, 2);
+  assert.deepEqual(history.instructions, ["Prefer short bullet points."]);
+  assert.equal(history.messages.length, 2);
+  assert.equal(history.messages[0].role, "user");
+  assert.equal(history.messages[1].role, "assistant");
+  assert.equal(history.messages[0].attachments.length, 1);
+  assert.equal(history.messages[1].attachments.length, 1);
+});
+
+test("buildReplayConversationRequest includes the full stored history and all attachments", async () => {
+  const fileStore = createMemoryFileStore();
+  const noteFile = await fileStore.create({
+    filename: "note.txt",
+    bytes: Buffer.from("alpha"),
+    mimeType: "text/plain"
+  });
+  const previewFile = await fileStore.create({
+    filename: "draft-preview.png",
+    bytes: Buffer.from("preview-image"),
+    mimeType: "image/png"
+  });
+
+  const previousHistory = {
+    instructions: ["Be exact.", "Prefer short bullet points."],
+    messages: [
+      {
+        role: "assistant",
+        text: "Earlier summary.",
+        attachments: []
+      },
+      {
+        role: "user",
+        text: "Compare this note to the draft.",
+        attachments: [
+          {
+            fileId: noteFile.id,
+            filename: "note.txt",
+            mimeType: "text/plain"
+          }
+        ]
+      },
+      {
+        role: "assistant",
+        text: "The draft is more detailed.",
+        attachments: [
+          {
+            fileId: previewFile.id,
+            filename: "draft-preview.png",
+            mimeType: "image/png"
+          }
+        ]
+      }
+    ]
+  };
+
   const replay = await buildReplayConversationRequest({
     previousHistory,
     currentMessages: [
@@ -130,10 +185,6 @@ test("buildReplayConversationRequest includes the full stored history and all at
     fileStore
   });
 
-  assert.deepEqual(previousHistory.instructions, [
-    "Be exact.",
-    "Prefer short bullet points."
-  ]);
   assert.equal(replay.files.length, 3);
   assert.equal(replay.files[0].bytes.toString(), "alpha");
   assert.equal(replay.files[1].bytes.toString(), "preview-image");
@@ -176,9 +227,20 @@ test("continueResponseConversation falls back to replaying history when the Grok
         role: "assistant",
         text: "I have read it.",
         attachments: []
+      },
+      {
+        role: "user",
+        text: "Keep the same file in mind for the next answer.",
+        attachments: []
+      },
+      {
+        role: "assistant",
+        text: "I will keep it in mind.",
+        attachments: []
       }
     ]
   };
+  let historyLoadCalls = 0;
 
   let addResponseArgs = null;
   let createConversationArgs = null;
@@ -212,7 +274,11 @@ test("continueResponseConversation falls back to replaying history when the Grok
         conversationId: "conversation_old",
         assistantResponseId: "response_old"
       },
-      history: previousHistory
+      history: {
+        version: 2,
+        instructions: [],
+        messages: previousHistory.messages.slice(-2)
+      }
     },
     currentMessages: [
       {
@@ -231,16 +297,21 @@ test("continueResponseConversation falls back to replaying history when the Grok
     publicModel: "grok-4-auto",
     grokClient,
     uploadFilesToGrok,
-    fileStore
+    fileStore,
+    loadPreviousHistory: async () => {
+      historyLoadCalls += 1;
+      return previousHistory;
+    }
   });
 
   assert.equal(addResponseArgs.conversationId, "conversation_old");
   assert.equal(addResponseArgs.parentResponseId, "response_old");
+  assert.equal(historyLoadCalls, 1);
   assert.equal(uploadCalls.length, 2);
   assert.deepEqual(uploadCalls[0], ["follow-up.png"]);
   assert.deepEqual(uploadCalls[1], [
     "turn-001-user-attachment-001-context.txt",
-    "turn-003-user-attachment-001-follow-up.png"
+    "turn-005-user-attachment-001-follow-up.png"
   ]);
   assert.equal(createConversationArgs.instructions, "Answer only the latest user message.");
   assert.equal(createConversationArgs.model, "grok-4-auto");
@@ -252,8 +323,80 @@ test("continueResponseConversation falls back to replaying history when the Grok
     createConversationArgs.message,
     /The original Grok conversation could not be found in the active account/
   );
-  assert.match(createConversationArgs.message, /Turn 2 \| Assistant/);
-  assert.match(createConversationArgs.message, /Turn 3 \| User/);
+  assert.match(createConversationArgs.message, /Turn 4 \| Assistant/);
+  assert.match(createConversationArgs.message, /Turn 5 \| User/);
+  assert.deepEqual(result, {
+    accountIndex: 0,
+    model: "grok-4-auto",
+    state: {
+      responses: []
+    }
+  });
+});
+
+test("continueResponseConversation does not hydrate prior history unless replay is needed", async () => {
+  const fileStore = createMemoryFileStore();
+  let historyLoadCalls = 0;
+  let addResponseArgs = null;
+
+  const grokClient = {
+    async addResponse(args) {
+      addResponseArgs = args;
+      return {
+        model: args.model,
+        state: {
+          responses: []
+        }
+      };
+    }
+  };
+  const uploadFilesToGrok = async (files) =>
+    files.map((_file, index) => `upload_${index + 1}`);
+
+  const result = await continueResponseConversation({
+    previousRecord: {
+      grok: {
+        conversationId: "conversation_old",
+        assistantResponseId: "response_old"
+      },
+      history: {
+        version: 2,
+        instructions: [],
+        messages: [
+          {
+            role: "user",
+            text: "Most recent prior message.",
+            attachments: []
+          },
+          {
+            role: "assistant",
+            text: "Most recent prior answer.",
+            attachments: []
+          }
+        ]
+      }
+    },
+    currentMessages: [
+      {
+        role: "user",
+        text: "Continue without replaying anything.",
+        files: []
+      }
+    ],
+    instructions: "Answer only the latest user message.",
+    publicModel: "grok-4-auto",
+    grokClient,
+    uploadFilesToGrok,
+    fileStore,
+    loadPreviousHistory: async () => {
+      historyLoadCalls += 1;
+      throw new Error("history should not be loaded");
+    }
+  });
+
+  assert.equal(addResponseArgs.conversationId, "conversation_old");
+  assert.equal(addResponseArgs.parentResponseId, "response_old");
+  assert.equal(historyLoadCalls, 0);
   assert.deepEqual(result, {
     accountIndex: 0,
     model: "grok-4-auto",

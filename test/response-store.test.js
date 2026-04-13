@@ -73,3 +73,81 @@ test("ResponseStore can still read legacy monolithic responses.json records", as
   assert.deepEqual(await store.get(legacyRecord.id), legacyRecord);
   assert.equal(await fs.readFile(migratedPath, "utf8"), `${JSON.stringify(legacyRecord)}\n`);
 });
+
+test("ResponseStore reconstructs compact history chains on demand", async (t) => {
+  const dataDir = await createTempDataDir(t);
+  const store = new ResponseStore(dataDir);
+  await store.init();
+
+  await store.set({
+    id: "resp_1",
+    previous_response_id: null,
+    response: {
+      id: "resp_1",
+      object: "response",
+      previous_response_id: null
+    },
+    grok: {
+      conversationId: "conversation_1"
+    },
+    history: {
+      version: 2,
+      instructions: ["Be exact."],
+      messages: [
+        {
+          role: "user",
+          text: "First question",
+          attachments: []
+        },
+        {
+          role: "assistant",
+          text: "First answer",
+          attachments: []
+        }
+      ]
+    }
+  });
+
+  await store.set({
+    id: "resp_2",
+    previous_response_id: "resp_1",
+    response: {
+      id: "resp_2",
+      object: "response",
+      previous_response_id: "resp_1"
+    },
+    grok: {
+      conversationId: "conversation_1"
+    },
+    history: {
+      version: 2,
+      instructions: ["Prefer short bullet points."],
+      messages: [
+        {
+          role: "user",
+          text: "Second question",
+          attachments: []
+        },
+        {
+          role: "assistant",
+          text: "Second answer",
+          attachments: []
+        }
+      ]
+    }
+  });
+
+  const raw = await store.get("resp_2");
+  assert.deepEqual(raw.history.instructions, ["Prefer short bullet points."]);
+  assert.equal(raw.history.messages.length, 2);
+
+  const hydrated = await store.getWithHistory("resp_2");
+  assert.deepEqual(hydrated.history.instructions, [
+    "Be exact.",
+    "Prefer short bullet points."
+  ]);
+  assert.deepEqual(
+    hydrated.history.messages.map((message) => message.text),
+    ["First question", "First answer", "Second question", "Second answer"]
+  );
+});

@@ -1,5 +1,6 @@
 import path from "node:path";
 import { ensureDir, readJson, sanitizeFilename, writeJson } from "../lib/fs.js";
+import { materializeResponseRecord } from "./history.js";
 
 export class ResponseStore {
   constructor(dataDir) {
@@ -29,6 +30,11 @@ export class ResponseStore {
 
     await writeJson(this.getRecordPath(id), legacyRecord);
     return legacyRecord;
+  }
+
+  async getWithHistory(id) {
+    const record = await this.get(id);
+    return materializeResponseRecord(record, (previousId) => this.get(previousId));
   }
 
   getRecordPath(id) {
