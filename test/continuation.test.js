@@ -138,8 +138,8 @@ test("buildConversationHistory stores only the current turn delta", async () => 
 
 test("buildConversationHistory persists input attachments in parallel while preserving message order", async () => {
   const createDeferredByFilename = new Map([
-    ["first.txt", createDeferred()],
-    ["second.txt", createDeferred()]
+    ["first file.txt", createDeferred()],
+    ["second file.txt", createDeferred()]
   ]);
   const createCalls = [];
 
@@ -151,7 +151,7 @@ test("buildConversationHistory persists input attachments in parallel while pres
         text: "First attachment.",
         files: [
           {
-            filename: "first.txt",
+            filename: "first file.txt",
             mimeType: "text/plain",
             bytes: Buffer.from("first")
           }
@@ -162,7 +162,7 @@ test("buildConversationHistory persists input attachments in parallel while pres
         text: "Second attachment.",
         files: [
           {
-            filename: "second.txt",
+            filename: "second file.txt",
             mimeType: "text/plain",
             bytes: Buffer.from("second")
           }
@@ -175,25 +175,22 @@ test("buildConversationHistory persists input attachments in parallel while pres
         createCalls.push(filename);
         return createDeferredByFilename.get(filename).promise;
       },
-      async getRecord(id) {
-        return {
-          filename: id.replace(/^stored:/, ""),
-          mime_type: "text/plain"
-        };
+      async getRecord() {
+        throw new Error("getRecord should not be called after create");
       }
     }
   });
 
   await flushAsyncOperations();
-  assert.deepEqual(createCalls, ["first.txt", "second.txt"]);
+  assert.deepEqual(createCalls, ["first file.txt", "second file.txt"]);
 
-  createDeferredByFilename.get("second.txt").resolve({
-    id: "stored:second.txt",
-    filename: "second.txt"
+  createDeferredByFilename.get("second file.txt").resolve({
+    id: "stored:second file.txt",
+    filename: "second_file.txt"
   });
-  createDeferredByFilename.get("first.txt").resolve({
-    id: "stored:first.txt",
-    filename: "first.txt"
+  createDeferredByFilename.get("first file.txt").resolve({
+    id: "stored:first file.txt",
+    filename: "first_file.txt"
   });
 
   const history = await historyPromise;
@@ -203,7 +200,7 @@ test("buildConversationHistory persists input attachments in parallel while pres
   );
   assert.deepEqual(
     history.messages.map((message) => message.attachments[0].filename),
-    ["first.txt", "second.txt"]
+    ["first_file.txt", "second_file.txt"]
   );
 });
 
@@ -236,15 +233,11 @@ test("buildConversationHistory persists assistant images in parallel while prese
       async create({ filename }) {
         return {
           id: `stored:${filename}`,
-          filename
+          filename: filename.replace(/-/g, "_")
         };
       },
-      async getRecord(id) {
-        const filename = id.replace(/^stored:/, "");
-        return {
-          filename,
-          mime_type: "image/png"
-        };
+      async getRecord() {
+        throw new Error("getRecord should not be called after create");
       }
     },
     loadAssistantImageAsset: async (image) => {
@@ -270,7 +263,7 @@ test("buildConversationHistory persists assistant images in parallel while prese
   assert.equal(history.messages[0].role, "assistant");
   assert.deepEqual(
     history.messages[0].attachments.map((attachment) => attachment.filename),
-    ["first-preview.png", "second-preview.png"]
+    ["first_preview.png", "second_preview.png"]
   );
 });
 

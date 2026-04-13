@@ -31,8 +31,10 @@ test("FileStore moves temp uploads into permanent storage without re-reading the
     assert.equal(created.bytes, 5);
     await assert.rejects(fs.access(uploadPath));
 
-    const content = await store.getContent(created.id);
-    assert.equal(content?.toString("utf8"), "hello");
+    const stored = await store.getWithContent(created.id);
+    assert.equal(stored?.record.filename, "bad_file_.txt");
+    assert.equal(stored?.record.mime_type, "text/plain");
+    assert.equal(stored?.content.toString("utf8"), "hello");
   } finally {
     await fs.rm(dataDir, { recursive: true, force: true });
   }

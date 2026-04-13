@@ -218,14 +218,13 @@ app.get("/v1/files/:fileId", async (req, res, next) => {
 
 app.get("/v1/files/:fileId/content", async (req, res, next) => {
   try {
-    const content = await fileStore.getContent(req.params.fileId);
-    const record = await fileStore.getRecord(req.params.fileId);
-    if (!content || !record) {
+    const stored = await fileStore.getWithContent(req.params.fileId);
+    if (!stored?.content || !stored.record) {
       throw new HttpError(404, "File not found");
     }
 
-    res.setHeader("Content-Type", record.mime_type || "application/octet-stream");
-    res.send(content);
+    res.setHeader("Content-Type", stored.record.mime_type || "application/octet-stream");
+    res.send(stored.content);
   } catch (error) {
     next(error);
   }

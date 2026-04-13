@@ -68,7 +68,10 @@ function inferAssistantAttachmentFilename(image, index) {
 
 async function persistAttachment(file, fileStore) {
   if (file.fileId) {
-    const record = await fileStore.getRecord(file.fileId);
+    const record =
+      typeof fileStore.getRecord === "function"
+        ? await fileStore.getRecord(file.fileId)
+        : (await fileStore.getWithContent?.(file.fileId))?.record ?? null;
     if (record) {
       return {
         fileId: file.fileId,
@@ -78,18 +81,18 @@ async function persistAttachment(file, fileStore) {
     }
   }
 
+  const mimeType = file.mimeType || "application/octet-stream";
   const record = await fileStore.create({
     filename: file.filename || "attachment.bin",
     bytes: file.bytes,
     purpose: "conversation_history",
-    mimeType: file.mimeType || "application/octet-stream"
+    mimeType
   });
-  const stored = await fileStore.getRecord(record.id);
 
   return {
     fileId: record.id,
-    filename: stored?.filename || record.filename,
-    mimeType: stored?.mime_type || file.mimeType || "application/octet-stream"
+    filename: record.filename,
+    mimeType
   };
 }
 
@@ -169,12 +172,11 @@ async function persistAssistantMessage(
       purpose: "conversation_history",
       mimeType: asset.mimeType
     });
-    const stored = await fileStore.getRecord(record.id);
 
     return {
       fileId: record.id,
-      filename: stored?.filename || record.filename,
-      mimeType: stored?.mime_type || image.mimeType || "application/octet-stream"
+      filename: record.filename,
+      mimeType: asset.mimeType
     };
   }))).filter(Boolean);
 

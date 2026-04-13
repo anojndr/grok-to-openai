@@ -125,6 +125,23 @@ export class PostgresFileStore {
     return result.rows[0]?.content ?? null;
   }
 
+  async getWithContent(id) {
+    const result = await this.pool.query(
+      `SELECT record, content FROM ${FILES_TABLE} WHERE id = $1`,
+      [id]
+    );
+
+    const row = result.rows[0];
+    if (!row) {
+      return null;
+    }
+
+    return {
+      record: row.record,
+      content: row.content
+    };
+  }
+
   async getRecord(id) {
     const result = await this.pool.query(
       `SELECT record FROM ${FILES_TABLE} WHERE id = $1`,

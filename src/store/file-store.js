@@ -122,6 +122,18 @@ export class FileStore {
     return fs.readFile(record.path);
   }
 
+  async getWithContent(id) {
+    const record = this.index.files[id];
+    if (!record) {
+      return null;
+    }
+
+    return {
+      record,
+      content: await fs.readFile(record.path)
+    };
+  }
+
   async getRecord(id) {
     return this.index.files[id] ?? null;
   }

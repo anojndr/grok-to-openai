@@ -301,17 +301,16 @@ export async function resolveFileParts({
   const fileParts = extractFileParts(content);
   return Promise.all(fileParts.map(async (filePart) => {
     if (filePart.file_id) {
-      const record = await fileStore.getRecord(filePart.file_id);
-      if (!record) {
+      const stored = await fileStore.getWithContent(filePart.file_id);
+      if (!stored?.record) {
         throw new HttpError(400, `Unknown file_id: ${filePart.file_id}`);
       }
 
-      const bytes = await fileStore.getContent(filePart.file_id);
       return {
         fileId: filePart.file_id,
-        filename: record.filename,
-        mimeType: record.mime_type,
-        bytes,
+        filename: stored.record.filename,
+        mimeType: stored.record.mime_type,
+        bytes: stored.content,
         source: "file_id"
       };
     }

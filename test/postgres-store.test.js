@@ -53,6 +53,21 @@ class FakePool {
       };
     }
 
+    if (sql.startsWith("SELECT record, content FROM bridge_files")) {
+      const row = this.files.get(params[0]);
+      return {
+        rows: row
+          ? [
+              {
+                record: row.record,
+                content: row.content
+              }
+            ]
+          : [],
+        rowCount: row ? 1 : 0
+      };
+    }
+
     if (sql.startsWith("SELECT record FROM bridge_files")) {
       const row = this.files.get(params[0]);
       return {
@@ -151,6 +166,30 @@ test("PostgresFileStore stores metadata and bytes", async () => {
 
   const openaiFile = await store.get(created.id);
   assert.deepEqual(openaiFile, created);
+});
+
+test("PostgresFileStore fetches metadata and bytes together in one query", async () => {
+  const pool = new FakePool();
+  const store = new PostgresFileStore(pool);
+  await store.init();
+
+  const created = await store.create({
+    filename: "bad file?.txt",
+    bytes: Buffer.from("hello"),
+    mimeType: "text/plain"
+  });
+
+  const queriesBeforeRead = pool.queries.length;
+  const stored = await store.getWithContent(created.id);
+  const readQueries = pool.queries.slice(queriesBeforeRead);
+
+  assert.equal(stored?.record.filename, "bad_file_.txt");
+  assert.equal(stored?.record.mime_type, "text/plain");
+  assert.equal(stored?.content.toString("utf8"), "hello");
+  assert.deepEqual(
+    readQueries.map((query) => query.sql),
+    ["SELECT record, content FROM bridge_files WHERE id = $1"]
+  );
 });
 
 test("PostgresFileStore can create a record from a temp upload path", async () => {

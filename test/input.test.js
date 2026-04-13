@@ -206,7 +206,7 @@ test("resolveFileParts resolves multiple file_id attachments in parallel while p
     ["file_1", createDeferred()],
     ["file_2", createDeferred()]
   ]);
-  const getContentCalls = [];
+  const getWithContentCalls = [];
 
   const pending = resolveFileParts({
     content: [
@@ -220,24 +220,36 @@ test("resolveFileParts resolves multiple file_id attachments in parallel while p
       }
     ],
     fileStore: {
-      async getRecord(id) {
-        return {
-          filename: `${id}.txt`,
-          mime_type: "text/plain"
-        };
-      },
-      async getContent(id) {
-        getContentCalls.push(id);
+      async getWithContent(id) {
+        getWithContentCalls.push(id);
         return deferredById.get(id).promise;
+      },
+      async getRecord() {
+        throw new Error("getRecord should not be called when getWithContent is available");
+      },
+      async getContent() {
+        throw new Error("getContent should not be called when getWithContent is available");
       }
     }
   });
 
   await flushAsyncOperations();
-  assert.deepEqual(getContentCalls, ["file_1", "file_2"]);
+  assert.deepEqual(getWithContentCalls, ["file_1", "file_2"]);
 
-  deferredById.get("file_2").resolve(Buffer.from("second"));
-  deferredById.get("file_1").resolve(Buffer.from("first"));
+  deferredById.get("file_2").resolve({
+    record: {
+      filename: "file_2.txt",
+      mime_type: "text/plain"
+    },
+    content: Buffer.from("second")
+  });
+  deferredById.get("file_1").resolve({
+    record: {
+      filename: "file_1.txt",
+      mime_type: "text/plain"
+    },
+    content: Buffer.from("first")
+  });
 
   const files = await pending;
   assert.deepEqual(
