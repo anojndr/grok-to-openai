@@ -39,6 +39,18 @@ class FakePool {
       return { rows: [], rowCount: 1 };
     }
 
+    if (sql.startsWith("UPDATE bridge_files SET content = content || $2")) {
+      const [id, content] = params;
+      const row = this.files.get(id);
+
+      if (!row) {
+        return { rows: [], rowCount: 0 };
+      }
+
+      row.content = Buffer.concat([row.content, Buffer.from(content)]);
+      return { rows: [], rowCount: 1 };
+    }
+
     if (sql.startsWith("SELECT content FROM bridge_files")) {
       const row = this.files.get(params[0]);
       return {
@@ -217,6 +229,41 @@ test("PostgresFileStore can create a record from a temp upload path", async () =
     const content = await store.getContent(created.id);
     assert.equal(content?.toString("utf8"), "hello from disk");
   } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("PostgresFileStore creates records from temp upload paths without calling fs.readFile", async () => {
+  const pool = new FakePool();
+  const store = new PostgresFileStore(pool);
+  await store.init();
+
+  const tempDir = await fs.mkdtemp(
+    path.join(os.tmpdir(), "grok-to-openai-postgres-store-")
+  );
+  const uploadPath = path.join(tempDir, "upload.txt");
+  const originalReadFile = fs.readFile;
+  await fs.writeFile(uploadPath, "stream me");
+
+  fs.readFile = async () => {
+    throw new Error("createFromPath should not use fs.readFile");
+  };
+
+  try {
+    const created = await store.createFromPath({
+      filename: "upload.txt",
+      sourcePath: uploadPath,
+      mimeType: "text/plain",
+      size: 9
+    });
+
+    assert.match(created.id, /^file_/);
+    assert.equal(created.bytes, 9);
+
+    const content = await store.getContent(created.id);
+    assert.equal(content?.toString("utf8"), "stream me");
+  } finally {
+    fs.readFile = originalReadFile;
     await fs.rm(tempDir, { recursive: true, force: true });
   }
 });

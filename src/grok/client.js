@@ -36,7 +36,7 @@ export class GrokClient {
     const body = {
       fileName: normalizedFile.filename,
       fileMimeType: normalizedFile.mimeType || "application/octet-stream",
-      content: Buffer.from(normalizedFile.bytes).toString("base64"),
+      content: normalizedFile.bytes.toString("base64"),
       fileSource: "SELF_UPLOAD_FILE_SOURCE"
     };
 

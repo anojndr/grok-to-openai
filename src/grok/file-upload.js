@@ -132,7 +132,7 @@ function decodeText(bytes, encoding) {
 }
 
 export function normalizeFileForGrokUpload({ filename, mimeType, bytes }) {
-  const buffer = Buffer.from(bytes);
+  const buffer = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
   const { baseMimeType, charset } = parseMimeType(mimeType);
   const textMimeType = inferTextMimeType(filename, baseMimeType);
 

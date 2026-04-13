@@ -6,6 +6,7 @@ import { materializeResponseRecord } from "./history.js";
 
 const FILES_TABLE = "bridge_files";
 const RESPONSES_TABLE = "bridge_responses";
+const FILE_APPEND_CHUNK_SIZE = 1024 * 1024;
 
 function assertPostgresUrl(databaseUrl) {
   const url = new URL(databaseUrl);
@@ -100,15 +101,61 @@ export class PostgresFileStore {
     filename,
     sourcePath,
     purpose = "user_data",
-    mimeType = "application/octet-stream"
+    mimeType = "application/octet-stream",
+    size
   }) {
-    const bytes = await fs.readFile(sourcePath);
-    return this.create({
-      filename,
-      bytes,
+    const id = createId("file");
+    const safeName = sanitizeFilename(filename || "upload.bin");
+    const createdAt = unixTimestampSeconds();
+    const contentBytes =
+      Number.isFinite(size) && size >= 0 ? size : (await fs.stat(sourcePath)).size;
+    const record = {
+      id,
+      object: "file",
+      bytes: contentBytes,
+      created_at: createdAt,
+      filename: safeName,
       purpose,
-      mimeType
-    });
+      mime_type: mimeType,
+      status: "processed"
+    };
+    const queryable = await this.getQueryable();
+    const canRelease = typeof queryable.release === "function";
+
+    try {
+      if (canRelease) {
+        await queryable.query("BEGIN");
+      }
+
+      await queryable.query(
+        `
+          INSERT INTO ${FILES_TABLE} (id, record, content)
+          VALUES ($1, $2::jsonb, $3)
+          ON CONFLICT (id) DO UPDATE
+          SET record = EXCLUDED.record,
+              content = EXCLUDED.content,
+              updated_at = NOW()
+        `,
+        [id, JSON.stringify(record), Buffer.alloc(0)]
+      );
+
+      await this.appendFileContent(queryable, id, sourcePath);
+
+      if (canRelease) {
+        await queryable.query("COMMIT");
+      }
+    } catch (error) {
+      if (canRelease) {
+        await queryable.query("ROLLBACK").catch(() => {});
+      }
+      throw error;
+    } finally {
+      if (canRelease) {
+        queryable.release();
+      }
+    }
+
+    return this.toOpenAIFile(record);
   }
 
   async get(id) {
@@ -149,6 +196,40 @@ export class PostgresFileStore {
     );
 
     return result.rows[0]?.record ?? null;
+  }
+
+  async getQueryable() {
+    if (typeof this.pool.connect === "function") {
+      return this.pool.connect();
+    }
+
+    return this.pool;
+  }
+
+  async appendFileContent(queryable, id, sourcePath) {
+    const handle = await fs.open(sourcePath, "r");
+    const chunk = Buffer.allocUnsafe(FILE_APPEND_CHUNK_SIZE);
+
+    try {
+      while (true) {
+        const { bytesRead } = await handle.read(chunk, 0, chunk.length, null);
+        if (bytesRead === 0) {
+          break;
+        }
+
+        await queryable.query(
+          `
+            UPDATE ${FILES_TABLE}
+            SET content = content || $2,
+                updated_at = NOW()
+            WHERE id = $1
+          `,
+          [id, chunk.subarray(0, bytesRead)]
+        );
+      }
+    } finally {
+      await handle.close();
+    }
   }
 
   toOpenAIFile(record) {
