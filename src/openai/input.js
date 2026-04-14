@@ -7,6 +7,14 @@ import {
   MAX_DIRECT_IMAGE_BYTES
 } from "../lib/request-limits.js";
 
+const REMOTE_IMAGE_FETCH_HEADERS = Object.freeze({
+  Accept: "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+  "Accept-Language": "en-US,en;q=0.9",
+  "User-Agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+    "(KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+});
+
 function ensureArray(value) {
   if (Array.isArray(value)) {
     return value;
@@ -172,6 +180,84 @@ function estimateBase64DecodedBytes(value) {
   }
 
   return Math.max(0, Math.floor((normalized.length * 3) / 4) - padding);
+}
+
+function normalizeMimeType(mimeType = "") {
+  return mimeType.split(";")[0].trim().toLowerCase();
+}
+
+function inferImageMimeTypeFromBytes(bytes) {
+  if (!bytes?.length) {
+    return "";
+  }
+
+  if (
+    bytes.length >= 8 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47 &&
+    bytes[4] === 0x0d &&
+    bytes[5] === 0x0a &&
+    bytes[6] === 0x1a &&
+    bytes[7] === 0x0a
+  ) {
+    return "image/png";
+  }
+
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return "image/jpeg";
+  }
+
+  if (
+    bytes.length >= 12 &&
+    bytes.subarray(0, 4).toString("ascii") === "RIFF" &&
+    bytes.subarray(8, 12).toString("ascii") === "WEBP"
+  ) {
+    return "image/webp";
+  }
+
+  const gifSignature = bytes.subarray(0, 6).toString("ascii");
+  if (gifSignature === "GIF87a" || gifSignature === "GIF89a") {
+    return "image/gif";
+  }
+
+  const leadingText = bytes.subarray(0, 512).toString("utf8").trimStart().toLowerCase();
+  if (leadingText.startsWith("<svg") || (leadingText.startsWith("<?xml") && leadingText.includes("<svg"))) {
+    return "image/svg+xml";
+  }
+
+  return "";
+}
+
+function resolveRemoteImageMimeType({ responseMimeType, bytes }) {
+  const normalizedResponseMimeType = normalizeMimeType(responseMimeType);
+  const sniffedMimeType = inferImageMimeTypeFromBytes(bytes);
+
+  if (normalizedResponseMimeType.startsWith("image/")) {
+    return normalizedResponseMimeType;
+  }
+
+  if (
+    normalizedResponseMimeType === "" ||
+    normalizedResponseMimeType === "application/octet-stream" ||
+    normalizedResponseMimeType === "binary/octet-stream"
+  ) {
+    return sniffedMimeType;
+  }
+
+  return sniffedMimeType;
+}
+
+function buildInvalidRemoteImageMessage(imageUrl, mimeType = "") {
+  const normalizedMimeType = normalizeMimeType(mimeType);
+  const mimeTypeSuffix = normalizedMimeType
+    ? ` (received ${normalizedMimeType})`
+    : "";
+  return (
+    `image_url did not return image data: ${imageUrl}${mimeTypeSuffix}. ` +
+    "Remote hosts may block server-side fetches with Cloudflare or other bot challenges."
+  );
 }
 
 async function readResponseBytes(response, { maxBytes, tooLargeMessage }) {
@@ -378,20 +464,35 @@ export async function resolveImageParts({ content }) {
       };
     }
 
-    const response = await fetch(imageUrl);
+    const response = await fetch(imageUrl, {
+      headers: REMOTE_IMAGE_FETCH_HEADERS
+    });
     if (!response.ok) {
       throw new HttpError(400, `Unable to fetch image_url: ${imageUrl}`);
     }
 
-    const mimeType =
-      response.headers.get("content-type") || "application/octet-stream";
-    const filename =
-      inferFilenameFromUrl(imageUrl) ||
-      `image${inferExtensionFromMimeType(mimeType) || ".bin"}`;
+    const responseMimeType = response.headers.get("content-type") || "";
+    const inferredFilename = inferFilenameFromUrl(imageUrl);
     const buffer = await readResponseBytes(response, {
       maxBytes: MAX_DIRECT_IMAGE_BYTES,
       tooLargeMessage: buildLargeImageInputMessage()
     });
+    const mimeType = resolveRemoteImageMimeType({
+      responseMimeType,
+      bytes: buffer
+    });
+
+    if (!mimeType) {
+      throw new HttpError(
+        400,
+        buildInvalidRemoteImageMessage(imageUrl, responseMimeType)
+      );
+    }
+
+    const filename =
+      inferredFilename === "remote-file"
+        ? `image${inferExtensionFromMimeType(mimeType) || ".bin"}`
+        : inferredFilename;
 
     return {
       filename,

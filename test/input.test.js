@@ -265,8 +265,10 @@ test("resolveFileParts resolves multiple file_id attachments in parallel while p
 test("resolveImageParts streams image_url bodies without using arrayBuffer", async () => {
   const originalFetch = globalThis.fetch;
   let arrayBufferCalled = false;
+  const fetchCalls = [];
 
-  globalThis.fetch = async () => {
+  globalThis.fetch = async (url, options) => {
+    fetchCalls.push({ url, options });
     const response = new Response("image-bytes", {
       headers: {
         "content-type": "image/png",
@@ -294,6 +296,134 @@ test("resolveImageParts streams image_url bodies without using arrayBuffer", asy
     assert.equal(image.mimeType, "image/png");
     assert.equal(image.bytes.toString("utf8"), "image-bytes");
     assert.equal(arrayBufferCalled, false);
+    assert.deepEqual(fetchCalls, [
+      {
+        url: "https://example.com/diagram.png",
+        options: {
+          headers: {
+            Accept: "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "User-Agent":
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+              "(KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+          }
+        }
+      }
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("resolveImageParts rejects HTML challenge pages returned for image_url", async () => {
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = async () =>
+    new Response("<!DOCTYPE html><title>Just a moment...</title>", {
+      headers: {
+        "content-type": "text/html; charset=utf-8",
+        "content-length": "46"
+      }
+    });
+
+  try {
+    await assert.rejects(
+      () =>
+        resolveImageParts({
+          content: [
+            {
+              type: "input_image",
+              image_url: "https://example.com/protected/image.png"
+            }
+          ]
+        }),
+      (error) =>
+        error instanceof HttpError &&
+        error.status === 400 &&
+        /did not return image data/.test(error.message) &&
+        /Cloudflare/.test(error.message)
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("resolveImageParts accepts octet-stream image_url bodies when bytes sniff as PNG", async () => {
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = async () =>
+    new Response(
+      Buffer.from([
+        0x89,
+        0x50,
+        0x4e,
+        0x47,
+        0x0d,
+        0x0a,
+        0x1a,
+        0x0a,
+        0x00,
+        0x00,
+        0x00,
+        0x0d,
+        0x49,
+        0x48,
+        0x44,
+        0x52
+      ]),
+      {
+        headers: {
+          "content-type": "application/octet-stream",
+          "content-length": "16"
+        }
+      }
+    );
+
+  try {
+    const [image] = await resolveImageParts({
+      content: [
+        {
+          type: "input_image",
+          image_url: "https://example.com/"
+        }
+      ]
+    });
+
+    assert.equal(image.filename, "image.png");
+    assert.equal(image.mimeType, "image/png");
+    assert.equal(image.bytes.length, 16);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("resolveImageParts rejects octet-stream bodies that do not sniff as images", async () => {
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = async () =>
+    new Response("<!DOCTYPE html><title>blocked</title>", {
+      headers: {
+        "content-type": "application/octet-stream",
+        "content-length": "35"
+      }
+    });
+
+  try {
+    await assert.rejects(
+      () =>
+        resolveImageParts({
+          content: [
+            {
+              type: "input_image",
+              image_url: "https://example.com/challenge.png"
+            }
+          ]
+        }),
+      (error) =>
+        error instanceof HttpError &&
+        error.status === 400 &&
+        /did not return image data/.test(error.message)
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }
