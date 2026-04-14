@@ -52,6 +52,185 @@ function appendTextChunk(buffer, chunk) {
   buffer.length += nextChunk.length;
 }
 
+function installGrokBridgePageHelpers() {
+  const getBinding = (name) => {
+    if (typeof window[name] === "function") {
+      return window[name];
+    }
+
+    const legacyName = name.startsWith("__") ? name.slice(2) : "";
+    if (legacyName && typeof window[legacyName] === "function") {
+      return window[legacyName];
+    }
+
+    return null;
+  };
+
+  const callBinding = async (name, payload) => {
+    const binding = getBinding(name);
+    if (!binding) {
+      throw new Error(`window.${name} is not a function`);
+    }
+
+    await binding(payload);
+  };
+
+  window.__grokBridgeGetBinding = getBinding;
+  window.grokBridgeGetBinding = getBinding;
+  window.__grokBridgeCallBinding = callBinding;
+  window.grokBridgeCallBinding = callBinding;
+
+  if (typeof window.__grokBridgeEnsureStatsigGenerator !== "function") {
+    const ensureStatsigGenerator = async (scriptSource) => {
+      if (window.__grokStatsigGen) {
+        return window.__grokStatsigGen;
+      }
+
+      const previous = globalThis.TURBOPACK;
+      let moduleFactory = null;
+      globalThis.TURBOPACK = {
+        push(args) {
+          for (let index = 1; index < args.length; index += 2) {
+            if (args[index] === 880932) {
+              moduleFactory = args[index + 1];
+            }
+          }
+        }
+      };
+
+      try {
+        (0, eval)(scriptSource);
+      } finally {
+        globalThis.TURBOPACK = previous;
+      }
+
+      if (!moduleFactory) {
+        throw new Error("Unable to load Grok statsig middleware");
+      }
+
+      const exports = {};
+      moduleFactory({
+        s(defs) {
+          for (let index = 0; index < defs.length; index += 2) {
+            Object.defineProperty(exports, defs[index], {
+              enumerable: true,
+              get: defs[index + 1]
+            });
+          }
+        }
+      });
+
+      window.__grokStatsigGen = exports.default();
+      return window.__grokStatsigGen;
+    };
+
+    window.__grokBridgeEnsureStatsigGenerator = ensureStatsigGenerator;
+    window.grokBridgeEnsureStatsigGenerator = ensureStatsigGenerator;
+  }
+
+  if (typeof window.__grokBridgeFetch === "function") {
+    if (typeof window.grokBridgeFetch !== "function") {
+      window.grokBridgeFetch = window.__grokBridgeFetch;
+    }
+    return;
+  }
+
+  window.__grokBridgeFetch = async (request) => {
+    try {
+      const url = new URL(request.url, location.origin);
+      let statsigId;
+      try {
+        const generator = await window.__grokBridgeEnsureStatsigGenerator(
+          request.statsigChunkSource
+        );
+        statsigId = await generator(url.pathname, request.method);
+      } catch (error) {
+        statsigId = btoa(`e:${String(error)}`);
+      }
+      const headers = new Headers(request.headers || {});
+      headers.set("x-xai-request-id", crypto.randomUUID());
+      headers.set("x-statsig-id", statsigId);
+
+      const response = await fetch(request.url, {
+        method: request.method,
+        headers,
+        body: request.body ? JSON.stringify(request.body) : undefined,
+        credentials: "include"
+      });
+
+      const responseHeaders = {};
+      response.headers.forEach((value, key) => {
+        responseHeaders[key] = value;
+      });
+
+      await window.__grokBridgeCallBinding("__grokBridgeMeta", {
+        requestId: request.requestId,
+        status: response.status,
+        headers: responseHeaders
+      });
+
+      if (!response.body) {
+        await window.__grokBridgeCallBinding("__grokBridgeDone", {
+          requestId: request.requestId
+        });
+        return;
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) {
+          break;
+        }
+
+        const chunk = decoder.decode(value, { stream: true });
+        if (chunk) {
+          await window.__grokBridgeCallBinding("__grokBridgeChunk", {
+            requestId: request.requestId,
+            chunk
+          });
+        }
+      }
+
+      const finalChunk = decoder.decode();
+      if (finalChunk) {
+        await window.__grokBridgeCallBinding("__grokBridgeChunk", {
+          requestId: request.requestId,
+          chunk: finalChunk
+        });
+      }
+
+      await window.__grokBridgeCallBinding("__grokBridgeDone", {
+        requestId: request.requestId
+      });
+    } catch (error) {
+      try {
+        await window.__grokBridgeCallBinding("__grokBridgeError", {
+          requestId: request.requestId,
+          message: error instanceof Error ? error.message : String(error)
+        });
+      } catch {
+        throw error;
+      }
+    }
+  };
+
+  window.grokBridgeFetch = window.__grokBridgeFetch;
+}
+
+function isRecoverablePageError(message) {
+  return (
+    message.includes("Execution context was destroyed") ||
+    message.includes("Most likely because of a navigation") ||
+    message.includes("Target closed") ||
+    ((message.includes("__grokBridge") || message.includes("grokBridge")) &&
+      (message.includes("is not a function") ||
+        message.includes("is undefined")))
+  );
+}
+
 export class BrowserSession {
   constructor(config) {
     this.config = config;
@@ -116,17 +295,23 @@ export class BrowserSession {
       return;
     }
 
-    await this.context.exposeBinding("__grokBridgeMeta", (_source, payload) => {
+    const exposeAliases = async (names, handler) => {
+      for (const name of names) {
+        await this.context.exposeBinding(name, handler);
+      }
+    };
+
+    await exposeAliases(["__grokBridgeMeta", "grokBridgeMeta"], (_source, payload) => {
       const pending = this.pending.get(payload.requestId);
       pending?.onMeta(payload);
     });
 
-    await this.context.exposeBinding("__grokBridgeChunk", (_source, payload) => {
+    await exposeAliases(["__grokBridgeChunk", "grokBridgeChunk"], (_source, payload) => {
       const pending = this.pending.get(payload.requestId);
       pending?.onChunk(payload.chunk);
     });
 
-    await this.context.exposeBinding("__grokBridgeDone", (_source, payload) => {
+    await exposeAliases(["__grokBridgeDone", "grokBridgeDone"], (_source, payload) => {
       const pending = this.pending.get(payload.requestId);
       if (!pending) {
         return;
@@ -136,7 +321,7 @@ export class BrowserSession {
       pending.resolve();
     });
 
-    await this.context.exposeBinding("__grokBridgeError", (_source, payload) => {
+    await exposeAliases(["__grokBridgeError", "grokBridgeError"], (_source, payload) => {
       const pending = this.pending.get(payload.requestId);
       if (!pending) {
         return;
@@ -146,124 +331,7 @@ export class BrowserSession {
       pending.reject(new Error(payload.message));
     });
 
-    await this.context.addInitScript(() => {
-      window.__grokBridgeEnsureStatsigGenerator = async (scriptSource) => {
-        if (window.__grokStatsigGen) {
-          return window.__grokStatsigGen;
-        }
-
-        const previous = globalThis.TURBOPACK;
-        let moduleFactory = null;
-        globalThis.TURBOPACK = {
-          push(args) {
-            for (let index = 1; index < args.length; index += 2) {
-              if (args[index] === 880932) {
-                moduleFactory = args[index + 1];
-              }
-            }
-          }
-        };
-
-        try {
-          (0, eval)(scriptSource);
-        } finally {
-          globalThis.TURBOPACK = previous;
-        }
-
-        if (!moduleFactory) {
-          throw new Error("Unable to load Grok statsig middleware");
-        }
-
-        const exports = {};
-        moduleFactory({
-          s(defs) {
-            for (let index = 0; index < defs.length; index += 2) {
-              Object.defineProperty(exports, defs[index], {
-                enumerable: true,
-                get: defs[index + 1]
-              });
-            }
-          }
-        });
-
-        window.__grokStatsigGen = exports.default();
-        return window.__grokStatsigGen;
-      };
-
-      window.__grokBridgeFetch = async (request) => {
-        try {
-          const url = new URL(request.url, location.origin);
-          let statsigId;
-          try {
-            const generator = await window.__grokBridgeEnsureStatsigGenerator(
-              request.statsigChunkSource
-            );
-            statsigId = await generator(url.pathname, request.method);
-          } catch (error) {
-            statsigId = btoa(`e:${String(error)}`);
-          }
-          const headers = new Headers(request.headers || {});
-          headers.set("x-xai-request-id", crypto.randomUUID());
-          headers.set("x-statsig-id", statsigId);
-
-          const response = await fetch(request.url, {
-            method: request.method,
-            headers,
-            body: request.body ? JSON.stringify(request.body) : undefined,
-            credentials: "include"
-          });
-
-          const responseHeaders = {};
-          response.headers.forEach((value, key) => {
-            responseHeaders[key] = value;
-          });
-
-          await window.__grokBridgeMeta({
-            requestId: request.requestId,
-            status: response.status,
-            headers: responseHeaders
-          });
-
-          if (!response.body) {
-            await window.__grokBridgeDone({ requestId: request.requestId });
-            return;
-          }
-
-          const reader = response.body.getReader();
-          const decoder = new TextDecoder();
-
-          while (true) {
-            const { value, done } = await reader.read();
-            if (done) {
-              break;
-            }
-
-            const chunk = decoder.decode(value, { stream: true });
-            if (chunk) {
-              await window.__grokBridgeChunk({
-                requestId: request.requestId,
-                chunk
-              });
-            }
-          }
-
-          const finalChunk = decoder.decode();
-          if (finalChunk) {
-            await window.__grokBridgeChunk({
-              requestId: request.requestId,
-              chunk: finalChunk
-            });
-          }
-
-          await window.__grokBridgeDone({ requestId: request.requestId });
-        } catch (error) {
-          await window.__grokBridgeError({
-            requestId: request.requestId,
-            message: error instanceof Error ? error.message : String(error)
-          });
-        }
-      };
-    });
+    await this.context.addInitScript(installGrokBridgePageHelpers);
 
     this.bindingsInstalled = true;
   }
@@ -303,6 +371,7 @@ export class BrowserSession {
   }
 
   async evaluateRequest(page, payload) {
+    await page.evaluate(installGrokBridgePageHelpers);
     return page.evaluate((requestPayload) => window.__grokBridgeFetch(requestPayload), payload);
   }
 
@@ -369,11 +438,7 @@ export class BrowserSession {
       this.pending.delete(requestId);
 
       const message = error instanceof Error ? error.message : String(error);
-      if (
-        message.includes("Execution context was destroyed") ||
-        message.includes("Most likely because of a navigation") ||
-        message.includes("Target closed")
-      ) {
+      if (isRecoverablePageError(message)) {
         meta = null;
         setTextBufferLimit(
           textBuffer,

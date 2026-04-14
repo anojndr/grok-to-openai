@@ -97,6 +97,105 @@ test("request caps buffered error bodies for streamed responses", async () => {
   assert.equal(response.text, "x".repeat(ERROR_RESPONSE_TEXT_LIMIT));
 });
 
+test("request recreates the page when the Grok bridge helper is missing", async () => {
+  const session = createSession((instance, payload) => {
+    instance.attempts = (instance.attempts || 0) + 1;
+
+    if (instance.attempts === 1) {
+      throw new Error(
+        "page.evaluate: TypeError: window.__grokBridgeFetch is not a function"
+      );
+    }
+
+    const pending = instance.pending.get(payload.requestId);
+    pending.onMeta({
+      requestId: payload.requestId,
+      status: 200,
+      headers: {}
+    });
+    pending.onChunk("recovered");
+    pending.resolve();
+  });
+
+  let recreateCount = 0;
+  session.recreatePage = async () => {
+    recreateCount += 1;
+    return {};
+  };
+
+  const response = await session.request({
+    requestId: "req-bridge-retry",
+    url: "https://grok.com/rest/test"
+  });
+
+  assert.equal(recreateCount, 1);
+  assert.equal(response.meta?.status, 200);
+  assert.equal(response.text, "recovered");
+});
+
+test("request recreates the page when a Grok bridge binding is missing", async () => {
+  const session = createSession((instance, payload) => {
+    instance.attempts = (instance.attempts || 0) + 1;
+
+    if (instance.attempts === 1) {
+      throw new Error(
+        "page.evaluate: TypeError: window.grokBridgeError is not a function"
+      );
+    }
+
+    const pending = instance.pending.get(payload.requestId);
+    pending.onMeta({
+      requestId: payload.requestId,
+      status: 200,
+      headers: {}
+    });
+    pending.onChunk("recovered");
+    pending.resolve();
+  });
+
+  let recreateCount = 0;
+  session.recreatePage = async () => {
+    recreateCount += 1;
+    return {};
+  };
+
+  const response = await session.request({
+    requestId: "req-binding-retry",
+    url: "https://grok.com/rest/test"
+  });
+
+  assert.equal(recreateCount, 1);
+  assert.equal(response.meta?.status, 200);
+  assert.equal(response.text, "recovered");
+});
+
+test("installBindings exposes both canonical and legacy Grok bridge names", async () => {
+  const exposed = [];
+  const session = new BrowserSession({
+    grokBaseUrl: "https://grok.com"
+  });
+
+  session.context = {
+    async exposeBinding(name) {
+      exposed.push(name);
+    },
+    async addInitScript() {}
+  };
+
+  await session.installBindings();
+
+  assert.deepEqual(exposed, [
+    "__grokBridgeMeta",
+    "grokBridgeMeta",
+    "__grokBridgeChunk",
+    "grokBridgeChunk",
+    "__grokBridgeDone",
+    "grokBridgeDone",
+    "__grokBridgeError",
+    "grokBridgeError"
+  ]);
+});
+
 function createMockPage(userAgent) {
   let closed = false;
   let onClose = null;
