@@ -315,6 +315,43 @@ test("resolveImageParts streams image_url bodies without using arrayBuffer", asy
   }
 });
 
+test("resolveImageParts uses a provided remote image loader before falling back to fetch", async () => {
+  const originalFetch = globalThis.fetch;
+  let fetchCalled = false;
+  const loadCalls = [];
+
+  globalThis.fetch = async () => {
+    fetchCalled = true;
+    throw new Error("fetch should not be called when a remote image loader is provided");
+  };
+
+  try {
+    const [image] = await resolveImageParts({
+      content: [
+        {
+          type: "input_image",
+          image_url: "https://example.com/protected/diagram.png"
+        }
+      ],
+      loadRemoteImageAsset: async (url) => {
+        loadCalls.push(url);
+        return {
+          contentType: "image/png",
+          bytes: Buffer.from("browser-loaded-image")
+        };
+      }
+    });
+
+    assert.deepEqual(loadCalls, ["https://example.com/protected/diagram.png"]);
+    assert.equal(fetchCalled, false);
+    assert.equal(image.filename, "diagram.png");
+    assert.equal(image.mimeType, "image/png");
+    assert.equal(image.bytes.toString("utf8"), "browser-loaded-image");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("resolveImageParts rejects HTML challenge pages returned for image_url", async () => {
   const originalFetch = globalThis.fetch;
 

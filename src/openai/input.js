@@ -439,7 +439,10 @@ export async function resolveFileParts({
   }));
 }
 
-export async function resolveImageParts({ content }) {
+export async function resolveImageParts({
+  content,
+  loadRemoteImageAsset = null
+}) {
   const imageParts = extractImageParts(content);
   return Promise.all(imageParts.map(async (imagePart) => {
     const imageUrl = getImageUrlValue(imagePart);
@@ -464,19 +467,46 @@ export async function resolveImageParts({ content }) {
       };
     }
 
-    const response = await fetch(imageUrl, {
-      headers: REMOTE_IMAGE_FETCH_HEADERS
-    });
-    if (!response.ok) {
-      throw new HttpError(400, `Unable to fetch image_url: ${imageUrl}`);
+    let responseMimeType = "";
+    let buffer = null;
+
+    if (typeof loadRemoteImageAsset === "function") {
+      let asset;
+      try {
+        asset = await loadRemoteImageAsset(imageUrl);
+      } catch {
+        throw new HttpError(400, `Unable to fetch image_url: ${imageUrl}`);
+      }
+
+      if (!asset?.bytes) {
+        throw new HttpError(400, `Unable to fetch image_url: ${imageUrl}`);
+      }
+
+      responseMimeType = asset.contentType || "";
+      buffer = Buffer.isBuffer(asset.bytes)
+        ? asset.bytes
+        : Buffer.from(asset.bytes);
+      formatInputTooLargeError(
+        buffer.length,
+        MAX_DIRECT_IMAGE_BYTES,
+        buildLargeImageInputMessage()
+      );
+    } else {
+      const response = await fetch(imageUrl, {
+        headers: REMOTE_IMAGE_FETCH_HEADERS
+      });
+      if (!response.ok) {
+        throw new HttpError(400, `Unable to fetch image_url: ${imageUrl}`);
+      }
+
+      responseMimeType = response.headers.get("content-type") || "";
+      buffer = await readResponseBytes(response, {
+        maxBytes: MAX_DIRECT_IMAGE_BYTES,
+        tooLargeMessage: buildLargeImageInputMessage()
+      });
     }
 
-    const responseMimeType = response.headers.get("content-type") || "";
     const inferredFilename = inferFilenameFromUrl(imageUrl);
-    const buffer = await readResponseBytes(response, {
-      maxBytes: MAX_DIRECT_IMAGE_BYTES,
-      tooLargeMessage: buildLargeImageInputMessage()
-    });
     const mimeType = resolveRemoteImageMimeType({
       responseMimeType,
       bytes: buffer
@@ -505,7 +535,8 @@ export async function resolveImageParts({ content }) {
 
 export async function normalizeConversationInput({
   requestBody,
-  fileStore
+  fileStore,
+  loadRemoteImageAsset = null
 }) {
   const rawMessages = normalizeMessages(requestBody.input);
   const { instructions, messages } = splitInstructionsAndMessages(
@@ -521,7 +552,8 @@ export async function normalizeConversationInput({
         fileStore
       }),
       resolveImageParts({
-        content: message.content
+        content: message.content,
+        loadRemoteImageAsset
       })
     ]);
 
@@ -540,7 +572,8 @@ export async function normalizeConversationInput({
 
 export async function normalizeChatCompletionInput({
   requestBody,
-  fileStore
+  fileStore,
+  loadRemoteImageAsset = null
 }) {
   const { instructions, messages } = splitInstructionsAndMessages(
     requestBody.messages,
@@ -557,7 +590,8 @@ export async function normalizeChatCompletionInput({
         fileStore
       }),
       resolveImageParts({
-        content: message.content ?? ""
+        content: message.content ?? "",
+        loadRemoteImageAsset
       })
     ]);
 

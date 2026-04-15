@@ -231,6 +231,50 @@ function isRecoverablePageError(message) {
   );
 }
 
+function isPrimaryNavigationResponse(page, response) {
+  if (!response) {
+    return false;
+  }
+
+  const request = typeof response.request === "function" ? response.request() : null;
+  const frame = typeof response.frame === "function" ? response.frame() : null;
+  const mainFrame = typeof page.mainFrame === "function" ? page.mainFrame() : null;
+
+  if (mainFrame && frame && frame !== mainFrame) {
+    return false;
+  }
+
+  if (!request) {
+    return true;
+  }
+
+  if (typeof request.isNavigationRequest === "function" && request.isNavigationRequest()) {
+    return true;
+  }
+
+  if (typeof request.resourceType === "function" && request.resourceType() === "document") {
+    return true;
+  }
+
+  return false;
+}
+
+function getResponseStatus(response) {
+  if (!response) {
+    return 0;
+  }
+
+  return typeof response.status === "function" ? response.status() : response.status;
+}
+
+function getResponseHeaders(response) {
+  if (!response) {
+    return {};
+  }
+
+  return typeof response.headers === "function" ? response.headers() : (response.headers ?? {});
+}
+
 export class BrowserSession {
   constructor(config) {
     this.config = config;
@@ -517,41 +561,52 @@ export class BrowserSession {
 
   async fetchAsset(url) {
     await this.init();
-
-    const headers = {
-      Accept: "*/*",
-      Referer: this.config.grokBaseUrl
-    };
-    const cookies = await this.context.cookies(url);
-
-    if (cookies.length) {
-      headers.Cookie = cookies.map((cookie) => `${cookie.name}=${cookie.value}`).join("; ");
-    }
-
-    if (!this.pageUserAgent) {
-      try {
-        const page = await this.ensurePage();
-        this.pageUserAgent = await page.evaluate(() => navigator.userAgent);
-      } catch {
-        // Fall back to Node's default user agent if page access fails.
+    const page = await this.context.newPage();
+    const navigationResponses = [];
+    const captureResponse = (response) => {
+      if (isPrimaryNavigationResponse(page, response)) {
+        navigationResponses.push(response);
       }
-    }
-
-    if (this.pageUserAgent) {
-      headers["User-Agent"] = this.pageUserAgent;
-    }
-
-    const response = await fetch(url, { headers });
-    if (!response.ok) {
-      throw new Error(`Asset fetch failed with status ${response.status}`);
-    }
-
-    const bytes = Buffer.from(await response.arrayBuffer());
-
-    return {
-      contentType: response.headers.get("content-type") || "application/octet-stream",
-      bytes
     };
+
+    page.on("response", captureResponse);
+
+    try {
+      const initialResponse = await page.goto(url, {
+        waitUntil: "commit"
+      });
+
+      try {
+        await page.waitForLoadState("networkidle", {
+          timeout: 5000
+        });
+      } catch {
+        // Some asset hosts never fully settle; use the latest navigation response we saw.
+      }
+
+      const response = navigationResponses.at(-1) ?? initialResponse;
+      const status = getResponseStatus(response);
+      if (!status) {
+        throw new Error("Asset fetch failed without a response");
+      }
+
+      if (status >= 400) {
+        throw new Error(`Asset fetch failed with status ${status}`);
+      }
+
+      const bytes = Buffer.from(await response.body());
+      const headers = getResponseHeaders(response);
+
+      return {
+        contentType:
+          headers["content-type"] ||
+          headers["Content-Type"] ||
+          "application/octet-stream",
+        bytes
+      };
+    } finally {
+      await page.close().catch(() => {});
+    }
   }
 
   async fetchBase64(url) {

@@ -197,31 +197,97 @@ test("installBindings exposes both canonical and legacy Grok bridge names", asyn
   ]);
 });
 
-function createMockPage(userAgent) {
+function createMockResponse({
+  status = 200,
+  headers = {
+    "content-type": "text/plain"
+  },
+  body = Buffer.from("asset"),
+  isNavigationRequest = true,
+  resourceType = "document",
+  frame = null
+} = {}) {
+  const normalizedBody = Buffer.isBuffer(body) ? body : Buffer.from(body);
+
+  return {
+    status() {
+      return status;
+    },
+    headers() {
+      return headers;
+    },
+    async body() {
+      return normalizedBody;
+    },
+    request() {
+      return {
+        isNavigationRequest() {
+          return isNavigationRequest;
+        },
+        resourceType() {
+          return resourceType;
+        }
+      };
+    },
+    frame() {
+      return frame;
+    }
+  };
+}
+
+function createMockPage(userAgent, options = {}) {
   let closed = false;
-  let onClose = null;
+  const listeners = new Map();
   let evaluateCount = 0;
+  const mainFrame = { id: Symbol("main-frame") };
+  const gotoImpl = options.goto ?? (async () => {});
+  const waitForLoadStateImpl = options.waitForLoadState ?? (async () => {});
+
+  const emit = (event, payload) => {
+    for (const handler of listeners.get(event) ?? []) {
+      handler(payload);
+    }
+  };
 
   return {
     async evaluate() {
       evaluateCount += 1;
       return userAgent;
     },
-    async goto() {},
+    async goto(url, gotoOptions) {
+      return gotoImpl({
+        url,
+        options: gotoOptions,
+        emit,
+        mainFrame
+      });
+    },
+    async waitForLoadState(state, waitOptions) {
+      return waitForLoadStateImpl({
+        state,
+        options: waitOptions,
+        emit,
+        mainFrame
+      });
+    },
     on(event, handler) {
-      if (event === "close") {
-        onClose = handler;
-      }
+      listeners.set(event, [...(listeners.get(event) ?? []), handler]);
+    },
+    mainFrame() {
+      return mainFrame;
     },
     isClosed() {
       return closed;
     },
     async close() {
       closed = true;
-      onClose?.();
+      emit("close");
     },
     get evaluateCount() {
       return evaluateCount;
+    },
+    get closed() {
+      return closed;
     }
   };
 }
@@ -271,48 +337,56 @@ function createMockContext(userAgent = "Mozilla/5.0 Test") {
   };
 }
 
-test("fetchAsset reuses the cached page user agent across requests", async () => {
-  const originalFetch = globalThis.fetch;
-  const fetchCalls = [];
-  const page = createMockPage("Mozilla/5.0 Test");
+test("fetchAsset returns the last browser navigation response for the asset", async () => {
+  const finalResponse = createMockResponse({
+    headers: {
+      "content-type": "image/png"
+    },
+    body: Buffer.from("final-image")
+  });
+  const challengeResponse = createMockResponse({
+    headers: {
+      "content-type": "text/html; charset=utf-8"
+    },
+    body: Buffer.from("<!DOCTYPE html>challenge")
+  });
+  const page = createMockPage("Mozilla/5.0 Test", {
+    async goto({ emit, mainFrame }) {
+      emit(
+        "response",
+        createMockResponse({
+          headers: challengeResponse.headers(),
+          body: await challengeResponse.body(),
+          frame: mainFrame
+        })
+      );
+      emit(
+        "response",
+        createMockResponse({
+          headers: finalResponse.headers(),
+          body: await finalResponse.body(),
+          frame: mainFrame
+        })
+      );
+      return challengeResponse;
+    }
+  });
   const session = new BrowserSession({
     grokBaseUrl: "https://grok.com"
   });
 
+  session.init = async () => {};
   session.context = {
-    async cookies() {
-      return [];
-    },
     async newPage() {
       return page;
     }
   };
 
-  globalThis.fetch = async (url, options = {}) => {
-    fetchCalls.push({
-      url,
-      headers: options.headers
-    });
+  const asset = await session.fetchAsset("https://example.com/protected.png");
 
-    return new Response(Buffer.from("asset"), {
-      status: 200,
-      headers: {
-        "content-type": "text/plain"
-      }
-    });
-  };
-
-  try {
-    await session.fetchAsset("https://grok.com/assets/one");
-    await session.fetchAsset("https://grok.com/assets/two");
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-
-  assert.equal(page.evaluateCount, 1);
-  assert.equal(fetchCalls.length, 2);
-  assert.equal(fetchCalls[0].headers["User-Agent"], "Mozilla/5.0 Test");
-  assert.equal(fetchCalls[1].headers["User-Agent"], "Mozilla/5.0 Test");
+  assert.equal(asset.contentType, "image/png");
+  assert.equal(asset.bytes.toString("utf8"), "final-image");
+  assert.equal(page.closed, true);
 });
 
 test("recreatePage refreshes the cached user agent for the new page", async () => {

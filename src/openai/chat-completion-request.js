@@ -15,7 +15,11 @@ export async function prepareChatCompletionRequest(reqBody, options = {}) {
   const parse = options.parse ?? ((value) => chatCompletionsCreateSchema.parse(value));
   const normalize =
     options.normalize ??
-    ((value) => normalizeChatCompletionInput(value));
+    ((value) =>
+      normalizeChatCompletionInput({
+        ...value,
+        loadRemoteImageAsset: options.loadRemoteImageAsset ?? null
+      }));
   const resolve = options.resolve ?? resolveModel;
 
   const parsed = parse(reqBody);

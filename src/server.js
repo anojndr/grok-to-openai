@@ -447,7 +447,8 @@ app.post("/v1/responses", async (req, res, next) => {
 
       const normalized = await normalizeConversationInput({
         requestBody: parsed,
-        fileStore
+        fileStore,
+        loadRemoteImageAsset: (url) => grokAccounts.fetchAsset(url)
       });
       const instructions = normalized.instructions;
       const snapshot = createStreamingResponseSnapshot({
@@ -678,7 +679,8 @@ app.post("/v1/responses", async (req, res, next) => {
 
     const normalized = await normalizeConversationInput({
       requestBody: parsed,
-      fileStore
+      fileStore,
+      loadRemoteImageAsset: (url) => grokAccounts.fetchAsset(url)
     });
     const result = await runResponseRequest(parsed, normalized, {
       previousRecord,
@@ -749,7 +751,8 @@ app.post("/v1/chat/completions", async (req, res, next) => {
   try {
     const prepared = await prepareChatCompletionRequest(req.body, {
       fileStore,
-      defaultModel: config.defaultModel
+      defaultModel: config.defaultModel,
+      loadRemoteImageAsset: (url) => grokAccounts.fetchAsset(url)
     });
     const { parsed, publicModel } = prepared;
 
