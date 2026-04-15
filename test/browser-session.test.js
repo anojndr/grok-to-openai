@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { chromium } from "playwright-core";
 import {
   BrowserSession,
   ERROR_RESPONSE_TEXT_LIMIT
@@ -225,6 +226,51 @@ function createMockPage(userAgent) {
   };
 }
 
+function createMockContext(userAgent = "Mozilla/5.0 Test") {
+  const bindings = [];
+  let addInitScriptCalls = 0;
+  let addCookiesCalls = 0;
+  let closeCalls = 0;
+  let newPageCalls = 0;
+
+  return {
+    async exposeBinding(name) {
+      bindings.push(name);
+    },
+    async addInitScript() {
+      addInitScriptCalls += 1;
+    },
+    async addCookies() {
+      addCookiesCalls += 1;
+    },
+    async cookies() {
+      return [];
+    },
+    async newPage() {
+      newPageCalls += 1;
+      return createMockPage(userAgent);
+    },
+    async close() {
+      closeCalls += 1;
+    },
+    get bindings() {
+      return bindings;
+    },
+    get addInitScriptCalls() {
+      return addInitScriptCalls;
+    },
+    get addCookiesCalls() {
+      return addCookiesCalls;
+    },
+    get closeCalls() {
+      return closeCalls;
+    },
+    get newPageCalls() {
+      return newPageCalls;
+    }
+  };
+}
+
 test("fetchAsset reuses the cached page user agent across requests", async () => {
   const originalFetch = globalThis.fetch;
   const fetchCalls = [];
@@ -297,4 +343,72 @@ test("recreatePage refreshes the cached user agent for the new page", async () =
 
   assert.equal(secondPage.evaluateCount, 1);
   assert.equal(session.page, secondPage);
+});
+
+test("init coalesces concurrent persistent launches for the same profile", async () => {
+  const originalLaunchPersistentContext = chromium.launchPersistentContext;
+  const contexts = [];
+  let launchCount = 0;
+
+  chromium.launchPersistentContext = async () => {
+    launchCount += 1;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const context = createMockContext();
+    contexts.push(context);
+    return context;
+  };
+
+  const session = new BrowserSession({
+    grokBaseUrl: "https://grok.com",
+    browserProfileDir: "/tmp/grok-profile-concurrent-test",
+    importCookiesOnBoot: false
+  });
+
+  try {
+    await Promise.all([session.init(), session.init(), session.init()]);
+  } finally {
+    chromium.launchPersistentContext = originalLaunchPersistentContext;
+    await session.close().catch(() => {});
+  }
+
+  assert.equal(launchCount, 1);
+  assert.equal(contexts.length, 1);
+  assert.equal(contexts[0].newPageCalls, 1);
+  assert.equal(contexts[0].bindings.length, 8);
+  assert.equal(contexts[0].addInitScriptCalls, 1);
+});
+
+test("close resets binding state so a later init reinstalls page bindings", async () => {
+  const originalLaunchPersistentContext = chromium.launchPersistentContext;
+  const contexts = [createMockContext("Mozilla/5.0 First"), createMockContext("Mozilla/5.0 Second")];
+  let launchCount = 0;
+
+  chromium.launchPersistentContext = async () => {
+    const context = contexts[launchCount];
+    launchCount += 1;
+    if (!context) {
+      throw new Error("No more mock contexts");
+    }
+    return context;
+  };
+
+  const session = new BrowserSession({
+    grokBaseUrl: "https://grok.com",
+    browserProfileDir: "/tmp/grok-profile-reinit-test",
+    importCookiesOnBoot: false
+  });
+
+  try {
+    await session.init();
+    await session.close();
+    await session.init();
+  } finally {
+    chromium.launchPersistentContext = originalLaunchPersistentContext;
+    await session.close().catch(() => {});
+  }
+
+  assert.equal(launchCount, 2);
+  assert.equal(contexts[0].bindings.length, 8);
+  assert.equal(contexts[1].bindings.length, 8);
+  assert.equal(contexts[0].closeCalls, 1);
 });

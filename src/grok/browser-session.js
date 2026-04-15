@@ -236,9 +236,19 @@ export class BrowserSession {
     this.config = config;
     this.context = null;
     this.page = null;
+    this.pagePromise = null;
     this.pageUserAgent = null;
     this.pending = new Map();
     this.statsigChunkSource = null;
+    this.bindingsInstalled = false;
+    this.initPromise = null;
+  }
+
+  resetContextState() {
+    this.context = null;
+    this.page = null;
+    this.pagePromise = null;
+    this.pageUserAgent = null;
     this.bindingsInstalled = false;
   }
 
@@ -260,34 +270,65 @@ export class BrowserSession {
       return;
     }
 
-    if (this.config.browserProfileDir) {
-      await fs.mkdir(this.config.browserProfileDir, { recursive: true });
+    if (this.initPromise) {
+      await this.initPromise;
+      return;
     }
 
-    this.context = await chromium.launchPersistentContext(
-      this.config.browserProfileDir,
-      {
-        headless: this.config.headless,
-        executablePath: this.config.chromeExecutablePath || undefined
+    const initPromise = (async () => {
+      if (this.context) {
+        await this.ensurePage();
+        return;
       }
-    );
 
-    await this.installBindings();
+      if (this.config.browserProfileDir) {
+        await fs.mkdir(this.config.browserProfileDir, { recursive: true });
+      }
 
-    if (this.config.importCookiesOnBoot) {
-      const cookies = Array.isArray(this.config.grokCookies)
-        ? this.config.grokCookies
-        : await readCookiesFromSource({
-            filePath: this.config.grokCookieFile,
-            rawText: this.config.grokCookiesText
-          });
+      const context = await chromium.launchPersistentContext(
+        this.config.browserProfileDir,
+        {
+          headless: this.config.headless,
+          executablePath: this.config.chromeExecutablePath || undefined
+        }
+      );
+      this.context = context;
 
-      if (cookies.length) {
-        await this.context.addCookies(cookies);
+      try {
+        await this.installBindings();
+
+        if (this.config.importCookiesOnBoot) {
+          const cookies = Array.isArray(this.config.grokCookies)
+            ? this.config.grokCookies
+            : await readCookiesFromSource({
+                filePath: this.config.grokCookieFile,
+                rawText: this.config.grokCookiesText
+              });
+
+          if (cookies.length) {
+            await this.context.addCookies(cookies);
+          }
+        }
+
+        await this.ensurePage();
+      } catch (error) {
+        await context.close().catch(() => {});
+        if (this.context === context) {
+          this.resetContextState();
+        }
+        throw error;
+      }
+    })();
+
+    this.initPromise = initPromise;
+
+    try {
+      await initPromise;
+    } finally {
+      if (this.initPromise === initPromise) {
+        this.initPromise = null;
       }
     }
-
-    await this.ensurePage();
   }
 
   async installBindings() {
@@ -341,25 +382,41 @@ export class BrowserSession {
       return this.page;
     }
 
-    const page = await this.context.newPage();
-    this.page = page;
-    page.on("close", () => {
-      if (this.page === page) {
-        this.page = null;
-        this.pageUserAgent = null;
-      }
-    });
-    await page.goto(this.config.grokBaseUrl, {
-      waitUntil: "domcontentloaded"
-    });
-
-    try {
-      this.pageUserAgent = await page.evaluate(() => navigator.userAgent);
-    } catch {
-      this.pageUserAgent = null;
+    if (this.pagePromise) {
+      return this.pagePromise;
     }
 
-    return page;
+    const pagePromise = (async () => {
+      const page = await this.context.newPage();
+      this.page = page;
+      page.on("close", () => {
+        if (this.page === page) {
+          this.page = null;
+          this.pageUserAgent = null;
+        }
+      });
+      await page.goto(this.config.grokBaseUrl, {
+        waitUntil: "domcontentloaded"
+      });
+
+      try {
+        this.pageUserAgent = await page.evaluate(() => navigator.userAgent);
+      } catch {
+        this.pageUserAgent = null;
+      }
+
+      return page;
+    })();
+
+    this.pagePromise = pagePromise;
+
+    try {
+      return await pagePromise;
+    } finally {
+      if (this.pagePromise === pagePromise) {
+        this.pagePromise = null;
+      }
+    }
   }
 
   async recreatePage() {
@@ -507,9 +564,12 @@ export class BrowserSession {
   }
 
   async close() {
+    const initPromise = this.initPromise;
+    if (initPromise) {
+      await initPromise.catch(() => {});
+    }
+
     await this.context?.close();
-    this.context = null;
-    this.page = null;
-    this.pageUserAgent = null;
+    this.resetContextState();
   }
 }
