@@ -36,6 +36,9 @@ export const config = {
     ? path.resolve(process.env.DATA_DIR)
     : path.join(cwd, ".data"),
   databaseUrl: process.env.DATABASE_URL ?? process.env.POSTGRES_URL ?? "",
+  publicBaseUrl: process.env.PUBLIC_BASE_URL ?? "",
+  catboxApiUrl: process.env.CATBOX_API_URL ?? "https://catbox.moe/user/api.php",
+  catboxUserhash: process.env.CATBOX_USERHASH ?? "",
   grokBaseUrl: process.env.GROK_BASE_URL ?? "https://grok.com",
   grokCookieFile: resolveOptionalPath(process.env.GROK_COOKIE_FILE ?? ""),
   grokCookiesText: process.env.GROK_COOKIES_TEXT ?? "",

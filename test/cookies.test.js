@@ -14,7 +14,7 @@ grok.com\tFALSE\t/\tFALSE\t1806613002\ti18nextLng\ten
 
   assert.equal(cookies.length, 2);
   assert.equal(cookies[0].name, "sso");
-  assert.equal(cookies[0].domain, "grok.com");
+  assert.equal(cookies[0].domain, ".grok.com");
   assert.equal(cookies[0].secure, true);
   assert.equal(cookies[1].name, "i18nextLng");
   assert.equal(cookies[1].value, "en");

@@ -275,6 +275,17 @@ function getResponseHeaders(response) {
   return typeof response.headers === "function" ? response.headers() : (response.headers ?? {});
 }
 
+async function getResponseBody(response) {
+  if (!response) {
+    return Buffer.alloc(0);
+  }
+
+  const body =
+    typeof response.body === "function" ? await response.body() : response.body;
+
+  return Buffer.isBuffer(body) ? body : Buffer.from(body);
+}
+
 export class BrowserSession {
   constructor(config) {
     this.config = config;
@@ -561,6 +572,37 @@ export class BrowserSession {
 
   async fetchAsset(url) {
     await this.init();
+
+    const requestContext = this.context?.request;
+    if (requestContext && typeof requestContext.get === "function") {
+      const response = await requestContext.get(url, {
+        failOnStatusCode: false,
+        headers: {
+          referer: `${this.config.grokBaseUrl}/`
+        }
+      });
+      const status = getResponseStatus(response);
+      if (!status) {
+        throw new Error("Asset fetch failed without a response");
+      }
+
+      if (status >= 400) {
+        throw new Error(`Asset fetch failed with status ${status}`);
+      }
+
+      const headers = getResponseHeaders(response);
+      const bytes = await getResponseBody(response);
+      await response.dispose?.().catch(() => {});
+
+      return {
+        contentType:
+          headers["content-type"] ||
+          headers["Content-Type"] ||
+          "application/octet-stream",
+        bytes
+      };
+    }
+
     const page = await this.context.newPage();
     const navigationResponses = [];
     const captureResponse = (response) => {
@@ -594,7 +636,7 @@ export class BrowserSession {
         throw new Error(`Asset fetch failed with status ${status}`);
       }
 
-      const bytes = Buffer.from(await response.body());
+      const bytes = await getResponseBody(response);
       const headers = getResponseHeaders(response);
 
       return {

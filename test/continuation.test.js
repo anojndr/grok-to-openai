@@ -267,6 +267,54 @@ test("buildConversationHistory persists assistant images in parallel while prese
   );
 });
 
+test("buildConversationHistory persists assistant image bytes without refetching", async () => {
+  let loadCalls = 0;
+
+  const history = await buildConversationHistory({
+    instructions: "",
+    inputMessages: [],
+    assistantOutput: {
+      text: "",
+      images: [
+        {
+          title: "hosted-preview",
+          mimeType: "image/png",
+          url: "https://files.catbox.moe/hosted-preview.png",
+          bytes: Buffer.from("hosted-image")
+        }
+      ]
+    },
+    fileStore: {
+      async create({ filename, bytes, mimeType }) {
+        assert.equal(filename, "hosted-preview.png");
+        assert.equal(bytes.toString("utf8"), "hosted-image");
+        assert.equal(mimeType, "image/png");
+        return {
+          id: "stored:hosted-preview",
+          filename
+        };
+      },
+      async getRecord() {
+        throw new Error("getRecord should not be called after create");
+      }
+    },
+    loadAssistantImageAsset: async () => {
+      loadCalls += 1;
+      return null;
+    }
+  });
+
+  assert.equal(loadCalls, 0);
+  assert.equal(history.messages.length, 1);
+  assert.deepEqual(history.messages[0].attachments, [
+    {
+      fileId: "stored:hosted-preview",
+      filename: "hosted-preview.png",
+      mimeType: "image/png"
+    }
+  ]);
+});
+
 test("buildReplayConversationRequest includes the full stored history and all attachments", async () => {
   const fileStore = createMemoryFileStore();
   const noteFile = await fileStore.create({

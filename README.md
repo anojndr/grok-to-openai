@@ -68,9 +68,11 @@ Accepted aliases are intentionally broad:
 ## Response shapes
 
 Responses image output follows the OpenAI-style `image_generation_call` item
-pattern and includes a bridge-specific `result_url`. Fresh `/v1/responses`
-creates return `result_url` by default and avoid embedding inline Base64 image
-bytes:
+pattern and includes a bridge-specific `result_url`. Generated Grok images are
+fetched through the authenticated browser session that created them, uploaded to
+Catbox, and returned as public Catbox URLs instead of protected
+`assets.grok.com` links. Fresh `/v1/responses` creates return `result_url` by
+default and avoid embedding inline Base64 image bytes:
 
 ```json
 {
@@ -79,7 +81,7 @@ bytes:
       "id": "ig_...",
       "type": "image_generation_call",
       "status": "completed",
-      "result_url": "https://assets.grok.com/.../image.jpg",
+      "result_url": "https://files.catbox.moe/...jpg",
       "mime_type": "image/jpeg",
       "action": "generate"
     }
@@ -96,10 +98,10 @@ structured image metadata in a bridge-specific `message.image_urls` field:
     {
       "message": {
         "role": "assistant",
-        "content": "![Generated Image](https://assets.grok.com/.../image.jpg)",
+        "content": "![Generated Image](https://files.catbox.moe/...jpg)",
         "image_urls": [
           {
-            "url": "https://assets.grok.com/.../image.jpg",
+            "url": "https://files.catbox.moe/...jpg",
             "mime_type": "image/jpeg",
             "action": "generate"
           }
@@ -188,6 +190,8 @@ BROWSER_PROFILE_DIR=.browser-profile
 DATA_DIR=.data
 DATABASE_URL=postgresql://user:pass@db.example.com:5432/groktoopenai?sslmode=disable
 DEFAULT_MODEL=grok-4-auto
+PUBLIC_BASE_URL=https://your-bridge.example.com
+CATBOX_USERHASH=
 ALLOW_ORIGINS=*
 ```
 
@@ -211,6 +215,15 @@ Supported configuration:
   When set to a `postgres://` or `postgresql://` URL, uploaded files and stored
   Responses move from `.data/` into PostgreSQL.
 - `DEFAULT_MODEL`
+- `PUBLIC_BASE_URL`
+  Optional but recommended when you want anonymous Catbox rehosting to work
+  from a public bridge. The bridge stages generated images at short-lived
+  public URLs and asks Catbox to ingest them with `urlupload`.
+- `CATBOX_API_URL`
+  Defaults to `https://catbox.moe/user/api.php`.
+- `CATBOX_USERHASH`
+  Optional. When set, generated-image uploads go into that Catbox account;
+  otherwise they upload anonymously.
 - `ALLOW_ORIGINS`
 
 Currently parsed but unused:
@@ -226,6 +239,15 @@ profile once with a visible browser:
 export HEADLESS=false
 npm start
 ```
+
+Catbox notes:
+
+- Anonymous Catbox `fileupload` requests from some datacenter or proxy bridge
+  hosts can produce zero-byte files even when the API returns a URL.
+- The bridge now verifies every returned Catbox URL before exposing it.
+- To avoid those anonymous direct-upload limits, either set `CATBOX_USERHASH`
+  or set `PUBLIC_BASE_URL` to a publicly reachable bridge origin so Catbox can
+  fetch staged files through `urlupload`.
 
 For multi-account setups, concatenate each account's full Netscape cookie file
 into the same secret file in the order you want the bridge to use them. When

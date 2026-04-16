@@ -15,10 +15,10 @@ export function parseNetscapeCookieText(text) {
         return null;
       }
 
-      const [domain, , path, secure, expires, name, ...rest] = parts;
+      const [domain, includeSubdomains, path, secure, expires, name, ...rest] = parts;
       const value = rest.join("\t");
-      const normalizedDomain = domain.startsWith(".")
-        ? domain.slice(1)
+      const normalizedDomain = parseBoolean(includeSubdomains) && !domain.startsWith(".")
+        ? `.${domain}`
         : domain;
 
       return {

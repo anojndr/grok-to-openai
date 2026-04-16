@@ -300,6 +300,11 @@ function createMockContext(userAgent = "Mozilla/5.0 Test") {
   let newPageCalls = 0;
 
   return {
+    request: {
+      async get() {
+        throw new Error("request.get should not be called");
+      }
+    },
     async exposeBinding(name) {
       bindings.push(name);
     },
@@ -336,6 +341,46 @@ function createMockContext(userAgent = "Mozilla/5.0 Test") {
     }
   };
 }
+
+test("fetchAsset uses the browser context request client when available", async () => {
+  const disposed = [];
+  const session = new BrowserSession({
+    grokBaseUrl: "https://grok.com"
+  });
+
+  session.init = async () => {};
+  session.context = {
+    request: {
+      async get(url, options) {
+        assert.equal(url, "https://example.com/protected.png");
+        assert.equal(options.failOnStatusCode, false);
+        assert.equal(options.headers.referer, "https://grok.com/");
+        return {
+          status() {
+            return 200;
+          },
+          headers() {
+            return {
+              "content-type": "image/png"
+            };
+          },
+          async body() {
+            return Buffer.from("request-image");
+          },
+          async dispose() {
+            disposed.push(true);
+          }
+        };
+      }
+    }
+  };
+
+  const asset = await session.fetchAsset("https://example.com/protected.png");
+
+  assert.equal(asset.contentType, "image/png");
+  assert.equal(asset.bytes.toString("utf8"), "request-image");
+  assert.equal(disposed.length, 1);
+});
 
 test("fetchAsset returns the last browser navigation response for the asset", async () => {
   const finalResponse = createMockResponse({
