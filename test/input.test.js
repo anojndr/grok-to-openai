@@ -81,6 +81,45 @@ test("normalizeConversationInput converts input_image data URLs into attachments
   assert.equal(result.messages[0].files[0].bytes.toString(), "foo");
 });
 
+test("normalizeConversationInput resolves input_image file_id attachments", async () => {
+  const result = await normalizeConversationInput({
+    requestBody: {
+      input: [
+        {
+          role: "user",
+          content: [
+            { type: "input_text", text: "Describe this upload." },
+            {
+              type: "input_image",
+              file_id: "file_image_123"
+            }
+          ]
+        }
+      ]
+    },
+    fileStore: {
+      async getWithContent(id) {
+        assert.equal(id, "file_image_123");
+        return {
+          record: {
+            filename: "boardwalk.png",
+            mime_type: "image/png"
+          },
+          content: Buffer.from("stored-image")
+        };
+      }
+    }
+  });
+
+  assert.equal(result.messages.length, 1);
+  assert.equal(result.messages[0].text, "Describe this upload.");
+  assert.equal(result.messages[0].files.length, 1);
+  assert.equal(result.messages[0].files[0].fileId, "file_image_123");
+  assert.equal(result.messages[0].files[0].mimeType, "image/png");
+  assert.equal(result.messages[0].files[0].filename, "boardwalk.png");
+  assert.equal(result.messages[0].files[0].bytes.toString(), "stored-image");
+});
+
 test("normalizeChatCompletionInput keeps developer text as instructions and image_url as attachment", async () => {
   const result = await normalizeChatCompletionInput({
     requestBody: {
@@ -110,6 +149,47 @@ test("normalizeChatCompletionInput keeps developer text as instructions and imag
   assert.equal(result.messages[0].files[0].mimeType, "image/jpeg");
   assert.equal(result.messages[0].files[0].filename, "image.jpg");
   assert.equal(result.messages[0].files[0].bytes.toString(), "bar");
+});
+
+test("normalizeChatCompletionInput accepts uploaded image file_id references", async () => {
+  const result = await normalizeChatCompletionInput({
+    requestBody: {
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "What is in this image?" },
+            {
+              type: "image_url",
+              image_url: {
+                file_id: "file_image_456"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    fileStore: {
+      async getWithContent(id) {
+        assert.equal(id, "file_image_456");
+        return {
+          record: {
+            filename: "uploaded.jpg",
+            mime_type: "image/jpeg"
+          },
+          content: Buffer.from("jpeg-bytes")
+        };
+      }
+    }
+  });
+
+  assert.equal(result.messages.length, 1);
+  assert.equal(result.messages[0].text, "What is in this image?");
+  assert.equal(result.messages[0].files.length, 1);
+  assert.equal(result.messages[0].files[0].fileId, "file_image_456");
+  assert.equal(result.messages[0].files[0].mimeType, "image/jpeg");
+  assert.equal(result.messages[0].files[0].filename, "uploaded.jpg");
+  assert.equal(result.messages[0].files[0].bytes.toString(), "jpeg-bytes");
 });
 
 test("resolveFileParts keeps raw CSV file_data as text instead of base64-decoding it", async () => {
@@ -259,6 +339,36 @@ test("resolveFileParts resolves multiple file_id attachments in parallel while p
   assert.deepEqual(
     files.map((file) => file.bytes.toString("utf8")),
     ["first", "second"]
+  );
+});
+
+test("resolveImageParts rejects stored file_id values that are not image data", async () => {
+  await assert.rejects(
+    () =>
+      resolveImageParts({
+        content: [
+          {
+            type: "input_image",
+            file_id: "file_text_123"
+          }
+        ],
+        fileStore: {
+          async getWithContent(id) {
+            assert.equal(id, "file_text_123");
+            return {
+              record: {
+                filename: "notes.txt",
+                mime_type: "text/plain"
+              },
+              content: Buffer.from("not-an-image")
+            };
+          }
+        }
+      }),
+    (error) =>
+      error instanceof HttpError &&
+      error.status === 400 &&
+      /did not contain image data/.test(error.message)
   );
 });
 

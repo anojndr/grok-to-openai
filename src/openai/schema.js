@@ -1,12 +1,16 @@
 import { z } from "zod";
 
-const imageUrlValueSchema = z.union([
-  z.string(),
-  z.object({
-    url: z.string(),
-    detail: z.string().optional()
+const imageUrlObjectSchema = z
+  .object({
+    url: z.string().optional(),
+    detail: z.string().optional(),
+    file_id: z.string().optional()
   })
-]);
+  .refine((value) => Boolean(value.url || value.file_id), {
+    message: "image_url requires url or file_id"
+  });
+
+const imageUrlValueSchema = z.union([z.string(), imageUrlObjectSchema]);
 
 const inputTextPart = z.object({
   type: z.enum(["input_text", "text", "output_text"]).default("input_text"),
@@ -23,7 +27,10 @@ const inputFilePart = z.object({
 
 const inputImagePart = z.object({
   type: z.literal("input_image"),
-  image_url: z.string().optional()
+  image_url: z.string().optional(),
+  file_id: z.string().optional()
+}).refine((value) => Boolean(value.image_url || value.file_id), {
+  message: "input_image requires image_url or file_id"
 });
 
 const messageContentPart = z.union([inputTextPart, inputFilePart, inputImagePart]);
@@ -77,7 +84,10 @@ const chatTextPart = z.object({
 
 const chatImagePart = z.object({
   type: z.literal("image_url"),
-  image_url: imageUrlValueSchema
+  image_url: imageUrlValueSchema.optional(),
+  file_id: z.string().optional()
+}).refine((value) => Boolean(value.file_id || value.image_url), {
+  message: "image_url requires image_url or file_id"
 });
 
 const chatMessageSchema = z.object({

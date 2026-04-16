@@ -21,7 +21,8 @@ Playwright browser profile. It does not use the official xAI API.
 - `system` and `developer` messages are folded into Grok custom instructions.
 - `input_file` supports `file_id`, `file_url`, and inline `file_data`.
 - Image inputs support Responses `input_image` and Chat Completions
-  `image_url`, including remote URLs and Base64 data URLs.
+  `image_url`, including remote URLs, Base64 data URLs, and uploaded
+  `file_id` references.
 - Multi-turn Responses uses `previous_response_id`.
 - If the original Grok conversation no longer exists, the bridge can replay the
   locally stored conversation history and attachments to continue the thread.
@@ -120,6 +121,9 @@ structured image metadata in a bridge-specific `message.image_urls` field:
   into equivalent Grok behavior. This includes `tools`, `tool_choice`,
   `response_format`, `stop`, `max_tokens`, `max_completion_tokens`, and
   `stream_options.include_usage`.
+- When a reverse proxy or Cloudflare blocks large inline Base64 image JSON,
+  upload the image to `/v1/files` first and reference the returned `file_id`
+  from `input_image.file_id` or `image_url.file_id`.
 - If you send multi-message history without `previous_response_id`, prior turns
   are flattened into a transcript prompt. The final message must be a user
   message, and only the final user turn's attachments are uploaded.
@@ -321,6 +325,26 @@ curl http://127.0.0.1:8787/v1/responses \
         "content": [
           { "type": "input_file", "file_id": "file_..." },
           { "type": "input_text", "text": "Summarize this file." }
+        ]
+      }
+    ]
+  }'
+```
+
+Use the returned `file_id` in an image input to avoid large inline Base64 JSON:
+
+```bash
+curl http://127.0.0.1:8787/v1/responses \
+  -H "Authorization: Bearer sk-local-test" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "grok-4-auto",
+    "input": [
+      {
+        "role": "user",
+        "content": [
+          { "type": "input_text", "text": "What is in this image?" },
+          { "type": "input_image", "file_id": "file_..." }
         ]
       }
     ]

@@ -230,7 +230,7 @@ function inferImageMimeTypeFromBytes(bytes) {
   return "";
 }
 
-function resolveRemoteImageMimeType({ responseMimeType, bytes }) {
+function resolveImageMimeType({ responseMimeType, bytes }) {
   const normalizedResponseMimeType = normalizeMimeType(responseMimeType);
   const sniffedMimeType = inferImageMimeTypeFromBytes(bytes);
 
@@ -258,6 +258,38 @@ function buildInvalidRemoteImageMessage(imageUrl, mimeType = "") {
     `image_url did not return image data: ${imageUrl}${mimeTypeSuffix}. ` +
     "Remote hosts may block server-side fetches with Cloudflare or other bot challenges."
   );
+}
+
+function buildInvalidStoredImageMessage(fileId, mimeType = "") {
+  const normalizedMimeType = normalizeMimeType(mimeType);
+  const mimeTypeSuffix = normalizedMimeType
+    ? ` (received ${normalizedMimeType})`
+    : "";
+  return `file_id did not contain image data: ${fileId}${mimeTypeSuffix}`;
+}
+
+async function getStoredFileWithContent(fileStore, fileId) {
+  if (typeof fileStore?.getWithContent === "function") {
+    return fileStore.getWithContent(fileId);
+  }
+
+  if (
+    typeof fileStore?.getRecord === "function" &&
+    typeof fileStore?.getContent === "function"
+  ) {
+    const [record, content] = await Promise.all([
+      fileStore.getRecord(fileId),
+      fileStore.getContent(fileId)
+    ]);
+
+    if (!record || !content) {
+      return null;
+    }
+
+    return { record, content };
+  }
+
+  return null;
 }
 
 async function readResponseBytes(response, { maxBytes, tooLargeMessage }) {
@@ -380,6 +412,18 @@ function getImageUrlValue(part) {
   return part.image_url?.url;
 }
 
+function getImageFileIdValue(part) {
+  if (typeof part.file_id === "string" && part.file_id) {
+    return part.file_id;
+  }
+
+  if (part.type === "image_url" && part.image_url && typeof part.image_url === "object") {
+    return part.image_url.file_id || "";
+  }
+
+  return "";
+}
+
 export async function resolveFileParts({
   content,
   fileStore
@@ -387,7 +431,7 @@ export async function resolveFileParts({
   const fileParts = extractFileParts(content);
   return Promise.all(fileParts.map(async (filePart) => {
     if (filePart.file_id) {
-      const stored = await fileStore.getWithContent(filePart.file_id);
+      const stored = await getStoredFileWithContent(fileStore, filePart.file_id);
       if (!stored?.record) {
         throw new HttpError(400, `Unknown file_id: ${filePart.file_id}`);
       }
@@ -441,13 +485,47 @@ export async function resolveFileParts({
 
 export async function resolveImageParts({
   content,
+  fileStore = null,
   loadRemoteImageAsset = null
 }) {
   const imageParts = extractImageParts(content);
   return Promise.all(imageParts.map(async (imagePart) => {
+    const imageFileId = getImageFileIdValue(imagePart);
+    if (imageFileId) {
+      const stored = await getStoredFileWithContent(fileStore, imageFileId);
+      if (!stored?.record || !stored.content) {
+        throw new HttpError(400, `Unknown file_id: ${imageFileId}`);
+      }
+
+      const buffer = Buffer.isBuffer(stored.content)
+        ? stored.content
+        : Buffer.from(stored.content);
+      const mimeType = resolveImageMimeType({
+        responseMimeType: stored.record.mime_type || "",
+        bytes: buffer
+      });
+
+      if (!mimeType) {
+        throw new HttpError(
+          400,
+          buildInvalidStoredImageMessage(imageFileId, stored.record.mime_type)
+        );
+      }
+
+      return {
+        fileId: imageFileId,
+        filename:
+          stored.record.filename ||
+          `image${inferExtensionFromMimeType(mimeType) || ".bin"}`,
+        mimeType,
+        bytes: buffer,
+        source: "file_id"
+      };
+    }
+
     const imageUrl = getImageUrlValue(imagePart);
     if (!imageUrl) {
-      throw new HttpError(400, "image input requires image_url");
+      throw new HttpError(400, "image input requires image_url or file_id");
     }
 
     const match = /^data:([^;,]+);base64,(.+)$/s.exec(imageUrl);
@@ -507,7 +585,7 @@ export async function resolveImageParts({
     }
 
     const inferredFilename = inferFilenameFromUrl(imageUrl);
-    const mimeType = resolveRemoteImageMimeType({
+    const mimeType = resolveImageMimeType({
       responseMimeType,
       bytes: buffer
     });
@@ -553,6 +631,7 @@ export async function normalizeConversationInput({
       }),
       resolveImageParts({
         content: message.content,
+        fileStore,
         loadRemoteImageAsset
       })
     ]);
@@ -591,6 +670,7 @@ export async function normalizeChatCompletionInput({
       }),
       resolveImageParts({
         content: message.content ?? "",
+        fileStore,
         loadRemoteImageAsset
       })
     ]);
