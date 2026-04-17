@@ -123,9 +123,10 @@ structured image metadata in a bridge-specific `message.image_urls` field:
   into equivalent Grok behavior. This includes `tools`, `tool_choice`,
   `response_format`, `stop`, `max_tokens`, `max_completion_tokens`, and
   `stream_options.include_usage`.
-- When a reverse proxy or Cloudflare blocks large inline Base64 image JSON,
-  upload the image to `/v1/files` first and reference the returned `file_id`
-  from `input_image.file_id` or `image_url.file_id`.
+- If you front the bridge with Cloudflare or another reverse proxy, prefer
+  uploading images to `/v1/files` and sending `input_image.file_id` or
+  `image_url.file_id`. Inline Base64 image JSON can be challenged before the
+  request reaches the bridge.
 - If you send multi-message history without `previous_response_id`, prior turns
   are flattened into a transcript prompt. The final message must be a user
   message, and only the final user turn's attachments are uploaded.
@@ -353,7 +354,7 @@ curl http://127.0.0.1:8787/v1/responses \
   }'
 ```
 
-Use the returned `file_id` in an image input to avoid large inline Base64 JSON:
+Use the returned `file_id` in an image input to avoid inline Base64 image JSON:
 
 ```bash
 curl http://127.0.0.1:8787/v1/responses \
