@@ -38,8 +38,7 @@ import { createTextAccumulator } from "./lib/text-accumulator.js";
 import { createGrokMarkupStreamSanitizer } from "./grok/markup.js";
 import { withFastModelFallback } from "./grok/model-fallback.js";
 import { buildAssistantOutput } from "./grok/output.js";
-import { CatboxClient, rehostGeneratedImages } from "./catbox/client.js";
-import { CatboxStageStore } from "./catbox/staging-store.js";
+import { ImgbbClient, rehostGeneratedImages } from "./imgbb/client.js";
 import { listModels, resolveModel } from "./grok/model-map.js";
 import {
   renderThoughtAndResponse
@@ -81,8 +80,7 @@ const {
 } = await createStores(config);
 
 const grokAccounts = new GrokAccountPool(config);
-const catbox = new CatboxClient(config);
-const catboxStageStore = new CatboxStageStore();
+const imgbb = new ImgbbClient(config);
 
 let server;
 let shutdownPromise = null;
@@ -154,11 +152,6 @@ app.use((req, res, next) => {
 });
 
 app.use((req, _res, next) => {
-  if (req.path.startsWith("/_catbox/staged/")) {
-    next();
-    return;
-  }
-
   if (!config.apiKey) {
     next();
     return;
@@ -175,26 +168,6 @@ app.use((req, _res, next) => {
 
 app.get("/healthz", (_req, res) => {
   res.json({ ok: true });
-});
-
-app.get("/_catbox/staged/:token", (req, res, next) => {
-  try {
-    const entry = catboxStageStore.get(req.params.token);
-    if (!entry) {
-      throw new HttpError(404, "Staged Catbox file not found");
-    }
-
-    res.setHeader("Content-Type", entry.mimeType);
-    res.setHeader("Content-Length", entry.bytes.length);
-    res.setHeader(
-      "Content-Disposition",
-      `inline; filename="${sanitizeFilename(entry.filename)}"`
-    );
-    res.setHeader("Cache-Control", "private, max-age=300");
-    res.end(entry.bytes);
-  } catch (error) {
-    next(error);
-  }
 });
 
 app.get("/v1/models", (_req, res) => {
@@ -453,127 +426,21 @@ function createStreamingSourceAttributionRequest(sourceAttribution) {
   };
 }
 
-function buildPublicBaseUrl(req) {
-  if (config.publicBaseUrl) {
-    return config.publicBaseUrl.replace(/\/+$/, "");
-  }
-
-  const forwardedProto = (req.get("x-forwarded-proto") || "").split(",")[0].trim();
-  const forwardedHost = (req.get("x-forwarded-host") || "").split(",")[0].trim();
-  const protocol = forwardedProto || req.protocol || "http";
-  const host = forwardedHost || req.get("host") || "";
-
-  if (!host) {
-    return "";
-  }
-
-  return `${protocol}://${host}`.replace(/\/+$/, "");
-}
-
-function hostnameLooksPrivate(hostname) {
-  const normalized = (hostname || "").toLowerCase();
-
-  if (
-    !normalized ||
-    normalized === "localhost" ||
-    normalized === "::1" ||
-    normalized === "[::1]"
-  ) {
-    return true;
-  }
-
-  if (/^\d+\.\d+\.\d+\.\d+$/.test(normalized)) {
-    const octets = normalized.split(".").map(Number);
-    return (
-      octets[0] === 10 ||
-      octets[0] === 127 ||
-      (octets[0] === 192 && octets[1] === 168) ||
-      (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31)
-    );
-  }
-
-  return normalized.endsWith(".local");
-}
-
-function canStageCatboxUploads(publicBaseUrl) {
-  if (!publicBaseUrl) {
-    return false;
-  }
-
-  try {
-    const url = new URL(publicBaseUrl);
-    return !hostnameLooksPrivate(url.hostname);
-  } catch {
-    return false;
-  }
-}
-
-async function uploadImageToCatbox({
-  req,
+async function uploadImageToImgbb({
   filename,
   mimeType,
   bytes
 }) {
-  const publicBaseUrl = buildPublicBaseUrl(req);
-  const canStage = !config.catboxUserhash && canStageCatboxUploads(publicBaseUrl);
-  let stageError = null;
-
-  if (canStage) {
-    const staged = catboxStageStore.create({
-      filename,
-      mimeType,
-      bytes
-    });
-
-    try {
-      const stagedUrl = `${publicBaseUrl}/_catbox/staged/${staged.token}`;
-      const catboxUrl = await catbox.uploadUrl({
-        url: stagedUrl
-      });
-      return catbox.verifyFile(catboxUrl);
-    } catch (error) {
-      stageError = error;
-    } finally {
-      catboxStageStore.delete(staged.token);
-    }
-  }
-
-  const catboxUrl = await catbox.uploadFile({
+  const hostedUrl = await imgbb.uploadFile({
     filename,
     mimeType,
     bytes
   });
 
-  try {
-    return await catbox.verifyFile(catboxUrl);
-  } catch (error) {
-    if (stageError && !config.catboxUserhash) {
-      const stageMessage =
-        stageError instanceof Error ? stageError.message : String(stageError);
-      throw new HttpError(
-        502,
-        "Catbox upload failed. " +
-          `Staged urlupload failed first: ${stageMessage}. ` +
-          "Direct anonymous upload then produced an empty file. " +
-          "Set CATBOX_USERHASH or configure PUBLIC_BASE_URL to a publicly reachable bridge origin that Catbox can fetch directly."
-      );
-    }
-
-    if (!config.catboxUserhash && !canStage) {
-      throw new HttpError(
-        502,
-        "Catbox upload verification failed: uploaded file is empty. " +
-          "Anonymous Catbox file uploads from this bridge host appear limited. " +
-          "Set CATBOX_USERHASH or configure PUBLIC_BASE_URL to a publicly reachable bridge origin so Catbox urlupload can fetch staged files."
-      );
-    }
-
-    throw error;
-  }
+  return imgbb.verifyFile(hostedUrl);
 }
 
 async function buildHostedAssistantOutput(
-  req,
   state,
   sourceAttributionRequest,
   accountIndex
@@ -596,8 +463,7 @@ async function buildHostedAssistantOutput(
         }),
       uploadClient: {
         async uploadFile({ filename, mimeType, bytes }) {
-          return uploadImageToCatbox({
-            req,
+          return uploadImageToImgbb({
             filename,
             mimeType,
             bytes
@@ -732,7 +598,6 @@ app.post("/v1/responses", async (req, res, next) => {
       });
       emitTextDelta(sanitizer.flush());
       const assistantOutput = await buildHostedAssistantOutput(
-        req,
         result.state,
         streamingSourceAttribution,
         result.accountIndex
@@ -877,7 +742,6 @@ app.post("/v1/responses", async (req, res, next) => {
         : null
     });
     const assistantOutput = await buildHostedAssistantOutput(
-      req,
       result.state,
       parsed.source_attribution,
       result.accountIndex
@@ -999,7 +863,6 @@ app.post("/v1/chat/completions", async (req, res, next) => {
       });
       emitTextDelta(sanitizer.flush());
       const assistantOutput = await buildHostedAssistantOutput(
-        req,
         result.state,
         streamingSourceAttribution,
         result.accountIndex
@@ -1058,7 +921,6 @@ app.post("/v1/chat/completions", async (req, res, next) => {
 
     const result = await runChatCompletionRequest(prepared);
     const assistantOutput = await buildHostedAssistantOutput(
-      req,
       result.state,
       parsed.source_attribution,
       result.accountIndex

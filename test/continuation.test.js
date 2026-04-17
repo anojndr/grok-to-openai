@@ -279,7 +279,7 @@ test("buildConversationHistory persists assistant image bytes without refetching
         {
           title: "hosted-preview",
           mimeType: "image/png",
-          url: "https://files.catbox.moe/hosted-preview.png",
+          url: "https://i.ibb.co/demo/hosted-preview.png",
           bytes: Buffer.from("hosted-image")
         }
       ]

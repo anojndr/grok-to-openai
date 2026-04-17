@@ -70,7 +70,7 @@ Accepted aliases are intentionally broad:
 Responses image output follows the OpenAI-style `image_generation_call` item
 pattern and includes a bridge-specific `result_url`. Generated Grok images are
 fetched through the authenticated browser session that created them, uploaded to
-Catbox, and returned as public Catbox URLs instead of protected
+Imgbb, and returned as public Imgbb URLs instead of protected
 `assets.grok.com` links. Fresh `/v1/responses` creates return `result_url` by
 default and avoid embedding inline Base64 image bytes:
 
@@ -81,7 +81,7 @@ default and avoid embedding inline Base64 image bytes:
       "id": "ig_...",
       "type": "image_generation_call",
       "status": "completed",
-      "result_url": "https://files.catbox.moe/...jpg",
+      "result_url": "https://i.ibb.co/...jpg",
       "mime_type": "image/jpeg",
       "action": "generate"
     }
@@ -98,10 +98,10 @@ structured image metadata in a bridge-specific `message.image_urls` field:
     {
       "message": {
         "role": "assistant",
-        "content": "![Generated Image](https://files.catbox.moe/...jpg)",
+        "content": "![Generated Image](https://i.ibb.co/...jpg)",
         "image_urls": [
           {
-            "url": "https://files.catbox.moe/...jpg",
+            "url": "https://i.ibb.co/...jpg",
             "mime_type": "image/jpeg",
             "action": "generate"
           }
@@ -191,8 +191,8 @@ BROWSER_PROFILE_DIR=.browser-profile
 DATA_DIR=.data
 DATABASE_URL=postgresql://user:pass@db.example.com:5432/groktoopenai?sslmode=disable
 DEFAULT_MODEL=grok-4-auto
-PUBLIC_BASE_URL=https://your-bridge.example.com
-CATBOX_USERHASH=
+IMGBB_API_KEY=your-imgbb-api-key
+IMGBB_EXPIRATION=
 ALLOW_ORIGINS=*
 ```
 
@@ -216,15 +216,12 @@ Supported configuration:
   When set to a `postgres://` or `postgresql://` URL, uploaded files and stored
   Responses move from `.data/` into PostgreSQL.
 - `DEFAULT_MODEL`
-- `PUBLIC_BASE_URL`
-  Optional but recommended when you want anonymous Catbox rehosting to work
-  from a public bridge. The bridge stages generated images at short-lived
-  public URLs and asks Catbox to ingest them with `urlupload`.
-- `CATBOX_API_URL`
-  Defaults to `https://catbox.moe/user/api.php`.
-- `CATBOX_USERHASH`
-  Optional. When set, generated-image uploads go into that Catbox account;
-  otherwise they upload anonymously.
+- `IMGBB_API_KEY`
+  Required when you want generated Grok images rehosted as public Imgbb URLs.
+- `IMGBB_API_URL`
+  Defaults to `https://api.imgbb.com/1/upload`.
+- `IMGBB_EXPIRATION`
+  Optional auto-delete TTL in seconds. Must be between `60` and `15552000`.
 - `ALLOW_ORIGINS`
 
 Currently parsed but unused:
@@ -241,14 +238,14 @@ export HEADLESS=false
 npm start
 ```
 
-Catbox notes:
+Imgbb notes:
 
-- Anonymous Catbox `fileupload` requests from some datacenter or proxy bridge
-  hosts can produce zero-byte files even when the API returns a URL.
-- The bridge now verifies every returned Catbox URL before exposing it.
-- To avoid those anonymous direct-upload limits, either set `CATBOX_USERHASH`
-  or set `PUBLIC_BASE_URL` to a publicly reachable bridge origin so Catbox can
-  fetch staged files through `urlupload`.
+- Set `IMGBB_API_KEY` if you want generated-image responses to return public
+  image URLs.
+- The bridge uploads generated images directly to Imgbb with multipart `POST`
+  requests and verifies the returned public URL before exposing it.
+- The bridge now sets Imgbb's optional upload `name` field from the filename
+  and rejects images above Imgbb's documented `32 MB` maximum before upload.
 
 For multi-account setups, concatenate each account's full Netscape cookie file
 into the same secret file in the order you want the bridge to use them. When

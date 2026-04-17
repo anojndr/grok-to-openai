@@ -1,10 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  CatboxClient,
-  isCatboxUrl,
+  ImgbbClient,
+  isImgbbUrl,
   rehostGeneratedImages
-} from "../src/catbox/client.js";
+} from "../src/imgbb/client.js";
 
 function createDeferred() {
   let resolve;
@@ -25,21 +25,33 @@ function flushAsyncOperations() {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
-test("CatboxClient uploads image bytes with fileupload form data", async () => {
+test("ImgbbClient uploads image bytes with multipart form data", async () => {
   const originalFetch = globalThis.fetch;
   let request = null;
 
   globalThis.fetch = async (url, options = {}) => {
     request = { url, options };
-    return new Response("https://files.catbox.moe/generated-cat.png", {
-      status: 200
-    });
+    return new Response(
+      JSON.stringify({
+        data: {
+          url: "https://i.ibb.co/demo/generated-cat.png"
+        },
+        success: true,
+        status: 200
+      }),
+      {
+        status: 200,
+        headers: {
+          "content-type": "application/json"
+        }
+      }
+    );
   };
 
   try {
-    const client = new CatboxClient({
-      catboxApiUrl: "https://catbox.moe/user/api.php",
-      catboxUserhash: "userhash-123"
+    const client = new ImgbbClient({
+      imgbbApiUrl: "https://api.imgbb.com/1/upload",
+      imgbbApiKey: "api-key-123"
     });
     const hostedUrl = await client.uploadFile({
       filename: "Generated Cat.png",
@@ -47,83 +59,118 @@ test("CatboxClient uploads image bytes with fileupload form data", async () => {
       bytes: Buffer.from("png-bytes")
     });
 
-    assert.equal(hostedUrl, "https://files.catbox.moe/generated-cat.png");
-    assert.equal(request.url, "https://catbox.moe/user/api.php");
+    assert.equal(hostedUrl, "https://i.ibb.co/demo/generated-cat.png");
+
+    const requestUrl = new URL(request.url);
+    assert.equal(`${requestUrl.origin}${requestUrl.pathname}`, "https://api.imgbb.com/1/upload");
+    assert.equal(requestUrl.searchParams.get("key"), "api-key-123");
     assert.equal(request.options.method, "POST");
 
     const form = request.options.body;
-    assert.equal(form.get("reqtype"), "fileupload");
-    assert.equal(form.get("userhash"), "userhash-123");
-
-    const file = form.get("fileToUpload");
+    const file = form.get("image");
     assert.equal(file.name, "Generated_Cat.png");
     assert.equal(file.type, "image/png");
+    assert.equal(form.get("name"), "Generated_Cat");
     assert.equal(Buffer.from(await file.arrayBuffer()).toString("utf8"), "png-bytes");
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test("CatboxClient uploads public urls with urlupload form data", async () => {
+test("ImgbbClient includes expiration when configured", async () => {
   const originalFetch = globalThis.fetch;
   let request = null;
 
   globalThis.fetch = async (url, options = {}) => {
     request = { url, options };
-    return new Response("https://files.catbox.moe/generated-cat.png", {
-      status: 200
-    });
+    return new Response(
+      JSON.stringify({
+        data: {
+          url: "https://i.ibb.co/demo/with-expiration.png"
+        },
+        success: true,
+        status: 200
+      }),
+      {
+        status: 200,
+        headers: {
+          "content-type": "application/json"
+        }
+      }
+    );
   };
 
   try {
-    const client = new CatboxClient({
-      catboxApiUrl: "https://catbox.moe/user/api.php",
-      catboxUserhash: "userhash-123"
+    const client = new ImgbbClient({
+      imgbbApiKey: "api-key-123",
+      imgbbExpiration: "600"
     });
-    const hostedUrl = await client.uploadUrl({
-      url: "https://bridge.example/_catbox/staged/test-token"
+    const hostedUrl = await client.uploadFile({
+      filename: "expiring.png",
+      mimeType: "image/png",
+      bytes: Buffer.from("png-bytes")
     });
 
-    assert.equal(hostedUrl, "https://files.catbox.moe/generated-cat.png");
-    assert.equal(request.url, "https://catbox.moe/user/api.php");
-    assert.equal(request.options.method, "POST");
+    assert.equal(hostedUrl, "https://i.ibb.co/demo/with-expiration.png");
 
-    const form = request.options.body;
-    assert.equal(form.get("reqtype"), "urlupload");
-    assert.equal(form.get("userhash"), "userhash-123");
-    assert.equal(
-      form.get("url"),
-      "https://bridge.example/_catbox/staged/test-token"
-    );
+    const requestUrl = new URL(request.url);
+    assert.equal(requestUrl.searchParams.get("key"), "api-key-123");
+    assert.equal(requestUrl.searchParams.get("expiration"), "600");
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test("CatboxClient surfaces API errors", async () => {
+test("ImgbbClient requires an API key", async () => {
+  const client = new ImgbbClient();
+
+  await assert.rejects(
+    client.uploadFile({
+      filename: "missing-key.png",
+      mimeType: "image/png",
+      bytes: Buffer.from("png-bytes")
+    }),
+    /Imgbb upload is not configured: IMGBB_API_KEY is missing/
+  );
+});
+
+test("ImgbbClient surfaces API errors", async () => {
   const originalFetch = globalThis.fetch;
 
   globalThis.fetch = async () =>
-    new Response("error: upload rejected", {
-      status: 200
-    });
+    new Response(
+      JSON.stringify({
+        success: false,
+        error: {
+          message: "Invalid API key"
+        }
+      }),
+      {
+        status: 400,
+        headers: {
+          "content-type": "application/json"
+        }
+      }
+    );
 
   try {
-    const client = new CatboxClient();
+    const client = new ImgbbClient({
+      imgbbApiKey: "bad-key"
+    });
     await assert.rejects(
       client.uploadFile({
         filename: "broken.png",
         mimeType: "image/png",
         bytes: Buffer.from("png-bytes")
       }),
-      /Catbox upload failed: error: upload rejected/
+      /Imgbb upload failed: Invalid API key/
     );
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test("CatboxClient verifyFile accepts non-empty ranged responses", async () => {
+test("ImgbbClient verifyFile accepts non-empty ranged responses", async () => {
   const originalFetch = globalThis.fetch;
 
   globalThis.fetch = async (_url, options = {}) => {
@@ -138,15 +185,15 @@ test("CatboxClient verifyFile accepts non-empty ranged responses", async () => {
   };
 
   try {
-    const client = new CatboxClient();
-    const result = await client.verifyFile("https://files.catbox.moe/test.jpg");
-    assert.equal(result, "https://files.catbox.moe/test.jpg");
+    const client = new ImgbbClient();
+    const result = await client.verifyFile("https://i.ibb.co/demo/test.jpg");
+    assert.equal(result, "https://i.ibb.co/demo/test.jpg");
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test("CatboxClient verifyFile rejects empty uploads", async () => {
+test("ImgbbClient verifyFile rejects empty uploads", async () => {
   const originalFetch = globalThis.fetch;
 
   globalThis.fetch = async () =>
@@ -158,32 +205,46 @@ test("CatboxClient verifyFile rejects empty uploads", async () => {
     });
 
   try {
-    const client = new CatboxClient();
+    const client = new ImgbbClient();
     await assert.rejects(
-      client.verifyFile("https://files.catbox.moe/test.jpg"),
-      /Catbox upload verification failed: uploaded file is empty/
+      client.verifyFile("https://i.ibb.co/demo/test.jpg"),
+      /Imgbb upload verification failed: uploaded file is empty/
     );
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test("CatboxClient retries empty responses from Catbox", async () => {
+test("ImgbbClient retries empty responses from Imgbb", async () => {
   const originalFetch = globalThis.fetch;
   let attempts = 0;
 
   globalThis.fetch = async () => {
     attempts += 1;
+
     return new Response(
-      attempts === 1 ? "" : "https://files.catbox.moe/retried-image.jpg",
+      attempts === 1
+        ? ""
+        : JSON.stringify({
+            data: {
+              url: "https://i.ibb.co/demo/retried-image.jpg"
+            },
+            success: true,
+            status: 200
+          }),
       {
-        status: 200
+        status: 200,
+        headers: {
+          "content-type": "application/json"
+        }
       }
     );
   };
 
   try {
-    const client = new CatboxClient();
+    const client = new ImgbbClient({
+      imgbbApiKey: "api-key-123"
+    });
     const hostedUrl = await client.uploadFile({
       filename: "retry.jpg",
       mimeType: "image/jpeg",
@@ -191,13 +252,39 @@ test("CatboxClient retries empty responses from Catbox", async () => {
     });
 
     assert.equal(attempts, 2);
-    assert.equal(hostedUrl, "https://files.catbox.moe/retried-image.jpg");
+    assert.equal(hostedUrl, "https://i.ibb.co/demo/retried-image.jpg");
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test("rehostGeneratedImages uploads protected Grok assets to Catbox in parallel while preserving order", async () => {
+test("ImgbbClient rejects uploads larger than 32 MB", async () => {
+  const client = new ImgbbClient({
+    imgbbApiKey: "api-key-123"
+  });
+
+  await assert.rejects(
+    client.uploadFile({
+      filename: "too-large.png",
+      mimeType: "image/png",
+      bytes: Buffer.alloc((32 * 1024 * 1024) + 1)
+    }),
+    /Imgbb upload failed: image exceeds 32 MB limit/
+  );
+});
+
+test("ImgbbClient rejects invalid expiration config", async () => {
+  assert.throws(
+    () =>
+      new ImgbbClient({
+        imgbbApiKey: "api-key-123",
+        imgbbExpiration: "30"
+      }),
+    /Imgbb upload is not configured: IMGBB_EXPIRATION must be between 60 and 15552000 seconds/
+  );
+});
+
+test("rehostGeneratedImages uploads protected Grok assets to Imgbb in parallel while preserving order", async () => {
   const firstAsset = createDeferred();
   const secondAsset = createDeferred();
   const loadCalls = [];
@@ -225,7 +312,7 @@ test("rehostGeneratedImages uploads protected Grok assets to Catbox in parallel 
     uploadClient: {
       async uploadFile({ filename, bytes }) {
         uploadCalls.push(filename);
-        return `https://files.catbox.moe/${bytes.toString("utf8")}.png`;
+        return `https://i.ibb.co/demo/${bytes.toString("utf8")}.png`;
       }
     }
   });
@@ -247,8 +334,8 @@ test("rehostGeneratedImages uploads protected Grok assets to Catbox in parallel 
   assert.deepEqual(
     hostedImages.map((image) => image.url),
     [
-      "https://files.catbox.moe/first-image.png",
-      "https://files.catbox.moe/second-image.png"
+      "https://i.ibb.co/demo/first-image.png",
+      "https://i.ibb.co/demo/second-image.png"
     ]
   );
   assert.deepEqual(
@@ -264,13 +351,13 @@ test("rehostGeneratedImages uploads protected Grok assets to Catbox in parallel 
   );
 });
 
-test("rehostGeneratedImages skips Catbox URLs", async () => {
+test("rehostGeneratedImages skips Imgbb URLs", async () => {
   let loadCount = 0;
   const images = [
     {
       title: "already hosted",
       mimeType: "image/png",
-      url: "https://files.catbox.moe/already-hosted.png"
+      url: "https://i.ibb.co/demo/already-hosted.png"
     }
   ];
 
@@ -289,5 +376,5 @@ test("rehostGeneratedImages skips Catbox URLs", async () => {
 
   assert.equal(loadCount, 0);
   assert.deepEqual(hostedImages, images);
-  assert.equal(isCatboxUrl(hostedImages[0].url), true);
+  assert.equal(isImgbbUrl(hostedImages[0].url), true);
 });

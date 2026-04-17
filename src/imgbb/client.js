@@ -2,10 +2,18 @@ import path from "node:path";
 import { HttpError } from "../lib/errors.js";
 import { sanitizeFilename } from "../lib/fs.js";
 
-const DEFAULT_CATBOX_API_URL = "https://catbox.moe/user/api.php";
-const CATBOX_HOSTS = new Set(["catbox.moe", "files.catbox.moe"]);
-const CATBOX_UPLOAD_ATTEMPTS = 3;
-const CATBOX_RETRY_DELAY_MS = 750;
+const DEFAULT_IMGBB_API_URL = "https://api.imgbb.com/1/upload";
+const IMGBB_UPLOAD_ATTEMPTS = 3;
+const IMGBB_RETRY_DELAY_MS = 750;
+const IMGBB_HOSTS = ["ibb.co", "i.ibb.co", "imgbb.com"];
+const IMGBB_MAX_UPLOAD_BYTES = 32 * 1024 * 1024;
+const IMGBB_MIN_EXPIRATION_SECONDS = 60;
+const IMGBB_MAX_EXPIRATION_SECONDS = 15552000;
+
+function matchesHostname(hostname, domain) {
+  const normalized = String(hostname || "").toLowerCase();
+  return normalized === domain || normalized.endsWith(`.${domain}`);
+}
 
 function inferExtensionFromMimeType(mimeType) {
   switch ((mimeType || "").toLowerCase()) {
@@ -50,6 +58,14 @@ function toHttpError(message, details) {
   return new HttpError(502, details ? `${message}: ${details}` : message);
 }
 
+function toConfigurationError(message, details) {
+  return new HttpError(500, details ? `${message}: ${details}` : message);
+}
+
+function toValidationError(message, details) {
+  return new HttpError(400, details ? `${message}: ${details}` : message);
+}
+
 function toBuffer(bytes) {
   if (Buffer.isBuffer(bytes)) {
     return bytes;
@@ -66,19 +82,82 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function submitCatboxRequest(apiUrl, form) {
-  return fetch(apiUrl, {
+function normalizeExpiration(expiration) {
+  if (expiration == null || expiration === "") {
+    return "";
+  }
+
+  const value = Number.parseInt(String(expiration), 10);
+  if (!Number.isFinite(value)) {
+    throw toConfigurationError(
+      "Imgbb upload is not configured",
+      "IMGBB_EXPIRATION must be an integer number of seconds"
+    );
+  }
+
+  if (
+    value < IMGBB_MIN_EXPIRATION_SECONDS ||
+    value > IMGBB_MAX_EXPIRATION_SECONDS
+  ) {
+    throw toConfigurationError(
+      "Imgbb upload is not configured",
+      `IMGBB_EXPIRATION must be between ${IMGBB_MIN_EXPIRATION_SECONDS} and ${IMGBB_MAX_EXPIRATION_SECONDS} seconds`
+    );
+  }
+
+  return String(value);
+}
+
+function buildUploadUrl(apiUrl, apiKey, expiration) {
+  const url = new URL(apiUrl || DEFAULT_IMGBB_API_URL);
+  url.searchParams.set("key", apiKey);
+  if (expiration) {
+    url.searchParams.set("expiration", expiration);
+  }
+  return url.toString();
+}
+
+async function submitImgbbRequest(apiUrl, apiKey, expiration, form) {
+  return fetch(buildUploadUrl(apiUrl, apiKey, expiration), {
     method: "POST",
     body: form
   });
 }
 
-async function parseCatboxResponse(response) {
+function extractErrorDetails(payload, fallback) {
+  if (!payload || typeof payload !== "object") {
+    return fallback;
+  }
+
+  const message =
+    payload.error?.message ||
+    payload.error?.context ||
+    payload.status_txt ||
+    payload.message;
+
+  if (typeof message === "string" && message.trim()) {
+    return message.trim();
+  }
+
+  return fallback;
+}
+
+async function parseImgbbResponse(response) {
   const responseText = (await response.text()).trim();
+
+  let payload = null;
+  if (responseText) {
+    try {
+      payload = JSON.parse(responseText);
+    } catch {
+      payload = null;
+    }
+  }
+
   if (!response.ok) {
     throw toHttpError(
-      "Catbox upload failed",
-      responseText || `HTTP ${response.status}`
+      "Imgbb upload failed",
+      extractErrorDetails(payload, responseText || `HTTP ${response.status}`)
     );
   }
 
@@ -89,17 +168,27 @@ async function parseCatboxResponse(response) {
     };
   }
 
-  if (/^error\b/i.test(responseText)) {
-    throw toHttpError("Catbox upload failed", responseText);
+  if (!payload || payload.success !== true) {
+    throw toHttpError(
+      "Imgbb upload failed",
+      extractErrorDetails(payload, responseText || "invalid JSON response")
+    );
+  }
+
+  const hostedUrl =
+    payload.data?.url || payload.data?.image?.url || payload.data?.display_url;
+
+  if (!hostedUrl) {
+    throw toHttpError("Imgbb upload failed", "missing hosted image URL");
   }
 
   try {
     return {
       empty: false,
-      url: new URL(responseText).toString()
+      url: new URL(hostedUrl).toString()
     };
   } catch {
-    throw toHttpError("Catbox upload failed", responseText);
+    throw toHttpError("Imgbb upload failed", hostedUrl);
   }
 }
 
@@ -129,107 +218,83 @@ function resolveHostedImageMimeType(image, asset) {
   return image?.mimeType || assetMimeType || "application/octet-stream";
 }
 
-export function isCatboxUrl(urlString) {
+export function isImgbbUrl(urlString) {
   try {
     const url = new URL(urlString);
-    return CATBOX_HOSTS.has(url.hostname.toLowerCase());
+    return IMGBB_HOSTS.some((domain) => matchesHostname(url.hostname, domain));
   } catch {
     return false;
   }
 }
 
-export class CatboxClient {
+export class ImgbbClient {
   constructor(config = {}) {
-    this.apiUrl = config.catboxApiUrl || DEFAULT_CATBOX_API_URL;
-    this.userhash = config.catboxUserhash || "";
-  }
-
-  async uploadUrl({ url }) {
-    let lastRetriableError = null;
-
-    for (let attempt = 0; attempt < CATBOX_UPLOAD_ATTEMPTS; attempt += 1) {
-      const form = new FormData();
-      form.set("reqtype", "urlupload");
-      if (this.userhash) {
-        form.set("userhash", this.userhash);
-      }
-      form.set("url", url);
-
-      let response;
-      try {
-        response = await submitCatboxRequest(this.apiUrl, form);
-      } catch (error) {
-        lastRetriableError = toHttpError(
-          "Catbox upload failed",
-          error instanceof Error ? error.message : String(error)
-        );
-        if (attempt + 1 < CATBOX_UPLOAD_ATTEMPTS) {
-          await sleep(CATBOX_RETRY_DELAY_MS);
-          continue;
-        }
-
-        throw lastRetriableError;
-      }
-
-      const parsed = await parseCatboxResponse(response);
-      if (parsed.empty) {
-        lastRetriableError = toHttpError("Catbox upload failed", "empty response");
-        if (attempt + 1 < CATBOX_UPLOAD_ATTEMPTS) {
-          await sleep(CATBOX_RETRY_DELAY_MS);
-          continue;
-        }
-
-        throw lastRetriableError;
-      }
-
-      return parsed.url;
-    }
-
-    throw lastRetriableError ?? toHttpError("Catbox upload failed");
+    this.apiUrl = config.imgbbApiUrl || DEFAULT_IMGBB_API_URL;
+    this.apiKey = config.imgbbApiKey || "";
+    this.expiration = normalizeExpiration(config.imgbbExpiration);
   }
 
   async uploadFile({ filename, mimeType, bytes }) {
+    if (!this.apiKey) {
+      throw toConfigurationError(
+        "Imgbb upload is not configured",
+        "IMGBB_API_KEY is missing"
+      );
+    }
+
     const normalizedBytes = toBuffer(bytes);
     if (!normalizedBytes.length) {
-      throw toHttpError("Catbox upload failed", "empty file payload");
+      throw toHttpError("Imgbb upload failed", "empty file payload");
+    }
+    if (normalizedBytes.length > IMGBB_MAX_UPLOAD_BYTES) {
+      throw toValidationError(
+        "Imgbb upload failed",
+        "image exceeds 32 MB limit"
+      );
     }
 
     let lastRetriableError = null;
 
-    for (let attempt = 0; attempt < CATBOX_UPLOAD_ATTEMPTS; attempt += 1) {
+    for (let attempt = 0; attempt < IMGBB_UPLOAD_ATTEMPTS; attempt += 1) {
       const form = new FormData();
-      form.set("reqtype", "fileupload");
-      if (this.userhash) {
-        form.set("userhash", this.userhash);
-      }
+      const sanitizedFilename = sanitizeFilename(filename || "upload.bin");
       form.set(
-        "fileToUpload",
-        new File([normalizedBytes], sanitizeFilename(filename || "upload.bin"), {
+        "image",
+        new File([normalizedBytes], sanitizedFilename, {
           type: mimeType || "application/octet-stream"
         })
       );
+      const uploadName = sanitizeFilename(path.parse(sanitizedFilename).name);
+      if (uploadName) {
+        form.set("name", uploadName);
+      }
 
       let response;
       try {
-        response = await submitCatboxRequest(this.apiUrl, form);
+        response = await submitImgbbRequest(
+          this.apiUrl,
+          this.apiKey,
+          this.expiration,
+          form
+        );
       } catch (error) {
         lastRetriableError = toHttpError(
-          "Catbox upload failed",
+          "Imgbb upload failed",
           error instanceof Error ? error.message : String(error)
         );
-        if (attempt + 1 < CATBOX_UPLOAD_ATTEMPTS) {
-          await sleep(CATBOX_RETRY_DELAY_MS);
+        if (attempt + 1 < IMGBB_UPLOAD_ATTEMPTS) {
+          await sleep(IMGBB_RETRY_DELAY_MS);
           continue;
         }
 
         throw lastRetriableError;
       }
 
-      const parsed = await parseCatboxResponse(response);
+      const parsed = await parseImgbbResponse(response);
       if (parsed.empty) {
-        lastRetriableError = toHttpError("Catbox upload failed", "empty response");
-        if (attempt + 1 < CATBOX_UPLOAD_ATTEMPTS) {
-          await sleep(CATBOX_RETRY_DELAY_MS);
+        lastRetriableError = toHttpError("Imgbb upload failed", "empty response");
+        if (attempt + 1 < IMGBB_UPLOAD_ATTEMPTS) {
+          await sleep(IMGBB_RETRY_DELAY_MS);
           continue;
         }
 
@@ -239,7 +304,7 @@ export class CatboxClient {
       return parsed.url;
     }
 
-    throw lastRetriableError ?? toHttpError("Catbox upload failed");
+    throw lastRetriableError ?? toHttpError("Imgbb upload failed");
   }
 
   async verifyFile(url) {
@@ -252,14 +317,14 @@ export class CatboxClient {
       });
     } catch (error) {
       throw toHttpError(
-        "Catbox upload verification failed",
+        "Imgbb upload verification failed",
         error instanceof Error ? error.message : String(error)
       );
     }
 
     if (!response.ok) {
       throw toHttpError(
-        "Catbox upload verification failed",
+        "Imgbb upload verification failed",
         `HTTP ${response.status}`
       );
     }
@@ -267,7 +332,7 @@ export class CatboxClient {
     const bytes = Buffer.from(await response.arrayBuffer());
     if (bytes.length === 0) {
       throw toHttpError(
-        "Catbox upload verification failed",
+        "Imgbb upload verification failed",
         "uploaded file is empty"
       );
     }
@@ -297,7 +362,7 @@ export async function rehostGeneratedImages({
 
   return Promise.all(
     images.map(async (image, index) => {
-      if (!image?.url || isCatboxUrl(image.url)) {
+      if (!image?.url || isImgbbUrl(image.url)) {
         return image;
       }
 
@@ -311,7 +376,7 @@ export async function rehostGeneratedImages({
             asset = await loadSourceImage(image, index);
           } catch (error) {
             throw toHttpError(
-              "Unable to fetch Grok-generated image for Catbox upload",
+              "Unable to fetch Grok-generated image for Imgbb upload",
               error instanceof Error ? error.message : String(error)
             );
           }
@@ -319,13 +384,13 @@ export async function rehostGeneratedImages({
           const bytes = toBuffer(asset?.bytes);
           if (!bytes.length) {
             throw toHttpError(
-              "Unable to fetch Grok-generated image for Catbox upload",
+              "Unable to fetch Grok-generated image for Imgbb upload",
               sourceUrl
             );
           }
 
           const mimeType = resolveHostedImageMimeType(image, asset);
-          const catboxUrl = await uploadClient.uploadFile({
+          const hostedUrl = await uploadClient.uploadFile({
             filename: inferUploadFilename(image, index, mimeType),
             mimeType,
             bytes
@@ -334,7 +399,7 @@ export async function rehostGeneratedImages({
           return {
             bytes,
             mimeType,
-            url: catboxUrl
+            url: hostedUrl
           };
         })();
 
