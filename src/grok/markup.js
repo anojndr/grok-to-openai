@@ -13,6 +13,28 @@ const START_MARKERS = [
 
 const MAX_START_LENGTH = Math.max(...START_MARKERS.map((marker) => marker.start.length));
 
+function isHighSurrogate(codeUnit) {
+  return codeUnit >= 0xd800 && codeUnit <= 0xdbff;
+}
+
+function isLowSurrogate(codeUnit) {
+  return codeUnit >= 0xdc00 && codeUnit <= 0xdfff;
+}
+
+function clampSplitIndex(text, index) {
+  const bounded = Math.max(0, Math.min(index, text.length));
+  if (bounded === 0 || bounded === text.length) {
+    return bounded;
+  }
+
+  return (
+    isHighSurrogate(text.charCodeAt(bounded - 1)) &&
+    isLowSurrogate(text.charCodeAt(bounded))
+  )
+    ? bounded - 1
+    : bounded;
+}
+
 export function sanitizeGrokMarkup(text) {
   let output = text ?? "";
 
@@ -72,8 +94,13 @@ export function createGrokMarkupStreamSanitizer(options = {}) {
           return flushOutput();
         }
 
-        appendOutput(buffer.slice(0, safeLength));
-        buffer = buffer.slice(safeLength);
+        const splitIndex = clampSplitIndex(buffer, safeLength);
+        if (splitIndex === 0) {
+          return flushOutput();
+        }
+
+        appendOutput(buffer.slice(0, splitIndex));
+        buffer = buffer.slice(splitIndex);
         return flushOutput();
       }
 
