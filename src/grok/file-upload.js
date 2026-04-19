@@ -131,10 +131,80 @@ function decodeText(bytes, encoding) {
   }
 }
 
+function looksLikeBase64Payload(value) {
+  const normalized = value.replace(/\s+/g, "");
+
+  if (!normalized || normalized.length % 4 !== 0) {
+    return false;
+  }
+
+  return /^[A-Za-z0-9+/]+={0,2}$/.test(normalized);
+}
+
+function tryDecodeEmbeddedTextDataUrl({ filename, baseMimeType, bytes }) {
+  const sourceText = decodeText(bytes, "utf-8");
+  if (sourceText == null) {
+    return null;
+  }
+
+  const trimmed = sourceText.trim();
+  const match = /^data:([^,]*?),(.*)$/is.exec(trimmed);
+  if (!match) {
+    return null;
+  }
+
+  const metadata = match[1];
+  const payload = match[2];
+  const metadataParts = metadata
+    .split(";")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const declaredMimeType =
+    metadataParts[0] && !metadataParts[0].includes("=")
+      ? metadataParts[0].toLowerCase()
+      : "";
+  const inferredMimeType = inferTextMimeType(filename, declaredMimeType || baseMimeType);
+
+  if (!inferredMimeType) {
+    return null;
+  }
+
+  const isBase64 = metadataParts.some((part) => part.toLowerCase() === "base64");
+
+  try {
+    if (isBase64) {
+      if (!looksLikeBase64Payload(payload)) {
+        return null;
+      }
+
+      return {
+        mimeType: inferredMimeType,
+        bytes: Buffer.from(payload.replace(/\s+/g, ""), "base64")
+      };
+    }
+
+    return {
+      mimeType: inferredMimeType,
+      bytes: Buffer.from(decodeURIComponent(payload), "utf8")
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function normalizeFileForGrokUpload({ filename, mimeType, bytes }) {
   const buffer = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
   const { baseMimeType, charset } = parseMimeType(mimeType);
-  const textMimeType = inferTextMimeType(filename, baseMimeType);
+  const embeddedTextDataUrl = tryDecodeEmbeddedTextDataUrl({
+    filename,
+    baseMimeType,
+    bytes: buffer
+  });
+  const candidateBuffer = embeddedTextDataUrl?.bytes ?? buffer;
+  const textMimeType = inferTextMimeType(
+    filename,
+    embeddedTextDataUrl?.mimeType ?? baseMimeType
+  );
 
   if (!textMimeType) {
     return {
@@ -146,14 +216,14 @@ export function normalizeFileForGrokUpload({ filename, mimeType, bytes }) {
 
   const explicitEncoding = charset ? normalizeCharset(charset) : "";
   const decodedText =
-    (explicitEncoding && decodeText(buffer, explicitEncoding)) ||
-    decodeText(buffer, guessEncoding(buffer));
+    (explicitEncoding && decodeText(candidateBuffer, explicitEncoding)) ||
+    decodeText(candidateBuffer, guessEncoding(candidateBuffer));
 
   if (decodedText == null) {
     return {
       filename,
       mimeType: textMimeType,
-      bytes: buffer
+      bytes: candidateBuffer
     };
   }
 
