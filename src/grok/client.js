@@ -32,6 +32,54 @@ function isAssistantSender(sender) {
   return typeof sender === "string" && sender.toLowerCase() === "assistant";
 }
 
+const DEFAULT_RESPONSE_HYDRATION_DELAYS_MS = Object.freeze([
+  0,
+  250,
+  500,
+  1000,
+  2000,
+  4000
+]);
+
+const DEFAULT_THINKING_RESPONSE_HYDRATION_DELAYS_MS = Object.freeze([
+  ...DEFAULT_RESPONSE_HYDRATION_DELAYS_MS,
+  8000,
+  15000,
+  ...Array.from({ length: 11 }, () => 30000)
+]);
+
+function normalizeHydrationDelays(delays, fallback) {
+  if (!Array.isArray(delays) || delays.length === 0) {
+    return fallback;
+  }
+
+  const normalized = delays
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value) && value >= 0);
+
+  return normalized.length ? normalized : fallback;
+}
+
+function hasCompleteAssistantPayload(response) {
+  if (!response || typeof response !== "object" || !isAssistantSender(response.sender)) {
+    return false;
+  }
+
+  if (response.partial === false) {
+    return true;
+  }
+
+  if (typeof response.message === "string" && response.message.trim()) {
+    return true;
+  }
+
+  if ((response.generatedImageUrls ?? []).length > 0) {
+    return true;
+  }
+
+  return (response.cardAttachmentsJson ?? []).length > 0;
+}
+
 export class GrokClient {
   constructor(config) {
     this.config = config;
@@ -282,10 +330,53 @@ export class GrokClient {
       }
     });
 
-    return (
+    const assistantResponse = (
       (loadedResponses?.responses ?? []).find(
         (response) => response?.responseId === assistantResponseId
       ) ?? null
+    );
+
+    return hasCompleteAssistantPayload(assistantResponse) ? assistantResponse : null;
+  }
+
+  async loadAssistantResponseById({
+    conversationId,
+    responseId
+  }) {
+    if (!conversationId || !responseId) {
+      return null;
+    }
+
+    const loadedResponses = await this.requestJson({
+      path: `/rest/app-chat/conversations/${conversationId}/load-responses`,
+      method: "POST",
+      body: {
+        responseIds: [responseId]
+      }
+    });
+
+    const assistantResponse = (
+      (loadedResponses?.responses ?? []).find(
+        (response) => response?.responseId === responseId
+      ) ?? null
+    );
+
+    return hasCompleteAssistantPayload(assistantResponse) ? assistantResponse : null;
+  }
+
+  getResponseHydrationDelays(state) {
+    const thinkingOnly = state?.sawThinkingToken === true && state?.sawVisibleToken !== true;
+
+    if (thinkingOnly) {
+      return normalizeHydrationDelays(
+        this.config.responseHydrationThinkingDelaysMs,
+        DEFAULT_THINKING_RESPONSE_HYDRATION_DELAYS_MS
+      );
+    }
+
+    return normalizeHydrationDelays(
+      this.config.responseHydrationDelaysMs,
+      DEFAULT_RESPONSE_HYDRATION_DELAYS_MS
     );
   }
 
@@ -293,7 +384,7 @@ export class GrokClient {
     relativePath,
     state
   }) {
-    if (state?.modelResponse || !state?.userResponse?.responseId) {
+    if (state?.modelResponse) {
       return;
     }
 
@@ -304,17 +395,34 @@ export class GrokClient {
       return;
     }
 
-    for (const delayMs of [0, 250, 500, 1000, 2000, 4000]) {
+    const assistantResponseId = state?.assistantResponseId ?? null;
+    const userResponseId = state?.userResponse?.responseId ?? null;
+    if (!assistantResponseId && !userResponseId) {
+      return;
+    }
+
+    const hydrationDelays = this.getResponseHydrationDelays(state);
+
+    for (const delayMs of hydrationDelays) {
       if (delayMs > 0) {
         await sleep(delayMs);
       }
 
       let assistantResponse;
       try {
-        assistantResponse = await this.findAssistantResponse({
-          conversationId,
-          userResponseId: state.userResponse.responseId
-        });
+        if (assistantResponseId) {
+          assistantResponse = await this.loadAssistantResponseById({
+            conversationId,
+            responseId: assistantResponseId
+          });
+        }
+
+        if (!assistantResponse && userResponseId) {
+          assistantResponse = await this.findAssistantResponse({
+            conversationId,
+            userResponseId
+          });
+        }
       } catch {
         continue;
       }
@@ -324,8 +432,14 @@ export class GrokClient {
       }
 
       state.modelResponse = assistantResponse;
+      if (!state.assistantResponseId && assistantResponse.responseId) {
+        state.assistantResponseId = assistantResponse.responseId;
+      }
       if (!state.assistantText && assistantResponse.message) {
         state.assistantText = assistantResponse.message;
+      }
+      if (!state.assistantVisibleText && assistantResponse.message) {
+        state.assistantVisibleText = assistantResponse.message;
       }
       return;
     }
@@ -366,6 +480,13 @@ export class GrokClient {
       relativePath,
       state
     });
+
+    if (!state.modelResponse && state.sawThinkingToken && !state.sawVisibleToken) {
+      throw new HttpError(
+        502,
+        "Grok ended the stream before the final assistant response was available"
+      );
+    }
 
     return {
       model,

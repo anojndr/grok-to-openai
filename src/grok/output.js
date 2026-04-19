@@ -64,6 +64,7 @@ function stripStepTextFromStream(streamedText, modelResponse) {
 }
 
 function resolveCanonicalText(state) {
+  const streamedVisibleText = state?.assistantVisibleText || "";
   const streamedText = state?.assistantText || "";
   const message = state?.modelResponse?.message;
 
@@ -71,7 +72,11 @@ function resolveCanonicalText(state) {
     return message;
   }
 
-  return stripStepTextFromStream(streamedText, state?.modelResponse);
+  if (state?.modelResponse) {
+    return stripStepTextFromStream(streamedText, state?.modelResponse);
+  }
+
+  return streamedVisibleText;
 }
 
 export function buildAssistantOutput(

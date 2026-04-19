@@ -251,6 +251,172 @@ test("addResponse hydrates the final assistant response when the stream closes b
   assert.equal(requests.length, 3);
 });
 
+test("createConversationAndRespond hydrates the final assistant response by streamed responseId when userResponse is missing", async () => {
+  const requests = [];
+  const client = new GrokClient({
+    grokBaseUrl: "https://grok.com",
+    defaultModel: "grok-4-auto",
+    responseHydrationThinkingDelaysMs: [0]
+  });
+
+  client.browser = {
+    async request(request) {
+      requests.push({
+        url: request.url,
+        method: request.method,
+        body: request.body
+      });
+
+      if (request.url.endsWith("/conversations/new")) {
+        request.onChunk?.(
+          `${JSON.stringify({
+            result: {
+              conversation: {
+                conversationId: "conv_123"
+              },
+              response: {
+                token: "Thinking about your request",
+                isThinking: true,
+                responseId: "assistant_123"
+              }
+            }
+          })}\n`
+        );
+
+        return {
+          meta: {
+            status: 200
+          },
+          text: ""
+        };
+      }
+
+      if (request.url.endsWith("/load-responses")) {
+        return {
+          meta: {
+            status: 200
+          },
+          text: JSON.stringify({
+            responses: [
+              {
+                responseId: "assistant_123",
+                sender: "ASSISTANT",
+                partial: false,
+                message: "Recovered final answer."
+              }
+            ]
+          })
+        };
+      }
+
+      throw new Error(`Unexpected request URL: ${request.url}`);
+    }
+  };
+
+  const result = await client.createConversationAndRespond({
+    model: "grok-4-expert",
+    message: "Follow up"
+  });
+
+  assert.equal(result.state.conversation?.conversationId, "conv_123");
+  assert.equal(result.state.assistantResponseId, "assistant_123");
+  assert.equal(result.state.modelResponse?.responseId, "assistant_123");
+  assert.equal(result.state.modelResponse?.message, "Recovered final answer.");
+  assert.equal(result.state.assistantVisibleText, "Recovered final answer.");
+  assert.equal(requests.length, 2);
+});
+
+test("createConversationAndRespond keeps polling until the saved assistant response is complete", async () => {
+  let loadResponsesAttempts = 0;
+  const client = new GrokClient({
+    grokBaseUrl: "https://grok.com",
+    defaultModel: "grok-4-auto",
+    responseHydrationThinkingDelaysMs: [0, 1, 1]
+  });
+
+  client.browser = {
+    async request(request) {
+      if (request.url.endsWith("/conversations/new")) {
+        request.onChunk?.(
+          `${JSON.stringify({
+            result: {
+              conversation: {
+                conversationId: "conv_123"
+              },
+              response: {
+                token: "Thinking about your request",
+                isThinking: true,
+                responseId: "assistant_123"
+              }
+            }
+          })}\n`
+        );
+
+        return {
+          meta: {
+            status: 200
+          },
+          text: ""
+        };
+      }
+
+      if (request.url.endsWith("/load-responses")) {
+        loadResponsesAttempts += 1;
+
+        if (loadResponsesAttempts < 3) {
+          return {
+            meta: {
+              status: 200
+            },
+            text: JSON.stringify({
+              responses: [
+                {
+                  responseId: "assistant_123",
+                  sender: "ASSISTANT",
+                  partial: true,
+                  message: "",
+                  steps: [
+                    {
+                      text: ["Thinking about your request"],
+                      tags: ["header"]
+                    }
+                  ]
+                }
+              ]
+            })
+          };
+        }
+
+        return {
+          meta: {
+            status: 200
+          },
+          text: JSON.stringify({
+            responses: [
+              {
+                responseId: "assistant_123",
+                sender: "ASSISTANT",
+                partial: false,
+                message: "Recovered final answer."
+              }
+            ]
+          })
+        };
+      }
+
+      throw new Error(`Unexpected request URL: ${request.url}`);
+    }
+  };
+
+  const result = await client.createConversationAndRespond({
+    model: "grok-4-expert",
+    message: "Follow up"
+  });
+
+  assert.equal(loadResponsesAttempts, 3);
+  assert.equal(result.state.modelResponse?.message, "Recovered final answer.");
+});
+
 test("createConversationAndRespond forwards heavy mode IDs to Grok", async () => {
   const requests = [];
   const client = new GrokClient({

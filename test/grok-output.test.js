@@ -92,6 +92,18 @@ test("buildAssistantOutput strips streamed thought fragments that contain regex-
   assert.equal(output.text, "Final answer.");
 });
 
+test("buildAssistantOutput falls back to non-thinking streamed text when modelResponse is missing", () => {
+  const output = buildAssistantOutput(
+    {
+      assistantText: "Thinking about your requestFinal answer.",
+      assistantVisibleText: "Final answer."
+    },
+    {}
+  );
+
+  assert.equal(output.text, "Final answer.");
+});
+
 test("buildAssistantOutput extracts generated images from Grok image cards", () => {
   const output = buildAssistantOutput(
     {

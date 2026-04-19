@@ -72,3 +72,28 @@ test("buildStoredGrokState keeps the previous account index when a follow-up sta
     userResponseId: "user-2"
   });
 });
+
+test("buildStoredGrokState falls back to the streamed assistant response id when modelResponse is missing", () => {
+  const grok = buildStoredGrokState({
+    state: {
+      conversation: { conversationId: "conversation-2" },
+      assistantResponseId: "assistant-streamed",
+      modelResponse: null,
+      userResponse: { responseId: "user-2" }
+    },
+    accountIndex: 2,
+    previousGrok: {
+      accountIndex: 1,
+      conversationId: "conversation-1",
+      assistantResponseId: "assistant-1",
+      userResponseId: "user-1"
+    }
+  });
+
+  assert.deepEqual(grok, {
+    accountIndex: 2,
+    conversationId: "conversation-2",
+    assistantResponseId: "assistant-streamed",
+    userResponseId: "user-2"
+  });
+});

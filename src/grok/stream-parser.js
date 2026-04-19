@@ -2,6 +2,7 @@ import { HttpError } from "../lib/errors.js";
 import { createTextAccumulator } from "../lib/text-accumulator.js";
 
 const ASSISTANT_TEXT = Symbol("assistantText");
+const ASSISTANT_VISIBLE_TEXT = Symbol("assistantVisibleText");
 
 export function createNdjsonParser(onObject) {
   let buffer = "";
@@ -42,10 +43,14 @@ export function createNdjsonParser(onObject) {
 
 export function collectGrokStreamingState() {
   const assistantText = createTextAccumulator();
+  const assistantVisibleText = createTextAccumulator();
   const state = {
     conversation: null,
     userResponse: null,
     modelResponse: null,
+    assistantResponseId: null,
+    sawThinkingToken: false,
+    sawVisibleToken: false,
     title: null,
     finalMetadata: null,
     uiLayout: null,
@@ -55,6 +60,9 @@ export function collectGrokStreamingState() {
   Object.defineProperty(state, ASSISTANT_TEXT, {
     value: assistantText
   });
+  Object.defineProperty(state, ASSISTANT_VISIBLE_TEXT, {
+    value: assistantVisibleText
+  });
   Object.defineProperty(state, "assistantText", {
     enumerable: true,
     get() {
@@ -62,6 +70,15 @@ export function collectGrokStreamingState() {
     },
     set(value) {
       assistantText.set(value);
+    }
+  });
+  Object.defineProperty(state, "assistantVisibleText", {
+    enumerable: true,
+    get() {
+      return assistantVisibleText.toString();
+    },
+    set(value) {
+      assistantVisibleText.set(value);
     }
   });
 
@@ -120,7 +137,18 @@ export function applyGrokEvent(state, payload) {
   }
 
   if (typeof response.token === "string") {
+    if (typeof response.responseId === "string" && response.responseId) {
+      state.assistantResponseId = response.responseId;
+    }
+
     state[ASSISTANT_TEXT].append(response.token);
+    if (response.isThinking === true) {
+      state.sawThinkingToken = true;
+    } else {
+      state.sawVisibleToken = true;
+      state[ASSISTANT_VISIBLE_TEXT].append(response.token);
+    }
+
     return {
       type: "token",
       token: response.token,
@@ -142,8 +170,15 @@ export function applyGrokEvent(state, payload) {
 
   if (modelResponse) {
     state.modelResponse = modelResponse;
+    if (typeof modelResponse.responseId === "string" && modelResponse.responseId) {
+      state.assistantResponseId = modelResponse.responseId;
+    }
+
     if (modelResponse.message && state[ASSISTANT_TEXT].isEmpty()) {
       state.assistantText = modelResponse.message;
+    }
+    if (modelResponse.message && state[ASSISTANT_VISIBLE_TEXT].isEmpty()) {
+      state.assistantVisibleText = modelResponse.message;
     }
   }
 
