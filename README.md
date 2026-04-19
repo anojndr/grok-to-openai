@@ -43,6 +43,8 @@ Playwright browser profile. It does not use the official xAI API.
   default.
 - Optional `source_attribution` can append source lists and search queries.
 - Grok image generation and image edits are exposed instead of being dropped.
+- Grok searched image cards are exposed as assistant images with direct source
+  URLs instead of being stripped from the reply.
 - Uploaded files and Responses state are persisted under `.data/` by default
   or in PostgreSQL when `DATABASE_URL` is set.
 
@@ -90,7 +92,8 @@ default and avoid embedding inline Base64 image bytes:
 ```
 
 Chat Completions keeps the assistant text usable for Markdown clients and adds
-structured image metadata in a bridge-specific `message.image_urls` field:
+structured image metadata in a bridge-specific `message.image_urls` field. This
+is used for both generated images and searched/public image cards:
 
 ```json
 {

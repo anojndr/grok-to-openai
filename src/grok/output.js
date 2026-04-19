@@ -4,7 +4,7 @@ import {
   renderGrokText,
   resolveSourceAttributionOptions
 } from "./source-attribution.js";
-import { extractGeneratedImages } from "./generated-images.js";
+import { extractAssistantImages } from "./generated-images.js";
 import { renderGrokThought, shouldSuppressGrokThought } from "./thought.js";
 
 function extractStepTextFragments(modelResponse) {
@@ -104,7 +104,7 @@ export function buildAssistantOutput(
       sourceAttribution,
       options: sourceAttributionOptions
     }),
-    images: extractGeneratedImages({
+    images: extractAssistantImages({
       assistantText: streamedText || canonicalText,
       modelResponse: state?.modelResponse ?? null,
       grokBaseUrl: options.grokBaseUrl

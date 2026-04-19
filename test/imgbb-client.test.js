@@ -378,3 +378,32 @@ test("rehostGeneratedImages skips Imgbb URLs", async () => {
   assert.deepEqual(hostedImages, images);
   assert.equal(isImgbbUrl(hostedImages[0].url), true);
 });
+
+test("rehostGeneratedImages skips public non-Grok image URLs", async () => {
+  let loadCount = 0;
+  const images = [
+    {
+      title: "Example Source image",
+      mimeType: "image/jpeg",
+      url: "https://images.example.com/face.jpg",
+      action: "search",
+      sourceUrlType: "external"
+    }
+  ];
+
+  const hostedImages = await rehostGeneratedImages({
+    images,
+    loadSourceImage: async () => {
+      loadCount += 1;
+      return null;
+    },
+    uploadClient: {
+      async uploadFile() {
+        throw new Error("uploadFile should not be called");
+      }
+    }
+  });
+
+  assert.equal(loadCount, 0);
+  assert.deepEqual(hostedImages, images);
+});

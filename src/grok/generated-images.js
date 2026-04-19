@@ -24,6 +24,7 @@ function parseCardAttachment(rawCard) {
 
 function parseRenderCards(text = "") {
   const renderCards = new Map();
+  let renderIndex = 0;
 
   for (const match of text.matchAll(GROK_RENDER_REGEX)) {
     const attributes = match[1] ?? "";
@@ -42,8 +43,10 @@ function parseRenderCards(text = "") {
       cardId,
       cardType: readAttribute(attributes, "card_type"),
       renderType: readAttribute(attributes, "type"),
-      args
+      args,
+      renderIndex
     });
+    renderIndex += 1;
   }
 
   return renderCards;
@@ -64,7 +67,13 @@ function resolveImageAction(value) {
 }
 
 function inferMimeType(url) {
-  const normalized = (url || "").toLowerCase();
+  let normalized = "";
+
+  try {
+    normalized = new URL(url).pathname.toLowerCase();
+  } catch {
+    normalized = (url || "").toLowerCase();
+  }
 
   if (normalized.endsWith(".png")) {
     return "image/png";
@@ -132,7 +141,93 @@ export function resolveGrokAssetUrl(assetPath, grokBaseUrl = "https://grok.com")
   }
 }
 
-export function extractGeneratedImages({
+function buildGeneratedImageCandidate({
+  chunk,
+  card,
+  renderCard,
+  modelResponse,
+  grokBaseUrl,
+  action
+}) {
+  const key = chunk.imageUuid || `${card?.id || "image"}:${chunk.imageIndex ?? 0}`;
+
+  return {
+    key,
+    id: chunk.imageUuid ? `ig_${chunk.imageUuid}` : `ig_${key.replace(/[^a-zA-Z0-9_]/g, "_")}`,
+    responseId: modelResponse?.responseId ?? null,
+    cardId: card?.id ?? renderCard?.cardId ?? null,
+    action,
+    title:
+      chunk.imageTitle ?? (action === "edit" ? "Edited Image" : "Generated Image"),
+    prompt:
+      renderCard?.args?.prompt ??
+      chunk.imagePrompt?.prompt ??
+      card?.prompt ??
+      null,
+    revisedPrompt: chunk.imagePrompt?.upsampledPrompt ?? null,
+    url: resolveGrokAssetUrl(chunk.imageUrl, grokBaseUrl),
+    mimeType: inferMimeType(chunk.imageUrl),
+    imageModel: chunk.imageModel ?? chunk.imagePrompt?.modelName ?? null,
+    imageIndex: chunk.imageIndex ?? renderCard?.renderIndex ?? 0,
+    progress: chunk.progress ?? null,
+    seq: chunk.seq ?? null,
+    orientation: renderCard?.args?.orientation ?? card?.orientation ?? null,
+    sourceImageId: renderCard?.args?.image_id ?? null,
+    sourceUrlType: "grok_asset"
+  };
+}
+
+function resolveSearchImageLabel(card) {
+  const sourceName = typeof card?.image?.source === "string" ? card.image.source.trim() : "";
+  if (sourceName) {
+    return `${sourceName} image`;
+  }
+
+  return "Search result image";
+}
+
+function buildSearchImageCandidate({
+  card,
+  renderCard,
+  modelResponse
+}) {
+  const image = card?.image ?? null;
+  const url = image?.original || image?.thumbnail || null;
+  if (!url) {
+    return null;
+  }
+
+  const key =
+    image?.image_id ||
+    `${card?.id || "search"}:${renderCard?.renderIndex ?? 0}`;
+
+  return {
+    key,
+    id: `img_${String(key).replace(/[^a-zA-Z0-9_]/g, "_")}`,
+    responseId: modelResponse?.responseId ?? null,
+    cardId: card?.id ?? renderCard?.cardId ?? null,
+    action: "search",
+    title: resolveSearchImageLabel(card),
+    prompt: null,
+    revisedPrompt: null,
+    url,
+    mimeType: inferMimeType(url),
+    imageModel: null,
+    imageIndex: renderCard?.renderIndex ?? 0,
+    progress: 100,
+    seq: null,
+    orientation: null,
+    sourceImageId: null,
+    sourceName: image?.source ?? null,
+    sourceTitle: image?.title ?? null,
+    sourcePageUrl: image?.link ?? null,
+    thumbnailUrl: image?.thumbnail ?? null,
+    imageId: image?.image_id ?? null,
+    sourceUrlType: "external"
+  };
+}
+
+export function extractAssistantImages({
   assistantText = "",
   modelResponse = null,
   grokBaseUrl = "https://grok.com"
@@ -156,33 +251,36 @@ export function extractGeneratedImages({
       resolveImageAction(card?.cardType) ||
       resolveImageAction(renderCard?.cardType);
 
-    if (!chunk?.imageUrl || !action) {
+    if (chunk?.imageUrl && action) {
+      const candidate = buildGeneratedImageCandidate({
+        chunk,
+        card,
+        renderCard,
+        modelResponse,
+        grokBaseUrl,
+        action
+      });
+      registerCandidate(candidate.key, candidate);
       continue;
     }
 
-    const key = chunk.imageUuid || `${card.id || "image"}:${chunk.imageIndex ?? 0}`;
-    registerCandidate(key, {
-      id: chunk.imageUuid ? `ig_${chunk.imageUuid}` : `ig_${key.replace(/[^a-zA-Z0-9_]/g, "_")}`,
-      responseId: modelResponse?.responseId ?? null,
-      cardId: card?.id ?? renderCard?.cardId ?? null,
-      action,
-      title:
-        chunk.imageTitle ?? (action === "edit" ? "Edited Image" : "Generated Image"),
-      prompt:
-        renderCard?.args?.prompt ??
-        chunk.imagePrompt?.prompt ??
-        card?.prompt ??
-        null,
-      revisedPrompt: chunk.imagePrompt?.upsampledPrompt ?? null,
-      url: resolveGrokAssetUrl(chunk.imageUrl, grokBaseUrl),
-      mimeType: inferMimeType(chunk.imageUrl),
-      imageModel: chunk.imageModel ?? chunk.imagePrompt?.modelName ?? null,
-      imageIndex: chunk.imageIndex ?? 0,
-      progress: chunk.progress ?? null,
-      seq: chunk.seq ?? null,
-      orientation: renderCard?.args?.orientation ?? card?.orientation ?? null,
-      sourceImageId: renderCard?.args?.image_id ?? null
+    const isSearchImage =
+      card?.type === "render_searched_image" ||
+      renderCard?.renderType === "render_searched_image";
+    if (!isSearchImage) {
+      continue;
+    }
+
+    const candidate = buildSearchImageCandidate({
+      card,
+      renderCard,
+      modelResponse
     });
+    if (!candidate) {
+      continue;
+    }
+
+    registerCandidate(candidate.key, candidate);
   }
 
   for (const [index, assetPath] of (modelResponse?.generatedImageUrls ?? []).entries()) {
@@ -202,15 +300,24 @@ export function extractGeneratedImages({
       progress: 100,
       seq: null,
       orientation: null,
-      sourceImageId: null
+      sourceImageId: null,
+      sourceUrlType: "grok_asset"
     });
   }
 
-  return [...imagesByKey.values()].sort((left, right) => {
-    if ((left.imageIndex ?? 0) !== (right.imageIndex ?? 0)) {
-      return (left.imageIndex ?? 0) - (right.imageIndex ?? 0);
-    }
+  return [...imagesByKey.values()]
+    .sort((left, right) => {
+      if ((left.imageIndex ?? 0) !== (right.imageIndex ?? 0)) {
+        return (left.imageIndex ?? 0) - (right.imageIndex ?? 0);
+      }
 
-    return left.id.localeCompare(right.id);
-  });
+      return left.id.localeCompare(right.id);
+    })
+    .map(({ key: _key, ...image }) => image);
+}
+
+export function extractGeneratedImages(options) {
+  return extractAssistantImages(options).filter(
+    (image) => image.action === "generate" || image.action === "edit"
+  );
 }

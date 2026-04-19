@@ -227,6 +227,32 @@ export function isImgbbUrl(urlString) {
   }
 }
 
+function isGrokAssetUrl(urlString) {
+  try {
+    const url = new URL(urlString);
+    return matchesHostname(url.hostname, "assets.grok.com");
+  } catch {
+    return false;
+  }
+}
+
+function shouldRehostImage(image) {
+  if (!image?.url || isImgbbUrl(image.url)) {
+    return false;
+  }
+
+  if (image.sourceUrlType) {
+    return image.sourceUrlType === "grok_asset";
+  }
+
+  const action = String(image.action || "").toLowerCase();
+  if (action === "generate" || action === "edit") {
+    return true;
+  }
+
+  return isGrokAssetUrl(image.url);
+}
+
 export class ImgbbClient {
   constructor(config = {}) {
     this.apiUrl = config.imgbbApiUrl || DEFAULT_IMGBB_API_URL;
@@ -362,7 +388,7 @@ export async function rehostGeneratedImages({
 
   return Promise.all(
     images.map(async (image, index) => {
-      if (!image?.url || isImgbbUrl(image.url)) {
+      if (!shouldRehostImage(image)) {
         return image;
       }
 

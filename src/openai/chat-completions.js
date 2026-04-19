@@ -26,7 +26,11 @@ function normalizeImageUrls(images) {
     action: image.action ?? null,
     prompt: image.prompt ?? null,
     revised_prompt: image.revisedPrompt ?? null,
-    image_model: image.imageModel ?? null
+    image_model: image.imageModel ?? null,
+    ...(image.thumbnailUrl ? { thumbnail_url: image.thumbnailUrl } : {}),
+    ...(image.sourcePageUrl ? { source_page_url: image.sourcePageUrl } : {}),
+    ...(image.sourceTitle ? { source_title: image.sourceTitle } : {}),
+    ...(image.sourceName ? { source_name: image.sourceName } : {})
   }));
 }
 
@@ -38,7 +42,11 @@ export function renderChatCompletionContent({ text = "", images = [] }) {
   const markdownImages = images.map((image, index) => {
     const fallbackLabel =
       image.title ||
-      (image.action === "edit" ? "Edited image" : "Generated image");
+      (image.action === "edit"
+        ? "Edited image"
+        : image.action === "generate"
+          ? "Generated image"
+          : "Image");
     const label = images.length > 1 ? `${fallbackLabel} ${index + 1}` : fallbackLabel;
     return `![${label}](${image.url})`;
   });

@@ -894,7 +894,11 @@ app.post("/v1/chat/completions", async (req, res, next) => {
                   action: image.action ?? null,
                   prompt: image.prompt ?? null,
                   revised_prompt: image.revisedPrompt ?? null,
-                  image_model: image.imageModel ?? null
+                  image_model: image.imageModel ?? null,
+                  ...(image.thumbnailUrl ? { thumbnail_url: image.thumbnailUrl } : {}),
+                  ...(image.sourcePageUrl ? { source_page_url: image.sourcePageUrl } : {}),
+                  ...(image.sourceTitle ? { source_title: image.sourceTitle } : {}),
+                  ...(image.sourceName ? { source_name: image.sourceName } : {})
                 }))
               },
               created

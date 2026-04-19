@@ -174,7 +174,102 @@ test("buildAssistantOutput extracts generated images from Grok image cards", () 
       progress: 100,
       seq: 1,
       orientation: "portrait",
-      sourceImageId: null
+      sourceImageId: null,
+      sourceUrlType: "grok_asset"
+    }
+  ]);
+});
+
+test("buildAssistantOutput extracts searched image cards as assistant images in render order", () => {
+  const output = buildAssistantOutput(
+    {
+      modelResponse: {
+        responseId: "resp_search_123",
+        message:
+          "Here are some direct/recent images:\n\n" +
+          "<grok:render card_id=\"card_2\" card_type=\"image_card\" type=\"render_searched_image\"><argument name=\"image_id\">second</argument></grok:render>\n" +
+          "<grok:render card_id=\"card_1\" card_type=\"image_card\" type=\"render_searched_image\"><argument name=\"image_id\">first</argument></grok:render>\n\n" +
+          "After the image cards.",
+        cardAttachmentsJson: [
+          JSON.stringify({
+            id: "card_1",
+            type: "render_searched_image",
+            cardType: "image_card",
+            image: {
+              thumbnail: "https://images.example.com/thumb-first.webp",
+              source: "Example Source",
+              title: "First article title",
+              link: "https://example.com/articles/first",
+              original: "https://images.example.com/first.webp",
+              image_id: "first"
+            }
+          }),
+          JSON.stringify({
+            id: "card_2",
+            type: "render_searched_image",
+            cardType: "image_card",
+            image: {
+              thumbnail: "https://images.example.com/thumb-second.jpg",
+              source: "Other Source",
+              title: "Second article title",
+              link: "https://example.com/articles/second",
+              original: "https://images.example.com/second.jpg",
+              image_id: "second"
+            }
+          })
+        ]
+      }
+    },
+    {}
+  );
+
+  assert.equal(output.text, "Here are some direct/recent images:\n\nAfter the image cards.");
+  assert.deepEqual(output.images, [
+    {
+      id: "img_second",
+      responseId: "resp_search_123",
+      cardId: "card_2",
+      action: "search",
+      title: "Other Source image",
+      prompt: null,
+      revisedPrompt: null,
+      url: "https://images.example.com/second.jpg",
+      mimeType: "image/jpeg",
+      imageModel: null,
+      imageIndex: 0,
+      progress: 100,
+      seq: null,
+      orientation: null,
+      sourceImageId: null,
+      sourceName: "Other Source",
+      sourceTitle: "Second article title",
+      sourcePageUrl: "https://example.com/articles/second",
+      thumbnailUrl: "https://images.example.com/thumb-second.jpg",
+      imageId: "second",
+      sourceUrlType: "external"
+    },
+    {
+      id: "img_first",
+      responseId: "resp_search_123",
+      cardId: "card_1",
+      action: "search",
+      title: "Example Source image",
+      prompt: null,
+      revisedPrompt: null,
+      url: "https://images.example.com/first.webp",
+      mimeType: "image/webp",
+      imageModel: null,
+      imageIndex: 1,
+      progress: 100,
+      seq: null,
+      orientation: null,
+      sourceImageId: null,
+      sourceName: "Example Source",
+      sourceTitle: "First article title",
+      sourcePageUrl: "https://example.com/articles/first",
+      thumbnailUrl: "https://images.example.com/thumb-first.webp",
+      imageId: "first",
+      sourceUrlType: "external"
     }
   ]);
 });

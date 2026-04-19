@@ -68,6 +68,10 @@ export function createResponseImageOutputItem({
     ...(image.action ? { action: image.action } : {}),
     ...(image.imageModel ? { image_model: image.imageModel } : {}),
     ...(image.title ? { title: image.title } : {}),
+    ...(image.thumbnailUrl ? { thumbnail_url: image.thumbnailUrl } : {}),
+    ...(image.sourcePageUrl ? { source_page_url: image.sourcePageUrl } : {}),
+    ...(image.sourceTitle ? { source_title: image.sourceTitle } : {}),
+    ...(image.sourceName ? { source_name: image.sourceName } : {}),
     ...(image.resultError ? { result_error: image.resultError } : {}),
     ...(outputFormat ? { output_format: outputFormat } : {})
   };
