@@ -158,6 +158,99 @@ test("createConversationAndRespond captures a delayed final response without a t
   assert.equal(result.state.assistantText, "Finished after running code.");
 });
 
+test("addResponse hydrates the final assistant response when the stream closes before modelResponse arrives", async () => {
+  const requests = [];
+  const client = new GrokClient({
+    grokBaseUrl: "https://grok.com",
+    defaultModel: "grok-4-auto"
+  });
+
+  client.browser = {
+    async request(request) {
+      requests.push({
+        url: request.url,
+        method: request.method,
+        body: request.body
+      });
+
+      if (request.url.endsWith("/responses")) {
+        request.onChunk?.(
+          `${JSON.stringify({
+            result: {
+              userResponse: {
+                responseId: "user_123"
+              }
+            }
+          })}\n`
+        );
+        request.onChunk?.(
+          `${JSON.stringify({
+            result: {
+              token: "Thinking about your request",
+              isThinking: true
+            }
+          })}\n`
+        );
+
+        return {
+          meta: {
+            status: 200
+          },
+          text: ""
+        };
+      }
+
+      if (request.url.endsWith("/response-node?includeThreads=true")) {
+        return {
+          meta: {
+            status: 200
+          },
+          text: JSON.stringify({
+            responseNodes: [
+              {
+                responseId: "assistant_123",
+                sender: "ASSISTANT",
+                parentResponseId: "user_123"
+              }
+            ]
+          })
+        };
+      }
+
+      if (request.url.endsWith("/load-responses")) {
+        return {
+          meta: {
+            status: 200
+          },
+          text: JSON.stringify({
+            responses: [
+              {
+                responseId: "assistant_123",
+                sender: "ASSISTANT",
+                message: "Recovered final answer."
+              }
+            ]
+          })
+        };
+      }
+
+      throw new Error(`Unexpected request URL: ${request.url}`);
+    }
+  };
+
+  const result = await client.addResponse({
+    conversationId: "conv_123",
+    parentResponseId: "parent_123",
+    model: "grok-4-auto",
+    message: "Follow up"
+  });
+
+  assert.equal(result.state.userResponse?.responseId, "user_123");
+  assert.equal(result.state.modelResponse?.responseId, "assistant_123");
+  assert.equal(result.state.modelResponse?.message, "Recovered final answer.");
+  assert.equal(requests.length, 3);
+});
+
 test("createConversationAndRespond forwards heavy mode IDs to Grok", async () => {
   const requests = [];
   const client = new GrokClient({

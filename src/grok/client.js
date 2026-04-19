@@ -22,6 +22,16 @@ function makeDeviceEnvInfo() {
   return DEVICE_ENV_INFO;
 }
 
+function sleep(milliseconds) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, milliseconds);
+  });
+}
+
+function isAssistantSender(sender) {
+  return typeof sender === "string" && sender.toLowerCase() === "assistant";
+}
+
 export class GrokClient {
   constructor(config) {
     this.config = config;
@@ -203,11 +213,23 @@ export class GrokClient {
   }
 
   async jsonRequest({ path: relativePath, body }) {
+    return this.requestJson({
+      path: relativePath,
+      method: "POST",
+      body
+    });
+  }
+
+  async requestJson({
+    path: relativePath,
+    method = "GET",
+    body = null
+  }) {
     const requestId = createId("grokreq");
     const response = await this.browser.request({
       requestId,
       url: `${this.config.grokBaseUrl}${relativePath}`,
-      method: "POST",
+      method,
       body,
       headers: {
         "Content-Type": "application/json"
@@ -222,6 +244,91 @@ export class GrokClient {
     }
 
     return JSON.parse(response.text);
+  }
+
+  extractConversationIdFromPath(relativePath) {
+    const match = /\/rest\/app-chat\/conversations\/([^/]+)/.exec(relativePath);
+    return match?.[1] ?? null;
+  }
+
+  async findAssistantResponse({
+    conversationId,
+    userResponseId
+  }) {
+    if (!conversationId || !userResponseId) {
+      return null;
+    }
+
+    const responseTree = await this.requestJson({
+      path: `/rest/app-chat/conversations/${conversationId}/response-node?includeThreads=true`
+    });
+    const assistantResponseId = (responseTree?.responseNodes ?? [])
+      .filter(
+        (node) =>
+          node?.parentResponseId === userResponseId &&
+          isAssistantSender(node?.sender)
+      )
+      .at(-1)?.responseId;
+
+    if (!assistantResponseId) {
+      return null;
+    }
+
+    const loadedResponses = await this.requestJson({
+      path: `/rest/app-chat/conversations/${conversationId}/load-responses`,
+      method: "POST",
+      body: {
+        responseIds: [assistantResponseId]
+      }
+    });
+
+    return (
+      (loadedResponses?.responses ?? []).find(
+        (response) => response?.responseId === assistantResponseId
+      ) ?? null
+    );
+  }
+
+  async hydrateMissingModelResponse({
+    relativePath,
+    state
+  }) {
+    if (state?.modelResponse || !state?.userResponse?.responseId) {
+      return;
+    }
+
+    const conversationId =
+      state?.conversation?.conversationId ??
+      this.extractConversationIdFromPath(relativePath);
+    if (!conversationId) {
+      return;
+    }
+
+    for (const delayMs of [0, 250, 500, 1000, 2000, 4000]) {
+      if (delayMs > 0) {
+        await sleep(delayMs);
+      }
+
+      let assistantResponse;
+      try {
+        assistantResponse = await this.findAssistantResponse({
+          conversationId,
+          userResponseId: state.userResponse.responseId
+        });
+      } catch {
+        continue;
+      }
+
+      if (!assistantResponse) {
+        continue;
+      }
+
+      state.modelResponse = assistantResponse;
+      if (!state.assistantText && assistantResponse.message) {
+        state.assistantText = assistantResponse.message;
+      }
+      return;
+    }
   }
 
   async streamRequest({ path: relativePath, body, model, onToken = null }) {
@@ -254,6 +361,11 @@ export class GrokClient {
         `Grok request failed: ${response.text || "unknown error"}`
       );
     }
+
+    await this.hydrateMissingModelResponse({
+      relativePath,
+      state
+    });
 
     return {
       model,
