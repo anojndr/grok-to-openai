@@ -80,6 +80,78 @@ function hasCompleteAssistantPayload(response) {
   return (response.cardAttachmentsJson ?? []).length > 0;
 }
 
+function hasRenderableAssistantPayload(response) {
+  if (!response || typeof response !== "object") {
+    return false;
+  }
+
+  if (typeof response.message === "string" && response.message.trim()) {
+    return true;
+  }
+
+  if ((response.generatedImageUrls ?? []).length > 0) {
+    return true;
+  }
+
+  return (response.cardAttachmentsJson ?? []).length > 0;
+}
+
+function getModelResponseStreamErrors(response) {
+  const messages = new Set();
+  const streamErrors = [
+    ...(Array.isArray(response?.streamErrors) ? response.streamErrors : []),
+    ...(Array.isArray(response?.metadata?.stream_errors)
+      ? response.metadata.stream_errors
+      : [])
+  ];
+
+  for (const streamError of streamErrors) {
+    const message =
+      typeof streamError?.message === "string" ? streamError.message.trim() : "";
+    if (message) {
+      messages.add(message);
+    }
+  }
+
+  return [...messages];
+}
+
+function inferModelResponseErrorStatus(message = "") {
+  const normalized = message.toLowerCase();
+
+  if (
+    normalized.includes("resourceexhausted") ||
+    normalized.includes("admission denied") ||
+    normalized.includes("load_shed") ||
+    normalized.includes("overload") ||
+    normalized.includes("unavailable")
+  ) {
+    return 503;
+  }
+
+  return 502;
+}
+
+function getModelResponseFailure(state) {
+  const modelResponse = state?.modelResponse;
+  if (!modelResponse || hasRenderableAssistantPayload(modelResponse)) {
+    return null;
+  }
+
+  const streamErrors = getModelResponseStreamErrors(modelResponse);
+  if (!streamErrors.length) {
+    return null;
+  }
+
+  const message = streamErrors[0];
+  const status = inferModelResponseErrorStatus(message);
+
+  return new HttpError(status, `Grok request failed: ${message}`, {
+    code: status === 503 ? "server_overloaded" : "upstream_error",
+    streamErrors
+  });
+}
+
 export class GrokClient {
   constructor(config) {
     this.config = config;
@@ -480,6 +552,11 @@ export class GrokClient {
       relativePath,
       state
     });
+
+    const modelResponseFailure = getModelResponseFailure(state);
+    if (modelResponseFailure) {
+      throw modelResponseFailure;
+    }
 
     if (!state.modelResponse && state.sawThinkingToken && !state.sawVisibleToken) {
       throw new HttpError(

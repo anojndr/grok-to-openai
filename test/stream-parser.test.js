@@ -125,3 +125,19 @@ test("applyGrokEvent captures direct assistant response payloads", () => {
   assert.equal(state.modelResponse.message, "Canonical final answer.");
   assert.equal(state.assistantText, "Canonical final answer.");
 });
+
+test("applyGrokEvent ignores empty streamed tokens while preserving the response id", () => {
+  const state = collectGrokStreamingState();
+
+  const delta = applyGrokEvent(state, {
+    result: {
+      token: "",
+      responseId: "resp_123"
+    }
+  });
+
+  assert.equal(delta, null);
+  assert.equal(state.assistantResponseId, "resp_123");
+  assert.equal(state.sawVisibleToken, false);
+  assert.equal(state.assistantText, "");
+});

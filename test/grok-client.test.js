@@ -417,6 +417,96 @@ test("createConversationAndRespond keeps polling until the saved assistant respo
   assert.equal(result.state.modelResponse?.message, "Recovered final answer.");
 });
 
+test("createConversationAndRespond rejects empty assistant responses that include stream errors", async () => {
+  const requests = [];
+  const client = new GrokClient({
+    grokBaseUrl: "https://grok.com",
+    defaultModel: "grok-4-auto",
+    responseHydrationDelaysMs: [0],
+    responseHydrationThinkingDelaysMs: [0]
+  });
+
+  client.browser = {
+    async request(request) {
+      requests.push({
+        url: request.url,
+        method: request.method,
+        body: request.body
+      });
+
+      if (request.url.endsWith("/conversations/new")) {
+        request.onChunk?.(
+          `${JSON.stringify({
+            result: {
+              conversation: {
+                conversationId: "conv_123"
+              },
+              response: {
+                userResponse: {
+                  responseId: "user_123"
+                },
+                token: "",
+                responseId: "assistant_123"
+              }
+            }
+          })}\n`
+        );
+
+        return {
+          meta: {
+            status: 200
+          },
+          text: ""
+        };
+      }
+
+      if (request.url.endsWith("/load-responses")) {
+        return {
+          meta: {
+            status: 200
+          },
+          text: JSON.stringify({
+            responses: [
+              {
+                responseId: "assistant_123",
+                sender: "ASSISTANT",
+                partial: false,
+                message: "",
+                streamErrors: [
+                  {
+                    message:
+                      "Stream aborted by server or connection error: Status { code: ResourceExhausted, message: \"Admission denied by perf_based_admission_controller\" }"
+                  }
+                ]
+              }
+            ]
+          })
+        };
+      }
+
+      throw new Error(`Unexpected request URL: ${request.url}`);
+    }
+  };
+
+  await assert.rejects(
+    client.createConversationAndRespond({
+      model: "grok-4-fast",
+      message: "Reply with exactly: pong"
+    }),
+    (error) => {
+      assert.equal(error?.name, "HttpError");
+      assert.equal(error?.status, 503);
+      assert.match(
+        error?.message ?? "",
+        /Admission denied by perf_based_admission_controller/
+      );
+      return true;
+    }
+  );
+
+  assert.equal(requests.length, 2);
+});
+
 test("createConversationAndRespond forwards heavy mode IDs to Grok", async () => {
   const requests = [];
   const client = new GrokClient({

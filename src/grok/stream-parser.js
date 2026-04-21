@@ -141,6 +141,10 @@ export function applyGrokEvent(state, payload) {
       state.assistantResponseId = response.responseId;
     }
 
+    if (response.token.length === 0) {
+      return null;
+    }
+
     state[ASSISTANT_TEXT].append(response.token);
     if (response.isThinking === true) {
       state.sawThinkingToken = true;
