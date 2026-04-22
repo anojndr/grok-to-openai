@@ -56,11 +56,14 @@ Playwright browser profile. It does not use the official xAI API.
 - `grok-4-fast`
 - `grok-4-expert`
 - `grok-4-heavy`
+- `grok-4.3-beta`
 
 Accepted aliases are intentionally broad:
 
 - `grok`, `grok-latest`, `grok-4`, `grok-3`, `gpt-4o`, `gpt-4.1`, and `gpt-5`
   all route to auto mode.
+- `grok-4.3-beta`, `grok-4.3`, `grok 4.3 (beta)`, and the exact upstream
+  `grok-420-computer-use-sa` all route to Grok 4.3 beta mode.
 - Names containing `fast`, `expert`, `heavy`, or `auto` route to that Grok
   mode even if the exact string is not listed above.
 - If `model` is omitted, `DEFAULT_MODEL` is used.

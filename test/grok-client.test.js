@@ -621,6 +621,34 @@ test("createConversationAndRespond forwards heavy mode IDs to Grok", async () =>
   assert.equal(requests[0].body.modeId, "heavy");
 });
 
+test("createConversationAndRespond forwards Grok 4.3 beta mode IDs to Grok", async () => {
+  const requests = [];
+  const client = new GrokClient({
+    grokBaseUrl: "https://grok.com",
+    defaultModel: "grok-4-auto"
+  });
+
+  client.browser = {
+    async request(request) {
+      requests.push(request);
+      return {
+        meta: {
+          status: 200
+        },
+        text: ""
+      };
+    }
+  };
+
+  await client.createConversationAndRespond({
+    model: "grok-4.3-beta",
+    message: "Use the beta model."
+  });
+
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].body.modeId, "grok-420-computer-use-sa");
+});
+
 test("conversation requests reuse the same deviceEnvInfo object", async () => {
   const requests = [];
   const client = new GrokClient({

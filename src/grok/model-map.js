@@ -1,3 +1,5 @@
+const GROK_43_BETA_MODE_ID = "grok-420-computer-use-sa";
+
 const MODELS = [
   {
     id: "grok-4-auto",
@@ -22,6 +24,12 @@ const MODELS = [
     modeId: "heavy",
     object: "model",
     owned_by: "xai-web"
+  },
+  {
+    id: "grok-4.3-beta",
+    modeId: GROK_43_BETA_MODE_ID,
+    object: "model",
+    owned_by: "xai-web"
   }
 ];
 
@@ -44,11 +52,19 @@ const aliasToMode = new Map([
   ["grok-4-fast", "fast"],
   ["grok-4-expert", "expert"],
   ["grok-4-heavy", "heavy"],
+  ["grok-4.3", GROK_43_BETA_MODE_ID],
+  ["grok-4.3-beta", GROK_43_BETA_MODE_ID],
+  ["grok-4-3", GROK_43_BETA_MODE_ID],
+  ["grok-4-3-beta", GROK_43_BETA_MODE_ID],
   ["grok-3", "auto"],
   ["grok-3-auto", "auto"],
   ["grok-3-fast", "fast"],
   ["grok-3-expert", "expert"],
   ["grok-3-heavy", "heavy"],
+  ["grok 4.3", GROK_43_BETA_MODE_ID],
+  ["grok 4.3 beta", GROK_43_BETA_MODE_ID],
+  ["grok 4.3 (beta)", GROK_43_BETA_MODE_ID],
+  ["grok-420-computer-use-sa", GROK_43_BETA_MODE_ID],
   ["grok-latest", "auto"],
   ["gpt-4o", "auto"],
   ["gpt-4.1", "auto"],
