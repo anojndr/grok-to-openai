@@ -170,6 +170,42 @@ test("request recreates the page when a Grok bridge binding is missing", async (
   assert.equal(response.text, "recovered");
 });
 
+test("request recreates the page when Playwright reports a closed page target", async () => {
+  const session = createSession((instance, payload) => {
+    instance.attempts = (instance.attempts || 0) + 1;
+
+    if (instance.attempts === 1) {
+      throw new Error(
+        "page.evaluate: Target page, context or browser has been closed"
+      );
+    }
+
+    const pending = instance.pending.get(payload.requestId);
+    pending.onMeta({
+      requestId: payload.requestId,
+      status: 200,
+      headers: {}
+    });
+    pending.onChunk("recovered");
+    pending.resolve();
+  });
+
+  let recreateCount = 0;
+  session.recreatePage = async () => {
+    recreateCount += 1;
+    return {};
+  };
+
+  const response = await session.request({
+    requestId: "req-target-closed-retry",
+    url: "https://grok.com/rest/test"
+  });
+
+  assert.equal(recreateCount, 1);
+  assert.equal(response.meta?.status, 200);
+  assert.equal(response.text, "recovered");
+});
+
 test("installBindings exposes both canonical and legacy Grok bridge names", async () => {
   const exposed = [];
   const session = new BrowserSession({

@@ -126,6 +126,23 @@ test("applyGrokEvent captures direct assistant response payloads", () => {
   assert.equal(state.assistantText, "Canonical final answer.");
 });
 
+test("applyGrokEvent does not seed assistant text from placeholder assistant responses", () => {
+  const state = collectGrokStreamingState();
+
+  applyGrokEvent(state, {
+    result: {
+      responseId: "resp_123",
+      sender: "ASSISTANT",
+      message: "Thinking about your request"
+    }
+  });
+
+  assert.equal(state.assistantResponseId, "resp_123");
+  assert.equal(state.modelResponse.message, "Thinking about your request");
+  assert.equal(state.assistantText, "");
+  assert.equal(state.assistantVisibleText, "");
+});
+
 test("applyGrokEvent ignores empty streamed tokens while preserving the response id", () => {
   const state = collectGrokStreamingState();
 

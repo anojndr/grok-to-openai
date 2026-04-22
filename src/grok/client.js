@@ -7,6 +7,10 @@ import {
   collectGrokStreamingState,
   createNdjsonParser
 } from "./stream-parser.js";
+import {
+  hasCompleteAssistantPayload as hasCompleteAssistantPayloadValue,
+  hasRenderableAssistantPayload
+} from "./assistant-payload.js";
 import { resolveModel } from "./model-map.js";
 
 const DEVICE_ENV_INFO = Object.freeze({
@@ -60,40 +64,12 @@ function normalizeHydrationDelays(delays, fallback) {
   return normalized.length ? normalized : fallback;
 }
 
-function hasCompleteAssistantPayload(response) {
+function hasCompleteAssistantResponse(response) {
   if (!response || typeof response !== "object" || !isAssistantSender(response.sender)) {
     return false;
   }
 
-  if (response.partial === false) {
-    return true;
-  }
-
-  if (typeof response.message === "string" && response.message.trim()) {
-    return true;
-  }
-
-  if ((response.generatedImageUrls ?? []).length > 0) {
-    return true;
-  }
-
-  return (response.cardAttachmentsJson ?? []).length > 0;
-}
-
-function hasRenderableAssistantPayload(response) {
-  if (!response || typeof response !== "object") {
-    return false;
-  }
-
-  if (typeof response.message === "string" && response.message.trim()) {
-    return true;
-  }
-
-  if ((response.generatedImageUrls ?? []).length > 0) {
-    return true;
-  }
-
-  return (response.cardAttachmentsJson ?? []).length > 0;
+  return hasCompleteAssistantPayloadValue(response);
 }
 
 function getModelResponseStreamErrors(response) {
@@ -408,7 +384,7 @@ export class GrokClient {
       ) ?? null
     );
 
-    return hasCompleteAssistantPayload(assistantResponse) ? assistantResponse : null;
+    return hasCompleteAssistantResponse(assistantResponse) ? assistantResponse : null;
   }
 
   async loadAssistantResponseById({
@@ -433,7 +409,7 @@ export class GrokClient {
       ) ?? null
     );
 
-    return hasCompleteAssistantPayload(assistantResponse) ? assistantResponse : null;
+    return hasCompleteAssistantResponse(assistantResponse) ? assistantResponse : null;
   }
 
   getResponseHydrationDelays(state) {
@@ -456,7 +432,7 @@ export class GrokClient {
     relativePath,
     state
   }) {
-    if (state?.modelResponse) {
+    if (hasCompleteAssistantPayloadValue(state?.modelResponse)) {
       return;
     }
 
@@ -558,7 +534,11 @@ export class GrokClient {
       throw modelResponseFailure;
     }
 
-    if (!state.modelResponse && state.sawThinkingToken && !state.sawVisibleToken) {
+    if (
+      !hasRenderableAssistantPayload(state.modelResponse) &&
+      state.sawThinkingToken &&
+      !state.sawVisibleToken
+    ) {
       throw new HttpError(
         502,
         "Grok ended the stream before the final assistant response was available"

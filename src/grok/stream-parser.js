@@ -1,5 +1,6 @@
 import { HttpError } from "../lib/errors.js";
 import { createTextAccumulator } from "../lib/text-accumulator.js";
+import { hasUsableAssistantMessage } from "./assistant-payload.js";
 
 const ASSISTANT_TEXT = Symbol("assistantText");
 const ASSISTANT_VISIBLE_TEXT = Symbol("assistantVisibleText");
@@ -178,10 +179,13 @@ export function applyGrokEvent(state, payload) {
       state.assistantResponseId = modelResponse.responseId;
     }
 
-    if (modelResponse.message && state[ASSISTANT_TEXT].isEmpty()) {
+    if (hasUsableAssistantMessage(modelResponse) && state[ASSISTANT_TEXT].isEmpty()) {
       state.assistantText = modelResponse.message;
     }
-    if (modelResponse.message && state[ASSISTANT_VISIBLE_TEXT].isEmpty()) {
+    if (
+      hasUsableAssistantMessage(modelResponse) &&
+      state[ASSISTANT_VISIBLE_TEXT].isEmpty()
+    ) {
       state.assistantVisibleText = modelResponse.message;
     }
   }

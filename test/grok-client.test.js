@@ -417,6 +417,92 @@ test("createConversationAndRespond keeps polling until the saved assistant respo
   assert.equal(result.state.modelResponse?.message, "Recovered final answer.");
 });
 
+test("createConversationAndRespond keeps polling past placeholder assistant messages", async () => {
+  let loadResponsesAttempts = 0;
+  const client = new GrokClient({
+    grokBaseUrl: "https://grok.com",
+    defaultModel: "grok-4-auto",
+    responseHydrationThinkingDelaysMs: [0, 1]
+  });
+
+  client.browser = {
+    async request(request) {
+      if (request.url.endsWith("/conversations/new")) {
+        request.onChunk?.(
+          `${JSON.stringify({
+            result: {
+              conversation: {
+                conversationId: "conv_123"
+              },
+              response: {
+                token: "Thinking about your request",
+                isThinking: true,
+                responseId: "assistant_123"
+              }
+            }
+          })}\n`
+        );
+
+        return {
+          meta: {
+            status: 200
+          },
+          text: ""
+        };
+      }
+
+      if (request.url.endsWith("/load-responses")) {
+        loadResponsesAttempts += 1;
+
+        if (loadResponsesAttempts === 1) {
+          return {
+            meta: {
+              status: 200
+            },
+            text: JSON.stringify({
+              responses: [
+                {
+                  responseId: "assistant_123",
+                  sender: "ASSISTANT",
+                  partial: false,
+                  message: "Thinking about your request"
+                }
+              ]
+            })
+          };
+        }
+
+        return {
+          meta: {
+            status: 200
+          },
+          text: JSON.stringify({
+            responses: [
+              {
+                responseId: "assistant_123",
+                sender: "ASSISTANT",
+                partial: false,
+                message: "Recovered final answer."
+              }
+            ]
+          })
+        };
+      }
+
+      throw new Error(`Unexpected request URL: ${request.url}`);
+    }
+  };
+
+  const result = await client.createConversationAndRespond({
+    model: "grok-4-expert",
+    message: "Follow up"
+  });
+
+  assert.equal(loadResponsesAttempts, 2);
+  assert.equal(result.state.modelResponse?.message, "Recovered final answer.");
+  assert.equal(result.state.assistantVisibleText, "Recovered final answer.");
+});
+
 test("createConversationAndRespond rejects empty assistant responses that include stream errors", async () => {
   const requests = [];
   const client = new GrokClient({

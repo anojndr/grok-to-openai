@@ -4,6 +4,7 @@ import {
   renderGrokText,
   resolveSourceAttributionOptions
 } from "./source-attribution.js";
+import { hasUsableAssistantMessage } from "./assistant-payload.js";
 import { extractAssistantImages } from "./generated-images.js";
 import { renderGrokThought, shouldSuppressGrokThought } from "./thought.js";
 
@@ -66,14 +67,18 @@ function stripStepTextFromStream(streamedText, modelResponse) {
 function resolveCanonicalText(state) {
   const streamedVisibleText = state?.assistantVisibleText || "";
   const streamedText = state?.assistantText || "";
-  const message = state?.modelResponse?.message;
+  const modelResponse = state?.modelResponse ?? null;
 
-  if (typeof message === "string" && message.trim()) {
-    return message;
+  if (hasUsableAssistantMessage(modelResponse)) {
+    return modelResponse.message;
   }
 
-  if (state?.modelResponse) {
-    return stripStepTextFromStream(streamedText, state?.modelResponse);
+  if (streamedVisibleText.trim()) {
+    return streamedVisibleText;
+  }
+
+  if (modelResponse) {
+    return stripStepTextFromStream(streamedText, modelResponse);
   }
 
   return streamedVisibleText;

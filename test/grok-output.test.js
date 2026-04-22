@@ -104,6 +104,21 @@ test("buildAssistantOutput falls back to non-thinking streamed text when modelRe
   assert.equal(output.text, "Final answer.");
 });
 
+test("buildAssistantOutput ignores placeholder model messages when visible streamed text exists", () => {
+  const output = buildAssistantOutput(
+    {
+      assistantText: "Thinking about your requestFinal answer.",
+      assistantVisibleText: "Final answer.",
+      modelResponse: {
+        message: "Thinking about your request"
+      }
+    },
+    {}
+  );
+
+  assert.equal(output.text, "Final answer.");
+});
+
 test("buildAssistantOutput extracts generated images from Grok image cards", () => {
   const output = buildAssistantOutput(
     {

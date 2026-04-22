@@ -221,13 +221,16 @@ function installGrokBridgePageHelpers() {
 }
 
 function isRecoverablePageError(message) {
+  const normalized = String(message || "").toLowerCase();
+
   return (
-    message.includes("Execution context was destroyed") ||
-    message.includes("Most likely because of a navigation") ||
-    message.includes("Target closed") ||
-    ((message.includes("__grokBridge") || message.includes("grokBridge")) &&
-      (message.includes("is not a function") ||
-        message.includes("is undefined")))
+    normalized.includes("execution context was destroyed") ||
+    normalized.includes("most likely because of a navigation") ||
+    normalized.includes("target closed") ||
+    normalized.includes("target page, context or browser has been closed") ||
+    ((normalized.includes("__grokbridge") || normalized.includes("grokbridge")) &&
+      (normalized.includes("is not a function") ||
+        normalized.includes("is undefined")))
   );
 }
 
