@@ -278,12 +278,12 @@ async function executeConversationRequest({
   files,
   onToken
 }) {
-  const result = await withFastModelFallback({
-    publicModel,
-    async operation(model) {
-      return grokAccounts.withFallback(async (accountClient) => {
-        const fileAttachments = await uploadFilesToGrok(accountClient, files);
+  const result = await grokAccounts.withFallback(async (accountClient) => {
+    const fileAttachments = await uploadFilesToGrok(accountClient, files);
 
+    return withFastModelFallback({
+      publicModel,
+      async operation(model) {
         return accountClient.createConversationAndRespond({
           instructions,
           model,
@@ -291,8 +291,8 @@ async function executeConversationRequest({
           fileAttachments,
           onToken
         });
-      });
-    }
+      }
+    });
   });
 
   return {

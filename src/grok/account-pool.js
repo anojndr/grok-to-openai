@@ -1,6 +1,7 @@
 import path from "node:path";
 import { readCookieSetsFromSource } from "../lib/cookies.js";
 import { GrokClient } from "./client.js";
+import { GROK_SESSION_BLOCKED_ERROR_CODE } from "./browser-session.js";
 
 function buildAccountProfileDir(browserProfileDir, accountIndex, accountCount) {
   if (!browserProfileDir || accountCount <= 1) {
@@ -21,6 +22,7 @@ export class GrokAccountPool {
       options.clientFactory ?? ((accountConfig) => new GrokClient(accountConfig));
     this.accountsPromise = null;
     this.activeFallbackAccountIndex = null;
+    this.unavailableAccountIndexes = new Set();
   }
 
   async getAccounts() {
@@ -92,25 +94,30 @@ export class GrokAccountPool {
       await this.activateFallbackAccount(account, accounts);
       return result;
     } catch (error) {
-      await this.handleFailure(account, accounts);
+      await this.handleFailure(account, accounts, error);
       throw error;
     }
   }
 
   async withFallback(operation, options = {}) {
     const accounts = await this.getAccounts();
-    const primaryAccount = accounts[0];
+    let primaryAccount = this.getPrimaryAccount(accounts);
 
-    if (!primaryAccount) {
+    if (!primaryAccount && !this.getFallbackAccounts(accounts).length) {
       throw new Error("No Grok accounts configured");
     }
 
-    const fallbackAccounts = this.getFallbackAccounts(accounts);
+    let fallbackAccounts = this.getFallbackAccounts(accounts);
 
     if (!fallbackAccounts.length) {
       let lastError = null;
 
       for (let attempt = 0; attempt < 2; attempt += 1) {
+        primaryAccount = this.getPrimaryAccount(accounts);
+        if (!primaryAccount) {
+          break;
+        }
+
         try {
           return {
             accountIndex: primaryAccount.index,
@@ -118,6 +125,7 @@ export class GrokAccountPool {
           };
         } catch (error) {
           lastError = error;
+          await this.handleFailure(primaryAccount, accounts, error);
         }
       }
 
@@ -128,13 +136,22 @@ export class GrokAccountPool {
     let exhaustedPasses = 0;
 
     while (exhaustedPasses < 2) {
-      try {
-        return {
-          accountIndex: primaryAccount.index,
-          value: await operation(primaryAccount.client, primaryAccount.index)
-        };
-      } catch (error) {
-        lastError = error;
+      primaryAccount = this.getPrimaryAccount(accounts);
+      if (primaryAccount) {
+        try {
+          return {
+            accountIndex: primaryAccount.index,
+            value: await operation(primaryAccount.client, primaryAccount.index)
+          };
+        } catch (error) {
+          lastError = error;
+          await this.handleFailure(primaryAccount, accounts, error);
+        }
+      }
+
+      fallbackAccounts = this.getFallbackAccounts(accounts);
+      if (!fallbackAccounts.length) {
+        break;
       }
 
       const fallbackAccount = this.getActiveFallbackAccount(fallbackAccounts);
@@ -146,7 +163,7 @@ export class GrokAccountPool {
         };
       } catch (error) {
         lastError = error;
-        const failure = await this.handleFailure(fallbackAccount, accounts);
+        const failure = await this.handleFailure(fallbackAccount, accounts, error);
         if (failure.wrapped) {
           exhaustedPasses += 1;
         }
@@ -176,7 +193,20 @@ export class GrokAccountPool {
   }
 
   getFallbackAccounts(accounts) {
-    return accounts.slice(1);
+    return accounts
+      .slice(1)
+      .filter((account) => !this.unavailableAccountIndexes.has(account.index));
+  }
+
+  getPrimaryAccount(accounts) {
+    const primaryAccount = accounts[0];
+    if (!primaryAccount) {
+      return null;
+    }
+
+    return this.unavailableAccountIndexes.has(primaryAccount.index)
+      ? null
+      : primaryAccount;
   }
 
   getActiveFallbackAccount(fallbackAccounts) {
@@ -216,7 +246,19 @@ export class GrokAccountPool {
     }
   }
 
-  async handleFailure(account, accounts) {
+  async handleFailure(account, accounts, error = null) {
+    if (this.isSessionUnavailableError(error)) {
+      this.unavailableAccountIndexes.add(account.index);
+      await account.client.close?.();
+
+      if (account.index === this.activeFallbackAccountIndex) {
+        const fallbackAccounts = this.getFallbackAccounts(accounts);
+        this.activeFallbackAccountIndex = fallbackAccounts[0]?.index ?? null;
+      }
+
+      return { wrapped: false };
+    }
+
     const primaryAccount = accounts[0];
     if (!primaryAccount || account.index === primaryAccount.index) {
       return { wrapped: false };
@@ -252,5 +294,9 @@ export class GrokAccountPool {
     const nextPosition = (currentPosition + 1) % fallbackAccounts.length;
     this.activeFallbackAccountIndex = fallbackAccounts[nextPosition].index;
     return { wrapped: nextPosition === 0 };
+  }
+
+  isSessionUnavailableError(error) {
+    return error?.details?.code === GROK_SESSION_BLOCKED_ERROR_CODE;
   }
 }

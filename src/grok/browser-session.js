@@ -1,8 +1,10 @@
 import fs from "node:fs/promises";
 import { chromium } from "playwright-core";
+import { HttpError } from "../lib/errors.js";
 import { readCookiesFromSource } from "../lib/cookies.js";
 
 export const ERROR_RESPONSE_TEXT_LIMIT = 128 * 1024;
+export const GROK_SESSION_BLOCKED_ERROR_CODE = "grok_session_blocked";
 
 function clearTextBuffer(buffer) {
   buffer.chunks.length = 0;
@@ -234,6 +236,36 @@ function isRecoverablePageError(message) {
   );
 }
 
+function getOrigin(url) {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return "";
+  }
+}
+
+function isCloudflareBlockText(text = "") {
+  const normalized = String(text).toLowerCase();
+
+  return (
+    normalized.includes("attention required! | cloudflare") ||
+    normalized.includes("sorry, you have been blocked") ||
+    normalized.includes("checking if the site connection is secure") ||
+    normalized.includes("cf-error-details") ||
+    normalized.includes("cloudflare ray id")
+  );
+}
+
+function createSessionBlockedError(reason) {
+  return new HttpError(
+    502,
+    `Grok session is blocked or not authenticated: ${reason}`,
+    {
+      code: GROK_SESSION_BLOCKED_ERROR_CODE
+    }
+  );
+}
+
 function isPrimaryNavigationResponse(page, response) {
   if (!response) {
     return false;
@@ -437,6 +469,7 @@ export class BrowserSession {
 
   async ensurePage() {
     if (this.page && !this.page.isClosed()) {
+      await this.validatePage(this.page);
       return this.page;
     }
 
@@ -453,9 +486,10 @@ export class BrowserSession {
           this.pageUserAgent = null;
         }
       });
-      await page.goto(this.config.grokBaseUrl, {
+      const response = await page.goto(this.config.grokBaseUrl, {
         waitUntil: "domcontentloaded"
       });
+      await this.validatePage(page, response);
 
       try {
         this.pageUserAgent = await page.evaluate(() => navigator.userAgent);
@@ -483,6 +517,51 @@ export class BrowserSession {
     }
     this.page = null;
     return this.ensurePage();
+  }
+
+  async validatePage(page, response = null) {
+    const expectedOrigin = getOrigin(this.config.grokBaseUrl);
+    const pageUrl = typeof page.url === "function" ? page.url() : "";
+    const pageOrigin = getOrigin(pageUrl);
+    const readPageSnapshot = () =>
+      page.evaluate(() => ({
+        title: document.title || "",
+        text: document.body?.innerText?.slice(0, 1000) || ""
+      })).catch(() => ({ title: "", text: "" }));
+
+    if (expectedOrigin && pageOrigin && pageOrigin !== expectedOrigin) {
+      const pageSnapshot = await readPageSnapshot();
+      const title = pageSnapshot.title || "";
+      const text = pageSnapshot.text || "";
+
+      if (isCloudflareBlockText(`${title}\n${text}`)) {
+        throw createSessionBlockedError(
+          `Cloudflare block page at ${pageOrigin}`
+        );
+      }
+
+      throw createSessionBlockedError(
+        `redirected from ${expectedOrigin} to ${pageOrigin}`
+      );
+    }
+
+    const status = getResponseStatus(response);
+    if (status === 403 || status === 429 || status === 503) {
+      const pageSnapshot = await readPageSnapshot();
+
+      if (isCloudflareBlockText(`${pageSnapshot.title}\n${pageSnapshot.text}`)) {
+        throw createSessionBlockedError(
+          `Cloudflare returned HTTP ${status}`
+        );
+      }
+    }
+
+    if (response) {
+      const pageSnapshot = await readPageSnapshot();
+      if (isCloudflareBlockText(`${pageSnapshot.title}\n${pageSnapshot.text}`)) {
+        throw createSessionBlockedError("Cloudflare block page");
+      }
+    }
   }
 
   async evaluateRequest(page, payload) {
@@ -563,6 +642,9 @@ export class BrowserSession {
         const page = await this.recreatePage();
         await run(page);
       } else {
+        if (message.toLowerCase().includes("failed to fetch")) {
+          await this.validatePage(await this.ensurePage());
+        }
         throw error;
       }
     }

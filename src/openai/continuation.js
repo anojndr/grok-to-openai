@@ -450,14 +450,19 @@ export async function continueResponseConversation({
           lastUserMessage.files
         );
 
-        return accountClient.addResponse({
-          conversationId: previousRecord.grok.conversationId,
-          parentResponseId: previousRecord.grok.assistantResponseId,
-          instructions,
-          model: publicModel,
-          message: lastUserMessage.text,
-          fileAttachments,
-          onToken
+        return withFastModelFallback({
+          publicModel,
+          async operation(model) {
+            return accountClient.addResponse({
+              conversationId: previousRecord.grok.conversationId,
+              parentResponseId: previousRecord.grok.assistantResponseId,
+              instructions,
+              model,
+              message: lastUserMessage.text,
+              fileAttachments,
+              onToken
+            });
+          }
         });
       }
     );
@@ -488,16 +493,16 @@ export async function continueResponseConversation({
     fileStore
   });
 
-  const replayResult = await withFastModelFallback({
-    publicModel,
-    async operation(model) {
-      return accounts.withFallback(async (accountClient) => {
-        const replayFileAttachments = await uploadFilesForAccount(
-          uploadFilesToGrok,
-          accountClient,
-          replay.files
-        );
+  const replayResult = await accounts.withFallback(async (accountClient) => {
+    const replayFileAttachments = await uploadFilesForAccount(
+      uploadFilesToGrok,
+      accountClient,
+      replay.files
+    );
 
+    return withFastModelFallback({
+      publicModel,
+      async operation(model) {
         return accountClient.createConversationAndRespond({
           instructions,
           model,
@@ -505,8 +510,8 @@ export async function continueResponseConversation({
           fileAttachments: replayFileAttachments,
           onToken
         });
-      });
-    }
+      }
+    });
   });
 
   return {

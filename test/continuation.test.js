@@ -897,7 +897,7 @@ test("continueResponseConversation replays full history on follow-up errors so a
   });
 });
 
-test("continueResponseConversation falls back to grok fast after replay exhausts all accounts on grok auto", async () => {
+test("continueResponseConversation tries grok fast on the same replay account before rotating accounts", async () => {
   const fileStore = createMemoryFileStore();
   const priorFile = await fileStore.create({
     filename: "context.txt",
@@ -927,6 +927,7 @@ test("continueResponseConversation falls back to grok fast after replay exhausts
   };
 
   const replayModels = [];
+  const uploadCalls = [];
   let fallbackCallCount = 0;
   const grokAccounts = {
     async withAccount(accountIndex, operation) {
@@ -966,8 +967,10 @@ test("continueResponseConversation falls back to grok fast after replay exhausts
       };
     }
   };
-  const uploadFilesToGrok = async (_accountClient, files) =>
-    files.map((_file, index) => `upload_${index + 1}`);
+  const uploadFilesToGrok = async (_accountClient, files) => {
+    uploadCalls.push(files.map((file) => file.filename));
+    return files.map((_file, index) => `upload_${uploadCalls.length}_${index + 1}`);
+  };
 
   const result = await continueResponseConversation({
     previousRecord: {
@@ -993,8 +996,11 @@ test("continueResponseConversation falls back to grok fast after replay exhausts
   });
 
   assert.deepEqual(replayModels, ["grok-4-auto", "grok-4-fast"]);
+  assert.equal(fallbackCallCount, 1);
+  assert.equal(uploadCalls.length, 2);
+  assert.deepEqual(uploadCalls[1], ["turn-001-user-attachment-001-context.txt"]);
   assert.deepEqual(result, {
-    accountIndex: 1,
+    accountIndex: 0,
     model: "grok-4-fast",
     state: {
       responses: []
@@ -1002,7 +1008,7 @@ test("continueResponseConversation falls back to grok fast after replay exhausts
   });
 });
 
-test("continueResponseConversation falls back to grok fast after replay exhausts all accounts on grok heavy", async () => {
+test("continueResponseConversation tries grok fast on the same replay account for grok heavy", async () => {
   const fileStore = createMemoryFileStore();
   const priorFile = await fileStore.create({
     filename: "context.txt",
@@ -1032,6 +1038,7 @@ test("continueResponseConversation falls back to grok fast after replay exhausts
   };
 
   const replayModels = [];
+  const uploadCalls = [];
   let fallbackCallCount = 0;
   const grokAccounts = {
     async withAccount(accountIndex, operation) {
@@ -1071,8 +1078,10 @@ test("continueResponseConversation falls back to grok fast after replay exhausts
       };
     }
   };
-  const uploadFilesToGrok = async (_accountClient, files) =>
-    files.map((_file, index) => `upload_${index + 1}`);
+  const uploadFilesToGrok = async (_accountClient, files) => {
+    uploadCalls.push(files.map((file) => file.filename));
+    return files.map((_file, index) => `upload_${uploadCalls.length}_${index + 1}`);
+  };
 
   const result = await continueResponseConversation({
     previousRecord: {
@@ -1098,8 +1107,11 @@ test("continueResponseConversation falls back to grok fast after replay exhausts
   });
 
   assert.deepEqual(replayModels, ["grok-4-heavy", "grok-4-fast"]);
+  assert.equal(fallbackCallCount, 1);
+  assert.equal(uploadCalls.length, 2);
+  assert.deepEqual(uploadCalls[1], ["turn-001-user-attachment-001-context.txt"]);
   assert.deepEqual(result, {
-    accountIndex: 1,
+    accountIndex: 0,
     model: "grok-4-fast",
     state: {
       responses: []

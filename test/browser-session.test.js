@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { chromium } from "playwright-core";
 import {
   BrowserSession,
+  GROK_SESSION_BLOCKED_ERROR_CODE,
   ERROR_RESPONSE_TEXT_LIMIT
 } from "../src/grok/browser-session.js";
 
@@ -204,6 +205,49 @@ test("request recreates the page when Playwright reports a closed page target", 
   assert.equal(recreateCount, 1);
   assert.equal(response.meta?.status, 200);
   assert.equal(response.text, "recovered");
+});
+
+test("ensurePage rejects a Grok session redirected to a Cloudflare block page", async () => {
+  const session = new BrowserSession({
+    grokBaseUrl: "https://grok.com"
+  });
+  const page = {
+    on() {},
+    isClosed() {
+      return false;
+    },
+    url() {
+      return "https://accounts.x.ai/check-login?redirect=grok-com";
+    },
+    async goto() {
+      return createMockResponse({
+        status: 403,
+        headers: {
+          "content-type": "text/html"
+        }
+      });
+    },
+    async evaluate() {
+      return {
+        title: "Attention Required! | Cloudflare",
+        text: "Sorry, you have been blocked"
+      };
+    },
+    async close() {}
+  };
+
+  session.context = {
+    async newPage() {
+      return page;
+    }
+  };
+
+  await assert.rejects(
+    session.ensurePage(),
+    (error) =>
+      error?.details?.code === GROK_SESSION_BLOCKED_ERROR_CODE &&
+      /Cloudflare/.test(error.message)
+  );
 });
 
 test("installBindings exposes both canonical and legacy Grok bridge names", async () => {

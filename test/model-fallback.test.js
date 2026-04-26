@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { withFastModelFallback } from "../src/grok/model-fallback.js";
+import { HttpError } from "../src/lib/errors.js";
+import { GROK_SESSION_BLOCKED_ERROR_CODE } from "../src/grok/browser-session.js";
 
 test("withFastModelFallback retries expert requests with grok-4-fast after the first attempt fails", async () => {
   const attempts = [];
@@ -65,4 +67,23 @@ test("withFastModelFallback does not retry requests that are already grok fast",
   );
 
   assert.deepEqual(attempts, ["grok fast"]);
+});
+
+test("withFastModelFallback does not hide blocked Grok sessions with a model retry", async () => {
+  const attempts = [];
+
+  await assert.rejects(
+    withFastModelFallback({
+      publicModel: "grok-4-auto",
+      async operation(model) {
+        attempts.push(model);
+        throw new HttpError(502, "blocked", {
+          code: GROK_SESSION_BLOCKED_ERROR_CODE
+        });
+      }
+    }),
+    (error) => error?.details?.code === GROK_SESSION_BLOCKED_ERROR_CODE
+  );
+
+  assert.deepEqual(attempts, ["grok-4-auto"]);
 });

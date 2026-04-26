@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { GrokAccountPool } from "../src/grok/account-pool.js";
+import { HttpError } from "../src/lib/errors.js";
+import { GROK_SESSION_BLOCKED_ERROR_CODE } from "../src/grok/browser-session.js";
 
 function createMockAccount(name, outcomes) {
   let closeCalls = 0;
@@ -196,6 +198,51 @@ test(
     assert.equal(accounts[2].closeCalls, 1);
   }
 );
+
+test("withFallback quarantines Cloudflare-blocked accounts and skips them on later attempts", async () => {
+  const calls = [];
+  const sessionBlockedError = new HttpError(502, "blocked", {
+    code: GROK_SESSION_BLOCKED_ERROR_CODE
+  });
+  const accounts = [
+    createMockAccount("primary", [
+      sessionBlockedError,
+      "primary-should-not-run"
+    ]),
+    createMockAccount("secondary", [
+      sessionBlockedError,
+      "secondary-should-not-run"
+    ]),
+    createMockAccount("tertiary", ["tertiary-ok", "tertiary-ok-again"])
+  ];
+  const pool = new GrokAccountPool({}, { accounts });
+
+  const firstResult = await pool.withFallback(async (client) => {
+    calls.push(client.name);
+    return client.run();
+  });
+  const secondResult = await pool.withFallback(async (client) => {
+    calls.push(client.name);
+    return client.run();
+  });
+
+  assert.deepEqual(calls, [
+    "primary",
+    "secondary",
+    "tertiary",
+    "tertiary"
+  ]);
+  assert.deepEqual(firstResult, {
+    accountIndex: 2,
+    value: "tertiary-ok"
+  });
+  assert.deepEqual(secondResult, {
+    accountIndex: 2,
+    value: "tertiary-ok-again"
+  });
+  assert.equal(accounts[0].closeCalls, 1);
+  assert.equal(accounts[1].closeCalls, 1);
+});
 
 test("getAccounts splits multi-account cookie text into isolated account configs", async () => {
   const clientConfigs = [];

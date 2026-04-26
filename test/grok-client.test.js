@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { GrokClient } from "../src/grok/client.js";
+import { GROK_SESSION_BLOCKED_ERROR_CODE } from "../src/grok/browser-session.js";
 
 function createClient() {
   const requests = [];
@@ -116,6 +117,35 @@ test("uploadFile infers CSV text uploads from the filename and sends UTF-8 bytes
   assert.equal(
     Buffer.from(requests[0].body.content, "base64").toString("utf8"),
     "name,city\nAna,Málaga"
+  );
+});
+
+test("uploadFile reports Cloudflare challenge pages as blocked Grok sessions", async () => {
+  const client = new GrokClient({
+    grokBaseUrl: "https://grok.com",
+    defaultModel: "grok-4-auto"
+  });
+
+  client.browser = {
+    async request() {
+      return {
+        meta: {
+          status: 403
+        },
+        text: "<title>Attention Required! | Cloudflare</title>Sorry, you have been blocked"
+      };
+    }
+  };
+
+  await assert.rejects(
+    client.uploadFile({
+      filename: "photo.png",
+      mimeType: "image/png",
+      bytes: Buffer.from("image")
+    }),
+    (error) =>
+      error?.details?.code === GROK_SESSION_BLOCKED_ERROR_CODE &&
+      /Cloudflare/.test(error.message)
   );
 });
 

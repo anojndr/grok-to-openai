@@ -1,6 +1,9 @@
 import { createId } from "../lib/ids.js";
 import { HttpError } from "../lib/errors.js";
-import { BrowserSession } from "./browser-session.js";
+import {
+  BrowserSession,
+  GROK_SESSION_BLOCKED_ERROR_CODE
+} from "./browser-session.js";
 import { normalizeFileForGrokUpload } from "./file-upload.js";
 import {
   applyGrokEvent,
@@ -44,6 +47,36 @@ const DEFAULT_RESPONSE_HYDRATION_DELAYS_MS = Object.freeze([
   2000,
   4000
 ]);
+
+function isCloudflareErrorText(text = "") {
+  const normalized = String(text).toLowerCase();
+
+  return (
+    normalized.includes("attention required! | cloudflare") ||
+    normalized.includes("sorry, you have been blocked") ||
+    normalized.includes("checking if the site connection is secure") ||
+    normalized.includes("cf-error-details") ||
+    normalized.includes("cloudflare ray id")
+  );
+}
+
+function throwGrokHttpError(prefix, response) {
+  const status = response.meta?.status || 502;
+  const text = response.text || "unknown error";
+
+  if (isCloudflareErrorText(text)) {
+    throw new HttpError(
+      502,
+      `${prefix}: Grok session was blocked by Cloudflare`,
+      {
+        code: GROK_SESSION_BLOCKED_ERROR_CODE,
+        upstreamStatus: status
+      }
+    );
+  }
+
+  throw new HttpError(status, `${prefix}: ${text}`);
+}
 
 const DEFAULT_THINKING_RESPONSE_HYDRATION_DELAYS_MS = Object.freeze([
   ...DEFAULT_RESPONSE_HYDRATION_DELAYS_MS,
@@ -159,10 +192,7 @@ export class GrokClient {
     });
 
     if (!response.meta || response.meta.status >= 400) {
-      throw new HttpError(
-        response.meta?.status || 502,
-        `Grok file upload failed: ${response.text || "unknown error"}`
-      );
+      throwGrokHttpError("Grok file upload failed", response);
     }
 
     return JSON.parse(response.text);
@@ -278,10 +308,7 @@ export class GrokClient {
     });
 
     if (!response.meta || response.meta.status >= 400) {
-      throw new HttpError(
-        response.meta?.status || 502,
-        `Grok conversation creation failed: ${response.text || "unknown error"}`
-      );
+      throwGrokHttpError("Grok conversation creation failed", response);
     }
 
     return JSON.parse(response.text);
@@ -333,10 +360,7 @@ export class GrokClient {
     });
 
     if (!response.meta || response.meta.status >= 400) {
-      throw new HttpError(
-        response.meta?.status || 502,
-        `Grok request failed: ${response.text || "unknown error"}`
-      );
+      throwGrokHttpError("Grok request failed", response);
     }
 
     return JSON.parse(response.text);
@@ -518,10 +542,7 @@ export class GrokClient {
     parser.flush();
 
     if (!response.meta || response.meta.status >= 400) {
-      throw new HttpError(
-        response.meta?.status || 502,
-        `Grok request failed: ${response.text || "unknown error"}`
-      );
+      throwGrokHttpError("Grok request failed", response);
     }
 
     await this.hydrateMissingModelResponse({
