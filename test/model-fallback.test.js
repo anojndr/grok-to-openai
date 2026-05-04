@@ -52,6 +52,32 @@ test("withFastModelFallback retries heavy requests with grok-4-fast after the fi
   });
 });
 
+test("withFastModelFallback retries Grok 4.3 beta requests with grok-4-fast after the first attempt fails", async () => {
+  const attempts = [];
+
+  const result = await withFastModelFallback({
+    publicModel: "grok-4.3-beta",
+    async operation(model) {
+      attempts.push(model);
+
+      if (attempts.length === 1) {
+        throw new Error(
+          "stream response: consume xAI responses stream: browserContext.newPage: Protocol error (Target.createTarget): Failed to open a new tab type=server_error: invalid argument"
+        );
+      }
+
+      return {
+        model
+      };
+    }
+  });
+
+  assert.deepEqual(attempts, ["grok-4.3-beta", "grok-4-fast"]);
+  assert.deepEqual(result, {
+    model: "grok-4-fast"
+  });
+});
+
 test("withFastModelFallback does not retry requests that are already grok fast", async () => {
   const attempts = [];
 

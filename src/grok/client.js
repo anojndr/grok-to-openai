@@ -133,7 +133,11 @@ function inferModelResponseErrorStatus(message = "") {
     normalized.includes("admission denied") ||
     normalized.includes("load_shed") ||
     normalized.includes("overload") ||
-    normalized.includes("unavailable")
+    normalized.includes("unavailable") ||
+    normalized.includes("server_error") ||
+    normalized.includes("browsercontext.newpage") ||
+    normalized.includes("target.createtarget") ||
+    normalized.includes("failed to open a new tab")
   ) {
     return 503;
   }

@@ -236,6 +236,17 @@ function isRecoverablePageError(message) {
   );
 }
 
+function isRecoverableContextError(message) {
+  const normalized = String(message || "").toLowerCase();
+
+  return (
+    normalized.includes("target.createtarget") ||
+    normalized.includes("failed to open a new tab") ||
+    (normalized.includes("browsercontext.newpage") &&
+      normalized.includes("protocol error"))
+  );
+}
+
 function getOrigin(url) {
   try {
     return new URL(url).origin;
@@ -519,6 +530,14 @@ export class BrowserSession {
     return this.ensurePage();
   }
 
+  async recreateContext() {
+    const context = this.context;
+    this.resetContextState();
+    await context?.close().catch(() => {});
+    await this.init();
+    return this.ensurePage();
+  }
+
   async validatePage(page, response = null) {
     const expectedOrigin = getOrigin(this.config.grokBaseUrl);
     const pageUrl = typeof page.url === "function" ? page.url() : "";
@@ -632,7 +651,16 @@ export class BrowserSession {
       this.pending.delete(requestId);
 
       const message = error instanceof Error ? error.message : String(error);
-      if (isRecoverablePageError(message)) {
+      if (isRecoverableContextError(message)) {
+        meta = null;
+        setTextBufferLimit(
+          textBuffer,
+          onChunk ? 0 : Number.POSITIVE_INFINITY
+        );
+        clearTextBuffer(textBuffer);
+        const page = await this.recreateContext();
+        await run(page);
+      } else if (isRecoverablePageError(message)) {
         meta = null;
         setTextBufferLimit(
           textBuffer,

@@ -1,4 +1,4 @@
-const GROK_43_BETA_MODE_ID = "grok-420-computer-use-sa";
+export const GROK_43_BETA_MODE_ID = "grok-420-computer-use-sa";
 
 const MODELS = [
   {

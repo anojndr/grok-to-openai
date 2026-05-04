@@ -623,6 +623,61 @@ test("createConversationAndRespond rejects empty assistant responses that includ
   assert.equal(requests.length, 2);
 });
 
+test("createConversationAndRespond classifies xAI browser context stream failures as transient upstream errors", async () => {
+  const client = new GrokClient({
+    grokBaseUrl: "https://grok.com",
+    defaultModel: "grok-4-auto",
+    responseHydrationDelaysMs: [0],
+    responseHydrationThinkingDelaysMs: [0]
+  });
+
+  client.browser = {
+    async request(request) {
+      request.onChunk?.(
+        `${JSON.stringify({
+          result: {
+            response: {
+              modelResponse: {
+                responseId: "assistant_123",
+                sender: "ASSISTANT",
+                partial: false,
+                message: "",
+                streamErrors: [
+                  {
+                    message:
+                      "stream response: consume xAI responses stream: browserContext.newPage: Protocol error (Target.createTarget): Failed to open a new tab type=server_error: invalid argument"
+                  }
+                ]
+              }
+            }
+          }
+        })}\n`
+      );
+
+      return {
+        meta: {
+          status: 200
+        },
+        text: ""
+      };
+    }
+  };
+
+  await assert.rejects(
+    client.createConversationAndRespond({
+      model: "grok-4.3-beta",
+      message: "Reply with exactly: pong"
+    }),
+    (error) => {
+      assert.equal(error?.name, "HttpError");
+      assert.equal(error?.status, 503);
+      assert.equal(error?.details?.code, "server_overloaded");
+      assert.match(error?.message ?? "", /browserContext\.newPage/);
+      return true;
+    }
+  );
+});
+
 test("createConversationAndRespond forwards heavy mode IDs to Grok", async () => {
   const requests = [];
   const client = new GrokClient({

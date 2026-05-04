@@ -207,6 +207,60 @@ test("request recreates the page when Playwright reports a closed page target", 
   assert.equal(response.text, "recovered");
 });
 
+test("request relaunches the browser context when Chromium cannot create a new tab", async () => {
+  const recoveredPage = createMockPage("Mozilla/5.0 Recovered");
+  let closedBrokenContext = false;
+  let initCalls = 0;
+
+  const session = new BrowserSession({
+    grokBaseUrl: "https://grok.com"
+  });
+
+  session.context = {
+    async newPage() {
+      throw new Error(
+        "browserContext.newPage: Protocol error (Target.createTarget): Failed to open a new tab"
+      );
+    },
+    async close() {
+      closedBrokenContext = true;
+    }
+  };
+  session.init = async () => {
+    initCalls += 1;
+    if (!session.context) {
+      session.context = {
+        async newPage() {
+          return recoveredPage;
+        },
+        async close() {}
+      };
+    }
+  };
+  session.loadStatsigChunkSource = async () => "statsig";
+  session.evaluateRequest = async (_page, payload) => {
+    const pending = session.pending.get(payload.requestId);
+    pending.onMeta({
+      requestId: payload.requestId,
+      status: 200,
+      headers: {}
+    });
+    pending.onChunk("recovered");
+    pending.resolve();
+  };
+
+  const response = await session.request({
+    requestId: "req-context-retry",
+    url: "https://grok.com/rest/test"
+  });
+
+  assert.equal(closedBrokenContext, true);
+  assert.equal(initCalls, 2);
+  assert.equal(session.page, recoveredPage);
+  assert.equal(response.meta?.status, 200);
+  assert.equal(response.text, "recovered");
+});
+
 test("ensurePage rejects a Grok session redirected to a Cloudflare block page", async () => {
   const session = new BrowserSession({
     grokBaseUrl: "https://grok.com"

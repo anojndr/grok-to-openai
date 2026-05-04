@@ -33,8 +33,9 @@ Playwright browser profile. It does not use the official xAI API.
   fallback selection advances in deterministic top-to-bottom order, wraps back
   to the secondary account after the last fallback, and raises after two full
   fallback passes fail.
-- If `grok-4-auto`, `grok-4-expert`, or `grok-4-heavy` exhaust every
-  configured account, the bridge retries once in `grok-4-fast`.
+- If `grok-4-auto`, `grok-4-expert`, `grok-4-heavy`, or `grok-4.3-beta`
+  exhaust every configured account or hit an upstream beta stream failure, the
+  bridge retries once in `grok-4-fast`.
 - Follow-up requests first try the account that owns the stored Grok thread. If
   that follow-up fails, the bridge rebuilds the full conversation history,
   including attachments, as one replay message and retries across the account
