@@ -3,11 +3,12 @@ import assert from "node:assert/strict";
 import { GrokClient } from "../src/grok/client.js";
 import { GROK_SESSION_BLOCKED_ERROR_CODE } from "../src/grok/browser-session.js";
 
-function createClient() {
+function createClient(configOverrides = {}) {
   const requests = [];
   const client = new GrokClient({
     grokBaseUrl: "https://grok.com",
-    defaultModel: "grok-4-auto"
+    defaultModel: "grok-4-auto",
+    ...configOverrides
   });
 
   client.browser = {
@@ -123,7 +124,8 @@ test("uploadFile infers CSV text uploads from the filename and sends UTF-8 bytes
 test("uploadFile reports Cloudflare challenge pages as blocked Grok sessions", async () => {
   const client = new GrokClient({
     grokBaseUrl: "https://grok.com",
-    defaultModel: "grok-4-auto"
+    defaultModel: "grok-4-auto",
+    fileUploadRetryDelaysMs: [0]
   });
 
   client.browser = {
@@ -147,6 +149,143 @@ test("uploadFile reports Cloudflare challenge pages as blocked Grok sessions", a
       error?.details?.code === GROK_SESSION_BLOCKED_ERROR_CODE &&
       /Cloudflare/.test(error.message)
   );
+});
+
+test("uploadFile retries a transient Cloudflare challenge before returning the upload", async () => {
+  const requests = [];
+  let recreatePageCalls = 0;
+  const client = new GrokClient({
+    grokBaseUrl: "https://grok.com",
+    defaultModel: "grok-4-auto",
+    fileUploadRetryDelaysMs: [0, 0]
+  });
+
+  client.browser = {
+    async request(request) {
+      requests.push(request);
+      if (requests.length === 1) {
+        return {
+          meta: {
+            status: 403
+          },
+          text: "<title>Attention Required! | Cloudflare</title>Sorry, you have been blocked"
+        };
+      }
+
+      return {
+        meta: {
+          status: 200
+        },
+        text: JSON.stringify({
+          fileMetadataId: "file-meta-after-retry"
+        })
+      };
+    },
+    async recreatePage() {
+      recreatePageCalls += 1;
+    }
+  };
+
+  const upload = await client.uploadFile({
+    filename: "photo.png",
+    mimeType: "image/png",
+    bytes: Buffer.from("image")
+  });
+
+  assert.equal(upload.fileMetadataId, "file-meta-after-retry");
+  assert.equal(requests.length, 2);
+  assert.equal(recreatePageCalls, 1);
+  assert.notEqual(requests[0].requestId, requests[1].requestId);
+});
+
+test("uploadFile retries transient upstream upload failures before returning the upload", async () => {
+  const requests = [];
+  const client = new GrokClient({
+    grokBaseUrl: "https://grok.com",
+    defaultModel: "grok-4-auto",
+    fileUploadRetryDelaysMs: [0, 0]
+  });
+
+  client.browser = {
+    async request(request) {
+      requests.push(request);
+      if (requests.length === 1) {
+        return {
+          meta: {
+            status: 500
+          },
+          text: JSON.stringify({
+            code: 15,
+            message: "Failed to store static file.",
+            details: []
+          })
+        };
+      }
+
+      return {
+        meta: {
+          status: 200
+        },
+        text: JSON.stringify({
+          fileMetadataId: "file-meta-after-500"
+        })
+      };
+    }
+  };
+
+  const upload = await client.uploadFile({
+    filename: "photo.jpg",
+    mimeType: "image/jpeg",
+    bytes: Buffer.from("image")
+  });
+
+  assert.equal(upload.fileMetadataId, "file-meta-after-500");
+  assert.equal(requests.length, 2);
+});
+
+test("uploadFile classifies a 200 Cloudflare challenge body as a blocked Grok session after retries", async () => {
+  let requestCalls = 0;
+  let recreatePageCalls = 0;
+  let recreateContextCalls = 0;
+  const client = new GrokClient({
+    grokBaseUrl: "https://grok.com",
+    defaultModel: "grok-4-auto",
+    fileUploadRetryDelaysMs: [0, 0, 0]
+  });
+
+  client.browser = {
+    async request() {
+      requestCalls += 1;
+      return {
+        meta: {
+          status: 200
+        },
+        text: "<html><title>Checking if the site connection is secure</title><body>Cloudflare Ray ID</body></html>"
+      };
+    },
+    async recreatePage() {
+      recreatePageCalls += 1;
+    },
+    async recreateContext() {
+      recreateContextCalls += 1;
+    }
+  };
+
+  await assert.rejects(
+    client.uploadFile({
+      filename: "photo.png",
+      mimeType: "image/png",
+      bytes: Buffer.from("image")
+    }),
+    (error) =>
+      error?.status === 502 &&
+      error?.details?.code === GROK_SESSION_BLOCKED_ERROR_CODE &&
+      error?.details?.upstreamStatus === 200
+  );
+
+  assert.equal(requestCalls, 3);
+  assert.equal(recreatePageCalls, 1);
+  assert.equal(recreateContextCalls, 1);
 });
 
 test("createConversationAndRespond captures a delayed final response without a trailing newline", async () => {

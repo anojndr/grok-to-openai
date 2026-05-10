@@ -48,6 +48,12 @@ const DEFAULT_RESPONSE_HYDRATION_DELAYS_MS = Object.freeze([
   4000
 ]);
 
+const DEFAULT_FILE_UPLOAD_RETRY_DELAYS_MS = Object.freeze([
+  0,
+  500,
+  1500
+]);
+
 function isCloudflareErrorText(text = "") {
   const normalized = String(text).toLowerCase();
 
@@ -57,6 +63,21 @@ function isCloudflareErrorText(text = "") {
     normalized.includes("checking if the site connection is secure") ||
     normalized.includes("cf-error-details") ||
     normalized.includes("cloudflare ray id")
+  );
+}
+
+function isCloudflareResponse(response) {
+  return isCloudflareErrorText(response?.text || "");
+}
+
+function isTransientUploadResponse(response) {
+  const status = response?.meta?.status || 0;
+
+  return (
+    isCloudflareResponse(response) ||
+    status === 408 ||
+    status === 429 ||
+    status >= 500
   );
 }
 
@@ -76,6 +97,17 @@ function throwGrokHttpError(prefix, response) {
   }
 
   throw new HttpError(status, `${prefix}: ${text}`);
+}
+
+async function recoverFromUploadChallenge(browser, attempt) {
+  if (attempt >= 2 && typeof browser.recreateContext === "function") {
+    await browser.recreateContext();
+    return;
+  }
+
+  if (typeof browser.recreatePage === "function") {
+    await browser.recreatePage();
+  }
 }
 
 const DEFAULT_THINKING_RESPONSE_HYDRATION_DELAYS_MS = Object.freeze([
@@ -185,21 +217,61 @@ export class GrokClient {
       fileSource: "SELF_UPLOAD_FILE_SOURCE"
     };
 
-    const response = await this.browser.request({
-      requestId,
-      url: `${this.config.grokBaseUrl}/rest/app-chat/upload-file`,
-      method: "POST",
-      body,
-      headers: {
-        "Content-Type": "application/json"
+    let response;
+    const retryDelays = normalizeHydrationDelays(
+      this.config.fileUploadRetryDelaysMs,
+      DEFAULT_FILE_UPLOAD_RETRY_DELAYS_MS
+    );
+
+    for (let attempt = 0; attempt < retryDelays.length; attempt += 1) {
+      if (attempt > 0) {
+        await sleep(retryDelays[attempt]);
       }
-    });
+
+      response = await this.browser.request({
+        requestId: attempt === 0 ? requestId : createId("grokreq"),
+        url: `${this.config.grokBaseUrl}/rest/app-chat/upload-file`,
+        method: "POST",
+        body,
+        headers: {
+          Accept: "application/json, text/plain, */*",
+          "Content-Type": "application/json"
+        }
+      });
+
+      if (
+        isTransientUploadResponse(response) &&
+        attempt < retryDelays.length - 1
+      ) {
+        if (isCloudflareResponse(response)) {
+          await recoverFromUploadChallenge(this.browser, attempt + 1);
+        }
+        continue;
+      }
+
+      break;
+    }
 
     if (!response.meta || response.meta.status >= 400) {
       throwGrokHttpError("Grok file upload failed", response);
     }
 
-    return JSON.parse(response.text);
+    if (isCloudflareResponse(response)) {
+      throwGrokHttpError("Grok file upload failed", response);
+    }
+
+    try {
+      return JSON.parse(response.text);
+    } catch (error) {
+      throw new HttpError(
+        502,
+        "Grok file upload returned an invalid JSON response",
+        {
+          upstreamStatus: response.meta?.status || 200,
+          cause: error instanceof Error ? error.message : String(error)
+        }
+      );
+    }
   }
 
   async createConversationAndRespond({
