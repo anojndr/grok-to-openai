@@ -51,7 +51,9 @@ const DEFAULT_RESPONSE_HYDRATION_DELAYS_MS = Object.freeze([
 const DEFAULT_FILE_UPLOAD_RETRY_DELAYS_MS = Object.freeze([
   0,
   500,
-  1500
+  1500,
+  3000,
+  5000
 ]);
 
 function isCloudflareErrorText(text = "") {
@@ -78,6 +80,23 @@ function isTransientUploadResponse(response) {
     status === 408 ||
     status === 429 ||
     status >= 500
+  );
+}
+
+function isTransientUploadError(error) {
+  const message = error instanceof Error ? error.message : String(error || "");
+  const normalized = message.toLowerCase();
+
+  return (
+    error?.details?.code === GROK_SESSION_BLOCKED_ERROR_CODE ||
+    normalized.includes("failed to fetch") ||
+    normalized.includes("networkerror") ||
+    normalized.includes("execution context was destroyed") ||
+    normalized.includes("target closed") ||
+    normalized.includes("target page, context or browser has been closed") ||
+    normalized.includes("browsercontext.newpage") ||
+    normalized.includes("target.createtarget") ||
+    normalized.includes("failed to open a new tab")
   );
 }
 
@@ -108,6 +127,18 @@ async function recoverFromUploadChallenge(browser, attempt) {
   if (typeof browser.recreatePage === "function") {
     await browser.recreatePage();
   }
+}
+
+async function recoverFromUploadError(browser, error, attempt) {
+  if (
+    error?.details?.code === GROK_SESSION_BLOCKED_ERROR_CODE &&
+    typeof browser.recreateContext === "function"
+  ) {
+    await browser.recreateContext();
+    return;
+  }
+
+  await recoverFromUploadChallenge(browser, attempt);
 }
 
 const DEFAULT_THINKING_RESPONSE_HYDRATION_DELAYS_MS = Object.freeze([
@@ -228,16 +259,28 @@ export class GrokClient {
         await sleep(retryDelays[attempt]);
       }
 
-      response = await this.browser.request({
-        requestId: attempt === 0 ? requestId : createId("grokreq"),
-        url: `${this.config.grokBaseUrl}/rest/app-chat/upload-file`,
-        method: "POST",
-        body,
-        headers: {
-          Accept: "application/json, text/plain, */*",
-          "Content-Type": "application/json"
+      try {
+        response = await this.browser.request({
+          requestId: attempt === 0 ? requestId : createId("grokreq"),
+          url: `${this.config.grokBaseUrl}/rest/app-chat/upload-file`,
+          method: "POST",
+          body,
+          headers: {
+            Accept: "application/json, text/plain, */*",
+            "Content-Type": "application/json"
+          }
+        });
+      } catch (error) {
+        if (
+          isTransientUploadError(error) &&
+          attempt < retryDelays.length - 1
+        ) {
+          await recoverFromUploadError(this.browser, error, attempt + 1);
+          continue;
         }
-      });
+
+        throw error;
+      }
 
       if (
         isTransientUploadResponse(response) &&

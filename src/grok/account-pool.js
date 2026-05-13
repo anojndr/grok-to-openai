@@ -85,6 +85,10 @@ export class GrokAccountPool {
       throw new Error(`Unknown Grok account index: ${accountIndex}`);
     }
 
+    if (this.unavailableAccountIndexes.has(account.index)) {
+      return this.withFallback(operation);
+    }
+
     try {
       const result = {
         accountIndex: account.index,
@@ -94,6 +98,11 @@ export class GrokAccountPool {
       await this.activateFallbackAccount(account, accounts);
       return result;
     } catch (error) {
+      if (this.isSessionUnavailableError(error)) {
+        await this.handleFailure(account, accounts, error);
+        return this.withFallback(operation);
+      }
+
       await this.handleFailure(account, accounts, error);
       throw error;
     }

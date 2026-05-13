@@ -198,6 +198,53 @@ test("uploadFile retries a transient Cloudflare challenge before returning the u
   assert.notEqual(requests[0].requestId, requests[1].requestId);
 });
 
+test("uploadFile retries when the browser session throws a transient Cloudflare error", async () => {
+  const requests = [];
+  let recreateContextCalls = 0;
+  const client = new GrokClient({
+    grokBaseUrl: "https://grok.com",
+    defaultModel: "grok-4-auto",
+    fileUploadRetryDelaysMs: [0, 0]
+  });
+
+  client.browser = {
+    async request(request) {
+      requests.push(request);
+      if (requests.length === 1) {
+        const error = new Error(
+          "Grok session is blocked or not authenticated: Cloudflare block page"
+        );
+        error.details = {
+          code: GROK_SESSION_BLOCKED_ERROR_CODE
+        };
+        throw error;
+      }
+
+      return {
+        meta: {
+          status: 200
+        },
+        text: JSON.stringify({
+          fileMetadataId: "file-meta-after-thrown-cloudflare"
+        })
+      };
+    },
+    async recreateContext() {
+      recreateContextCalls += 1;
+    }
+  };
+
+  const upload = await client.uploadFile({
+    filename: "photo.png",
+    mimeType: "image/png",
+    bytes: Buffer.from("image")
+  });
+
+  assert.equal(upload.fileMetadataId, "file-meta-after-thrown-cloudflare");
+  assert.equal(requests.length, 2);
+  assert.equal(recreateContextCalls, 1);
+});
+
 test("uploadFile retries transient upstream upload failures before returning the upload", async () => {
   const requests = [];
   const client = new GrokClient({

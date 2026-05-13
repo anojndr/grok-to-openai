@@ -199,6 +199,43 @@ test(
   }
 );
 
+test("withAccount falls back when the requested account is Cloudflare-blocked", async () => {
+  const calls = [];
+  const sessionBlockedError = new HttpError(502, "blocked", {
+    code: GROK_SESSION_BLOCKED_ERROR_CODE
+  });
+  const accounts = [
+    createMockAccount("primary", ["primary-ok", "primary-ok-again"]),
+    createMockAccount("secondary", [sessionBlockedError]),
+    createMockAccount("tertiary", ["unused"])
+  ];
+  const pool = new GrokAccountPool({}, { accounts });
+
+  const result = await pool.withAccount(1, async (client) => {
+    calls.push(client.name);
+    return client.run();
+  });
+
+  assert.deepEqual(calls, ["secondary", "primary"]);
+  assert.deepEqual(result, {
+    accountIndex: 0,
+    value: "primary-ok"
+  });
+  assert.equal(accounts[1].closeCalls, 1);
+
+  const secondResult = await pool.withAccount(1, async (client) => {
+    calls.push(client.name);
+    return client.run();
+  });
+
+  assert.deepEqual(calls, ["secondary", "primary", "primary"]);
+  assert.deepEqual(secondResult, {
+    accountIndex: 0,
+    value: "primary-ok-again"
+  });
+  assert.equal(accounts[1].runCalls, 1);
+});
+
 test("withFallback quarantines Cloudflare-blocked accounts and skips them on later attempts", async () => {
   const calls = [];
   const sessionBlockedError = new HttpError(502, "blocked", {
