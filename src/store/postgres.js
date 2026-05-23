@@ -295,6 +295,14 @@ export class PostgresStorage {
     this.pool =
       options.pool ??
       new Pool(buildPostgresPoolOptions(databaseUrl));
+
+    // Register error handler to prevent unhandled 'error' events on idle clients from crashing the server
+    if (typeof this.pool.on === "function") {
+      this.pool.on("error", (err) => {
+        console.error("Unexpected error on idle PostgreSQL client:", err);
+      });
+    }
+
     this.fileStore = new PostgresFileStore(this.pool);
     this.responseStore = new PostgresResponseStore(this.pool);
   }
