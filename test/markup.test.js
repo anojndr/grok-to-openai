@@ -36,13 +36,20 @@ test("createGrokMarkupStreamSanitizer can stop emitting once citations begin", (
   assert.equal(combined, "Hello");
 });
 
-test("createGrokMarkupStreamSanitizer does not split emoji surrogate pairs across deferred boundaries", () => {
+test("createGrokMarkupStreamSanitizer emits plain text immediately and defers partial tag matches", () => {
   const sanitizer = createGrokMarkupStreamSanitizer();
-  const visibleText = `A😀${"b".repeat(MAX_START_LENGTH - 2)}`;
-  const firstChunk = sanitizer.write(visibleText);
-  const deferredChunk = sanitizer.flush();
 
-  assert.equal(firstChunk, "A");
-  assert.equal(deferredChunk, `😀${"b".repeat(MAX_START_LENGTH - 2)}`);
-  assert.equal(firstChunk + deferredChunk, visibleText);
+  // Test 1: Plain text with emoji is emitted immediately
+  const plainText = "Hello world! 😀";
+  const first = sanitizer.write(plainText);
+  assert.equal(first, plainText);
+
+  // Test 2: Text ending with a partial tag is deferred
+  const textWithPartial = "Next chunk starts a tag <xai:tool";
+  const second = sanitizer.write(textWithPartial);
+  assert.equal(second, "Next chunk starts a tag ");
+
+  // Test 3: Flushing emits the deferred portion
+  const flushed = sanitizer.flush();
+  assert.equal(flushed, "<xai:tool");
 });

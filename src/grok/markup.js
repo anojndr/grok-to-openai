@@ -49,6 +49,22 @@ export function sanitizeGrokMarkup(text) {
   return output.trim();
 }
 
+function getPartialMarkerLength(text) {
+  let maxLen = 0;
+  for (const marker of START_MARKERS) {
+    const startStr = marker.start;
+    for (let len = 1; len < startStr.length; len++) {
+      const prefix = startStr.slice(0, len);
+      if (text.endsWith(prefix)) {
+        if (len > maxLen) {
+          maxLen = len;
+        }
+      }
+    }
+  }
+  return maxLen;
+}
+
 export function createGrokMarkupStreamSanitizer(options = {}) {
   let buffer = "";
   let hidden = null;
@@ -89,7 +105,8 @@ export function createGrokMarkupStreamSanitizer(options = {}) {
       }
 
       if (!nextMarker) {
-        const safeLength = Math.max(buffer.length - (MAX_START_LENGTH - 1), 0);
+        const partialLength = getPartialMarkerLength(buffer);
+        const safeLength = Math.max(buffer.length - partialLength, 0);
         if (safeLength === 0) {
           return flushOutput();
         }
