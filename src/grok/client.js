@@ -14,7 +14,7 @@ import {
   hasCompleteAssistantPayload as hasCompleteAssistantPayloadValue,
   hasRenderableAssistantPayload
 } from "./assistant-payload.js";
-import { resolveModel } from "./model-map.js";
+import { resolveModel, GROK_43_BETA_MODE_ID } from "./model-map.js";
 
 const DEVICE_ENV_INFO = Object.freeze({
   darkModeEnabled: false,
@@ -330,6 +330,10 @@ export class GrokClient {
       this.config.defaultModel
     );
 
+    const backendModeId = (grokModeId === "expert" || grokModeId === "heavy" || grokModeId === GROK_43_BETA_MODE_ID)
+      ? "grok-3-reasoning"
+      : "grok-3";
+
     return this.streamRequest({
       path: "/rest/app-chat/conversations/new",
       model: publicModel,
@@ -357,7 +361,8 @@ export class GrokClient {
         connectors: [],
         searchAllConnectors: false,
         deviceEnvInfo: makeDeviceEnvInfo(),
-        modeId: grokModeId,
+        modeId: backendModeId,
+        modelId: backendModeId,
         customInstructions: instructions || undefined
       }
     });
@@ -377,6 +382,10 @@ export class GrokClient {
       undefined,
       this.config.defaultModel
     );
+
+    const backendModeId = (grokModeId === "expert" || grokModeId === "heavy" || grokModeId === GROK_43_BETA_MODE_ID)
+      ? "grok-3-reasoning"
+      : "grok-3";
 
     return this.streamRequest({
       path: `/rest/app-chat/conversations/${conversationId}/responses`,
@@ -406,7 +415,8 @@ export class GrokClient {
         connectors: [],
         searchAllConnectors: false,
         deviceEnvInfo: makeDeviceEnvInfo(),
-        modeId: grokModeId,
+        modeId: backendModeId,
+        modelId: backendModeId,
         customInstructions: instructions || undefined
       }
     });

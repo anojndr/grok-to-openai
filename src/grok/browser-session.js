@@ -55,6 +55,123 @@ function appendTextChunk(buffer, chunk) {
 }
 
 function installGrokBridgePageHelpers() {
+  // Element caching to survive anti-bot DOM removal
+  const savedElements = [];
+
+  const handleNode = (node) => {
+    if (node.nodeType !== 1) return;
+    try {
+      if (node.querySelector('path[d]')) {
+        console.log("__grokBridge: handleNode caching element with path:", node.tagName, node.className || node.id || "");
+        if (!savedElements.some(el => el.isEqualNode(node))) {
+          savedElements.push(node.cloneNode(true));
+        }
+      }
+    } catch (e) {}
+
+    // Check descendants
+    try {
+      const descendants = node.querySelectorAll('*');
+      for (const desc of descendants) {
+        if (desc.querySelector('path[d]')) {
+          if (!savedElements.some(el => el.isEqualNode(desc))) {
+            console.log("__grokBridge: handleNode caching descendant element with path:", desc.tagName, desc.className || desc.id || "");
+            savedElements.push(desc.cloneNode(true));
+          }
+        }
+      }
+    } catch (e) {}
+  };
+
+  // Initial scan in case document is already partially parsed
+  try {
+    const all = document.querySelectorAll('*');
+    for (const node of all) {
+      if (node.querySelector('path[d]')) {
+        console.log("__grokBridge: initial scan caching element with path:", node.tagName, node.className || node.id || "");
+        if (!savedElements.some(el => el.isEqualNode(node))) {
+          savedElements.push(node.cloneNode(true));
+        }
+      }
+    }
+  } catch (e) {}
+
+  // Observe DOM additions dynamically
+  try {
+    const observer = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        if (mutation.addedNodes) {
+          for (const node of mutation.addedNodes) {
+            handleNode(node);
+          }
+        }
+      }
+    });
+    observer.observe(document.documentElement || document, {
+      childList: true,
+      subtree: true
+    });
+    console.log("__grokBridge: MutationObserver started.");
+  } catch (e) {
+    console.error("__grokBridge: Failed to start MutationObserver:", e);
+  }
+
+  // Hook query selectors to return cached elements when they are queried but missing from DOM
+  try {
+    const originalQuerySelectorAll = document.querySelectorAll;
+    document.querySelectorAll = function(selector) {
+      const result = originalQuerySelectorAll.apply(this, arguments);
+      if (result.length === 0 && savedElements.length) {
+        const matched = [];
+        for (const el of savedElements) {
+          try {
+            if (el.matches(selector)) {
+              matched.push(el);
+            }
+          } catch (e) {}
+        }
+        if (matched.length) {
+          return matched;
+        }
+      }
+      return result;
+    };
+
+    const originalQuerySelector = document.querySelector;
+    document.querySelector = function(selector) {
+      const result = originalQuerySelector.apply(this, arguments);
+      if (!result && savedElements.length) {
+        for (const el of savedElements) {
+          try {
+            if (el.matches(selector)) {
+              return el;
+            }
+          } catch (e) {}
+        }
+      }
+      return result;
+    };
+
+    const originalGetElementsByClassName = document.getElementsByClassName;
+    document.getElementsByClassName = function(className) {
+      const result = originalGetElementsByClassName.apply(this, arguments);
+      if (result.length === 0 && savedElements.length) {
+        const matched = [];
+        for (const el of savedElements) {
+          try {
+            if (el.classList && el.classList.contains(className)) {
+              matched.push(el);
+            }
+          } catch (e) {}
+        }
+        if (matched.length) {
+          return matched;
+        }
+      }
+      return result;
+    };
+  } catch (e) {}
+
   const getBinding = (name) => {
     if (typeof window[name] === "function") {
       return window[name];
@@ -83,46 +200,100 @@ function installGrokBridgePageHelpers() {
   window.grokBridgeCallBinding = callBinding;
 
   if (typeof window.__grokBridgeEnsureStatsigGenerator !== "function") {
-    const ensureStatsigGenerator = async (scriptSource) => {
+    const ensureStatsigGenerator = async (scriptUrl, targetModuleId) => {
       if (window.__grokStatsigGen) {
         return window.__grokStatsigGen;
       }
 
       const previous = globalThis.TURBOPACK;
       let moduleFactory = null;
-      globalThis.TURBOPACK = {
-        push(args) {
-          for (let index = 1; index < args.length; index += 2) {
-            if (args[index] === 880932) {
-              moduleFactory = args[index + 1];
+
+      const interceptPromise = new Promise((resolve, reject) => {
+        globalThis.TURBOPACK = {
+          push(args) {
+            if (args.length === 3 && (args[1] === targetModuleId || args[1] === Number(targetModuleId))) {
+              moduleFactory = args[2];
+            } else {
+              for (let index = 1; index < args.length; index += 2) {
+                if (args[index] === targetModuleId || args[index] === Number(targetModuleId)) {
+                  moduleFactory = args[index + 1];
+                }
+              }
+            }
+            if (previous && typeof previous.push === "function") {
+              previous.push(args);
+            } else if (Array.isArray(previous)) {
+              previous.push(args);
+            }
+            if (moduleFactory) {
+              resolve();
             }
           }
-        }
-      };
+        };
+
+        const script = document.createElement("script");
+        script.src = scriptUrl;
+        script.onload = () => {
+          if (!moduleFactory) {
+            reject(new Error("Script loaded but module " + targetModuleId + " was not intercepted"));
+          }
+        };
+        script.onerror = (e) => {
+          reject(new Error("Failed to load script: " + scriptUrl));
+        };
+        document.head.appendChild(script);
+      });
 
       try {
-        (0, eval)(scriptSource);
+        await interceptPromise;
       } finally {
         globalThis.TURBOPACK = previous;
       }
 
       if (!moduleFactory) {
-        throw new Error("Unable to load Grok statsig middleware");
+        throw new Error("Unable to load Grok statsig middleware for module " + targetModuleId);
       }
 
       const exports = {};
-      moduleFactory({
+      const W = {
         s(defs) {
-          for (let index = 0; index < defs.length; index += 2) {
-            Object.defineProperty(exports, defs[index], {
+          if (Array.isArray(defs)) {
+            const name = defs[0];
+            const getter = defs[2] || defs[1];
+            Object.defineProperty(exports, name, {
               enumerable: true,
-              get: defs[index + 1]
+              get: getter
             });
+            return;
           }
         }
-      });
+      };
 
-      window.__grokStatsigGen = exports.default();
+      try {
+        moduleFactory(W);
+      } catch (e) {
+        moduleFactory({
+          s(defs) {
+            for (let index = 0; index < defs.length; index += 2) {
+              Object.defineProperty(exports, defs[index], {
+                enumerable: true,
+                get: defs[index + 1]
+              });
+            }
+          }
+        });
+      }
+
+      let gen = exports.default;
+      if (typeof gen === "function") {
+        try {
+          const res = gen();
+          if (typeof res === "function") {
+            gen = res;
+          }
+        } catch (e) {}
+      }
+      window.__grokStatsigGen = gen;
       return window.__grokStatsigGen;
     };
 
@@ -142,16 +313,25 @@ function installGrokBridgePageHelpers() {
       const url = new URL(request.url, location.origin);
       let statsigId;
       try {
+        console.log("__grokBridgeFetch: statsig generator cache size:", savedElements.length);
         const generator = await window.__grokBridgeEnsureStatsigGenerator(
-          request.statsigChunkSource
+          request.statsigChunkUrl,
+          request.statsigModuleId
         );
         statsigId = await generator(url.pathname, request.method);
+        console.log("__grokBridgeFetch: Generated statsigId successfully:", statsigId);
       } catch (error) {
         statsigId = btoa(`e:${String(error)}`);
+        console.error("__grokBridgeFetch: Failed to generate statsigId:", error);
       }
       const headers = new Headers(request.headers || {});
       headers.set("x-xai-request-id", crypto.randomUUID());
       headers.set("x-statsig-id", statsigId);
+
+      console.log("__grokBridgeFetch Request URL:", request.url);
+      console.log("__grokBridgeFetch Request Method:", request.method);
+      console.log("__grokBridgeFetch Request Headers:", JSON.stringify(request.headers));
+      console.log("__grokBridgeFetch Request Body:", JSON.stringify(request.body));
 
       const response = await fetch(request.url, {
         method: request.method,
@@ -209,9 +389,10 @@ function installGrokBridgePageHelpers() {
       });
     } catch (error) {
       try {
+        const errorMsg = error instanceof Error ? `${error.name}: ${error.message}\nStack: ${error.stack}` : String(error);
         await window.__grokBridgeCallBinding("__grokBridgeError", {
           requestId: request.requestId,
-          message: error instanceof Error ? error.message : String(error)
+          message: errorMsg
         });
       } catch {
         throw error;
@@ -340,7 +521,8 @@ export class BrowserSession {
     this.pagePromise = null;
     this.pageUserAgent = null;
     this.pending = new Map();
-    this.statsigChunkSource = null;
+    this.statsigChunkUrl = null;
+    this.statsigModuleId = null;
     this.bindingsInstalled = false;
     this.initPromise = null;
   }
@@ -350,19 +532,98 @@ export class BrowserSession {
     this.page = null;
     this.pagePromise = null;
     this.pageUserAgent = null;
+    this.statsigChunkUrl = null;
+    this.statsigModuleId = null;
     this.bindingsInstalled = false;
   }
 
   async loadStatsigChunkSource() {
-    if (this.statsigChunkSource) {
-      return this.statsigChunkSource;
+    if (this.statsigChunkUrl && this.statsigModuleId) {
+      return {
+        url: this.statsigChunkUrl,
+        moduleId: this.statsigModuleId
+      };
     }
 
-    const response = await fetch(
-      "https://cdn.grok.com/_next/static/chunks/1fe28994d9ee9e6a.js"
+    const page = await this.ensurePage();
+    const urls = await page.evaluate(() =>
+      Array.from(document.querySelectorAll("script"))
+        .map((s) => s.src)
+        .filter((src) => src.includes("/_next/static/chunks/"))
     );
-    this.statsigChunkSource = await response.text();
-    return this.statsigChunkSource;
+
+    if (!urls.length) {
+      throw new Error("No Next.js static chunks found on Grok page");
+    }
+
+    const chunkTexts = {};
+    const fetchPromises = urls.map(async (url) => {
+      try {
+        const res = await fetch(url);
+        if (res.ok) {
+          chunkTexts[url] = await res.text();
+        }
+      } catch {}
+    });
+
+    await Promise.all(fetchPromises);
+
+    let middlewareUrl = null;
+    let statsigModuleId = null;
+
+    for (const [url, text] of Object.entries(chunkTexts)) {
+      if (text.includes("x-statsig-id")) {
+        middlewareUrl = url;
+        const match = /\.([a-zA-Z_0-9]+)\((\d+)\)\.then\(/g.exec(text);
+        if (match) {
+          statsigModuleId = match[2];
+          break;
+        }
+      }
+    }
+
+    if (!middlewareUrl || !statsigModuleId) {
+      throw new Error("Could not find statsig module ID in chunks");
+    }
+
+    let generatorChunkRelativePath = null;
+    let targetInnerModuleId = null;
+
+    for (const [url, text] of Object.entries(chunkTexts)) {
+      const broadRegex = new RegExp(
+        statsigModuleId +
+          '[^}]+?"(static/chunks/[^"]+)"[^}]+?\\.then\\(\\(\\)\\s*=>\\s*[a-zA-Z_0-9]+\\(([^\\)]+)\\)\\)'
+      );
+      const match = broadRegex.exec(text);
+      if (match) {
+        generatorChunkRelativePath = match[1];
+        targetInnerModuleId = match[2];
+        break;
+      }
+    }
+
+    if (!generatorChunkRelativePath || !targetInnerModuleId) {
+      throw new Error("Could not find dynamic import definition for statsig module");
+    }
+
+    const generatorUrl = `${this.config.grokBaseUrl}/_next/${generatorChunkRelativePath}`;
+
+    let numericModuleId = Number(targetInnerModuleId);
+    if (isNaN(numericModuleId)) {
+      try {
+        numericModuleId = Function(`return (${targetInnerModuleId})`)();
+      } catch {
+        throw new Error(`Could not parse targetInnerModuleId: ${targetInnerModuleId}`);
+      }
+    }
+
+    this.statsigChunkUrl = generatorUrl;
+    this.statsigModuleId = numericModuleId;
+
+    return {
+      url: this.statsigChunkUrl,
+      moduleId: this.statsigModuleId
+    };
   }
 
   async init() {
@@ -490,6 +751,9 @@ export class BrowserSession {
 
     const pagePromise = (async () => {
       const page = await this.context.newPage();
+      page.on("console", (msg) => {
+        console.log(`[BROWSER CONSOLE] [${msg.type()}] ${msg.text()}`);
+      });
       this.page = page;
       page.on("close", () => {
         if (this.page === page) {
@@ -500,6 +764,12 @@ export class BrowserSession {
       const response = await page.goto(this.config.grokBaseUrl, {
         waitUntil: "domcontentloaded"
       });
+      try {
+        await page.waitForLoadState("networkidle", { timeout: 3000 });
+      } catch (e) {}
+      try {
+        await page.waitForTimeout(2000);
+      } catch (e) {}
       await this.validatePage(page, response);
 
       try {
@@ -598,7 +868,7 @@ export class BrowserSession {
     onMeta = null
   }) {
     await this.init();
-    const statsigChunkSource = await this.loadStatsigChunkSource();
+    const { url: statsigChunkUrl, moduleId: statsigModuleId } = await this.loadStatsigChunkSource();
 
     let meta = null;
     const textBuffer = {
@@ -612,7 +882,8 @@ export class BrowserSession {
       method,
       body,
       headers,
-      statsigChunkSource
+      statsigChunkUrl,
+      statsigModuleId
     };
 
     const run = async (page) => {

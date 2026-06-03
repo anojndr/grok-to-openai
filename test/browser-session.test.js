@@ -13,7 +13,7 @@ function createSession(evaluateRequest) {
   });
 
   session.init = async () => {};
-  session.loadStatsigChunkSource = async () => "statsig";
+  session.loadStatsigChunkSource = async () => ({ url: "statsig", moduleId: 880932 });
   session.ensurePage = async () => ({});
   session.evaluateRequest = async (_page, payload) => evaluateRequest(session, payload);
 
@@ -237,7 +237,7 @@ test("request relaunches the browser context when Chromium cannot create a new t
       };
     }
   };
-  session.loadStatsigChunkSource = async () => "statsig";
+  session.loadStatsigChunkSource = async () => ({ url: "statsig", moduleId: 880932 });
   session.evaluateRequest = async (_page, payload) => {
     const pending = session.pending.get(payload.requestId);
     pending.onMeta({
