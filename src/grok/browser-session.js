@@ -62,7 +62,6 @@ function installGrokBridgePageHelpers() {
     if (node.nodeType !== 1) return;
     try {
       if (node.querySelector('path[d]')) {
-        console.log("__grokBridge: handleNode caching element with path:", node.tagName, node.className || node.id || "");
         if (!savedElements.some(el => el.isEqualNode(node))) {
           savedElements.push(node.cloneNode(true));
         }
@@ -75,7 +74,6 @@ function installGrokBridgePageHelpers() {
       for (const desc of descendants) {
         if (desc.querySelector('path[d]')) {
           if (!savedElements.some(el => el.isEqualNode(desc))) {
-            console.log("__grokBridge: handleNode caching descendant element with path:", desc.tagName, desc.className || desc.id || "");
             savedElements.push(desc.cloneNode(true));
           }
         }
@@ -88,7 +86,6 @@ function installGrokBridgePageHelpers() {
     const all = document.querySelectorAll('*');
     for (const node of all) {
       if (node.querySelector('path[d]')) {
-        console.log("__grokBridge: initial scan caching element with path:", node.tagName, node.className || node.id || "");
         if (!savedElements.some(el => el.isEqualNode(node))) {
           savedElements.push(node.cloneNode(true));
         }
