@@ -215,6 +215,40 @@ test("ImgbbClient verifyFile rejects empty uploads", async () => {
   }
 });
 
+test("ImgbbClient verifyFile bypasses fetch network failure", async () => {
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = async () => {
+    throw new TypeError("fetch failed");
+  };
+
+  try {
+    const client = new ImgbbClient();
+    const result = await client.verifyFile("https://i.ibb.co/demo/test.jpg");
+    assert.equal(result, "https://i.ibb.co/demo/test.jpg");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("ImgbbClient verifyFile bypasses non-ok HTTP status response", async () => {
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = async () =>
+    new Response("Forbidden", {
+      status: 403,
+      statusText: "Forbidden"
+    });
+
+  try {
+    const client = new ImgbbClient();
+    const result = await client.verifyFile("https://i.ibb.co/demo/test.jpg");
+    assert.equal(result, "https://i.ibb.co/demo/test.jpg");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("ImgbbClient retries empty responses from Imgbb", async () => {
   const originalFetch = globalThis.fetch;
   let attempts = 0;

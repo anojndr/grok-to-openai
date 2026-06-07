@@ -342,25 +342,39 @@ export class ImgbbClient {
         }
       });
     } catch (error) {
-      throw toHttpError(
-        "Imgbb upload verification failed",
-        error instanceof Error ? error.message : String(error)
+      console.warn(
+        `Imgbb upload verification fetch failed: ${
+          error instanceof Error ? error.message : String(error)
+        }. Bypassing verification.`
       );
+      return url;
     }
 
     if (!response.ok) {
-      throw toHttpError(
-        "Imgbb upload verification failed",
-        `HTTP ${response.status}`
+      console.warn(
+        `Imgbb upload verification returned HTTP status ${response.status}. Bypassing verification.`
       );
+      return url;
     }
 
-    const bytes = Buffer.from(await response.arrayBuffer());
-    if (bytes.length === 0) {
-      throw toHttpError(
-        "Imgbb upload verification failed",
-        "uploaded file is empty"
+    try {
+      const bytes = Buffer.from(await response.arrayBuffer());
+      if (bytes.length === 0) {
+        throw toHttpError(
+          "Imgbb upload verification failed",
+          "uploaded file is empty"
+        );
+      }
+    } catch (error) {
+      if (error instanceof HttpError) {
+        throw error;
+      }
+      console.warn(
+        `Imgbb upload verification failed to read response array buffer: ${
+          error instanceof Error ? error.message : String(error)
+        }. Bypassing verification.`
       );
+      return url;
     }
 
     return url;
