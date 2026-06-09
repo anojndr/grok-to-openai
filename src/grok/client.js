@@ -330,9 +330,7 @@ export class GrokClient {
       this.config.defaultModel
     );
 
-    const backendModeId = (grokModeId === "expert" || grokModeId === "heavy" || grokModeId === GROK_43_BETA_MODE_ID)
-      ? "grok-3-reasoning"
-      : "grok-3";
+    const backendModeId = grokModeId;
 
     return this.streamRequest({
       path: "/rest/app-chat/conversations/new",
@@ -383,9 +381,7 @@ export class GrokClient {
       this.config.defaultModel
     );
 
-    const backendModeId = (grokModeId === "expert" || grokModeId === "heavy" || grokModeId === GROK_43_BETA_MODE_ID)
-      ? "grok-3-reasoning"
-      : "grok-3";
+    const backendModeId = grokModeId;
 
     return this.streamRequest({
       path: `/rest/app-chat/conversations/${conversationId}/responses`,

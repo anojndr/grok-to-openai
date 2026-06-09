@@ -889,7 +889,7 @@ test("createConversationAndRespond forwards heavy mode IDs to Grok", async () =>
   });
 
   assert.equal(requests.length, 1);
-  assert.equal(requests[0].body.modeId, "grok-3-reasoning");
+  assert.equal(requests[0].body.modeId, "heavy");
 });
 
 test("createConversationAndRespond forwards Grok 4.3 beta mode IDs to Grok", async () => {
@@ -917,7 +917,7 @@ test("createConversationAndRespond forwards Grok 4.3 beta mode IDs to Grok", asy
   });
 
   assert.equal(requests.length, 1);
-  assert.equal(requests[0].body.modeId, "grok-3-reasoning");
+  assert.equal(requests[0].body.modeId, "grok-420-computer-use-sa");
 });
 
 test("conversation requests reuse the same deviceEnvInfo object", async () => {
