@@ -1,6 +1,7 @@
 import path from "node:path";
 import { HttpError } from "../lib/errors.js";
 import { sanitizeFilename } from "../lib/fs.js";
+import { config } from "../config.js";
 
 const DEFAULT_IMGBB_API_URL = "https://api.imgbb.com/1/upload";
 const IMGBB_UPLOAD_ATTEMPTS = 3;
@@ -337,23 +338,28 @@ export class ImgbbClient {
     let response;
     try {
       response = await fetch(url, {
+        method: "GET",
         headers: {
           Range: "bytes=0-0"
         }
       });
     } catch (error) {
-      console.warn(
-        `Imgbb upload verification fetch failed: ${
-          error instanceof Error ? error.message : String(error)
-        }. Bypassing verification.`
-      );
+      if (config.verbose) {
+        console.warn(
+          `Imgbb upload verification fetch failed: ${
+            error instanceof Error ? error.message : String(error)
+          }. Bypassing verification.`
+        );
+      }
       return url;
     }
 
     if (!response.ok) {
-      console.warn(
-        `Imgbb upload verification returned HTTP status ${response.status}. Bypassing verification.`
-      );
+      if (config.verbose) {
+        console.warn(
+          `Imgbb upload verification returned HTTP status ${response.status}. Bypassing verification.`
+        );
+      }
       return url;
     }
 
@@ -369,11 +375,13 @@ export class ImgbbClient {
       if (error instanceof HttpError) {
         throw error;
       }
-      console.warn(
-        `Imgbb upload verification failed to read response array buffer: ${
-          error instanceof Error ? error.message : String(error)
-        }. Bypassing verification.`
-      );
+      if (config.verbose) {
+        console.warn(
+          `Imgbb upload verification failed to read response array buffer: ${
+            error instanceof Error ? error.message : String(error)
+          }. Bypassing verification.`
+        );
+      }
       return url;
     }
 

@@ -108,9 +108,13 @@ function installGrokBridgePageHelpers() {
       childList: true,
       subtree: true
     });
-    console.log("__grokBridge: MutationObserver started.");
+    if (window.__grokVerbose) {
+      console.log("__grokBridge: MutationObserver started.");
+    }
   } catch (e) {
-    console.error("__grokBridge: Failed to start MutationObserver:", e);
+    if (window.__grokVerbose) {
+      console.error("__grokBridge: Failed to start MutationObserver:", e);
+    }
   }
 
   // Hook query selectors to return cached elements when they are queried but missing from DOM
@@ -310,25 +314,33 @@ function installGrokBridgePageHelpers() {
       const url = new URL(request.url, location.origin);
       let statsigId;
       try {
-        console.log("__grokBridgeFetch: statsig generator cache size:", savedElements.length);
+        if (window.__grokVerbose) {
+          console.log("__grokBridgeFetch: statsig generator cache size:", savedElements.length);
+        }
         const generator = await window.__grokBridgeEnsureStatsigGenerator(
           request.statsigChunkUrl,
           request.statsigModuleId
         );
         statsigId = await generator(url.pathname, request.method);
-        console.log("__grokBridgeFetch: Generated statsigId successfully:", statsigId);
+        if (window.__grokVerbose) {
+          console.log("__grokBridgeFetch: Generated statsigId successfully:", statsigId);
+        }
       } catch (error) {
         statsigId = btoa(`e:${String(error)}`);
-        console.error("__grokBridgeFetch: Failed to generate statsigId:", error);
+        if (window.__grokVerbose) {
+          console.error("__grokBridgeFetch: Failed to generate statsigId:", error);
+        }
       }
       const headers = new Headers(request.headers || {});
       headers.set("x-xai-request-id", crypto.randomUUID());
       headers.set("x-statsig-id", statsigId);
 
-      console.log("__grokBridgeFetch Request URL:", request.url);
-      console.log("__grokBridgeFetch Request Method:", request.method);
-      console.log("__grokBridgeFetch Request Headers:", JSON.stringify(request.headers));
-      console.log("__grokBridgeFetch Request Body:", JSON.stringify(request.body));
+      if (window.__grokVerbose) {
+        console.log("__grokBridgeFetch Request URL:", request.url);
+        console.log("__grokBridgeFetch Request Method:", request.method);
+        console.log("__grokBridgeFetch Request Headers:", JSON.stringify(request.headers));
+        console.log("__grokBridgeFetch Request Body:", JSON.stringify(request.body));
+      }
 
       const response = await fetch(request.url, {
         method: request.method,
@@ -731,7 +743,10 @@ export class BrowserSession {
       pending.reject(new Error(payload.message));
     });
 
-    await this.context.addInitScript(installGrokBridgePageHelpers);
+    await this.context.addInitScript(`
+      window.__grokVerbose = ${!!this.config?.verbose};
+      (${installGrokBridgePageHelpers.toString()})();
+    `);
 
     this.bindingsInstalled = true;
   }
@@ -749,7 +764,9 @@ export class BrowserSession {
     const pagePromise = (async () => {
       const page = await this.context.newPage();
       page.on("console", (msg) => {
-        console.log(`[BROWSER CONSOLE] [${msg.type()}] ${msg.text()}`);
+        if (this.config?.verbose) {
+          console.log(`[BROWSER CONSOLE] [${msg.type()}] ${msg.text()}`);
+        }
       });
       this.page = page;
       page.on("close", () => {
