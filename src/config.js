@@ -46,7 +46,7 @@ export const config = {
   grokPassword: process.env.GROK_PASSWORD ?? "",
   headless: envBool("HEADLESS", true),
   importCookiesOnBoot: envBool("IMPORT_COOKIES_ON_BOOT", true),
-  defaultModel: process.env.DEFAULT_MODEL ?? "grok-4-auto",
+  defaultModel: process.env.DEFAULT_MODEL ?? "grok-4.3-auto",
   defaultMode: process.env.DEFAULT_MODE ?? "auto",
   allowOrigins: process.env.ALLOW_ORIGINS ?? "*",
   verbose: envBool("VERBOSE", false)

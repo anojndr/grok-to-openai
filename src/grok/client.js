@@ -337,8 +337,8 @@ export class GrokClient {
       model: publicModel,
       onToken,
       body: {
-        message,
         temporary: false,
+        message,
         fileAttachments,
         imageAttachments: [],
         disableSearch: false,
@@ -351,16 +351,15 @@ export class GrokClient {
         enableSideBySide: true,
         sendFinalMetadata: true,
         disableTextFollowUps: false,
+        responseMetadata: {},
         disableMemory: false,
         forceSideBySide: false,
         isAsyncChat: false,
         disableSelfHarmShortCircuit: false,
         collectionIds: [],
-        connectors: [],
-        searchAllConnectors: false,
+        disabledConnectorIds: [],
         deviceEnvInfo: makeDeviceEnvInfo(),
         modeId: backendModeId,
-        modelId: backendModeId,
         customInstructions: instructions || undefined
       }
     });
@@ -390,29 +389,30 @@ export class GrokClient {
       body: {
         message,
         parentResponseId,
-        fileAttachments,
-        imageAttachments: [],
         disableSearch: false,
         enableImageGeneration: true,
+        imageAttachments: [],
         returnImageBytes: false,
         returnRawGrokInXaiRequest: false,
+        fileAttachments,
         enableImageStreaming: true,
         imageGenerationCount: 2,
         forceConcise: false,
         enableSideBySide: true,
         sendFinalMetadata: true,
+        metadata: {
+          request_metadata: {}
+        },
         disableTextFollowUps: false,
         disableMemory: false,
         forceSideBySide: false,
         isAsyncChat: false,
-        skipCancelCurrentInflightRequests: true,
+        isRegenRequest: false,
         disableSelfHarmShortCircuit: false,
         collectionIds: [],
-        connectors: [],
-        searchAllConnectors: false,
+        disabledConnectorIds: [],
         deviceEnvInfo: makeDeviceEnvInfo(),
         modeId: backendModeId,
-        modelId: backendModeId,
         customInstructions: instructions || undefined
       }
     });
