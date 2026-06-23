@@ -113,3 +113,96 @@ test("withFastModelFallback does not hide blocked Grok sessions with a model ret
 
   assert.deepEqual(attempts, ["grok-4.3-auto"]);
 });
+
+test("withFastModelFallback retries expert requests on model timeout when no tokens are emitted", async () => {
+  process.env.MODEL_TIMEOUT_RETRY_DELAY_MS = "1";
+  try {
+    const attempts = [];
+
+    const result = await withFastModelFallback({
+      publicModel: "grok expert",
+      onToken(token) {},
+      async operation(model, onToken) {
+        attempts.push(model);
+
+        if (attempts.length === 1) {
+          throw new Error("The model timed out while processing the request. Try again.");
+        }
+
+        return {
+          model
+        };
+      }
+    });
+
+    assert.deepEqual(attempts, ["grok expert", "grok expert"]);
+    assert.deepEqual(result, {
+      model: "grok expert"
+    });
+  } finally {
+    delete process.env.MODEL_TIMEOUT_RETRY_DELAY_MS;
+  }
+});
+
+test("withFastModelFallback does not retry on model timeout if tokens have already been emitted", async () => {
+  process.env.MODEL_TIMEOUT_RETRY_DELAY_MS = "1";
+  try {
+    const attempts = [];
+
+    await assert.rejects(
+      withFastModelFallback({
+        publicModel: "grok expert",
+        onToken(token) {},
+        async operation(model, onToken) {
+          attempts.push(model);
+
+          if (onToken) {
+            onToken("some token");
+          }
+
+          throw new Error("The model timed out while processing the request. Try again.");
+        }
+      }),
+      /The model timed out/
+    );
+
+    assert.deepEqual(attempts, ["grok expert"]);
+  } finally {
+    delete process.env.MODEL_TIMEOUT_RETRY_DELAY_MS;
+  }
+});
+
+test("withFastModelFallback retries both primary and fast model if both experience timeout and no tokens are emitted", async () => {
+  process.env.MODEL_TIMEOUT_RETRY_DELAY_MS = "1";
+  try {
+    const attempts = [];
+
+    const result = await withFastModelFallback({
+      publicModel: "grok expert",
+      onToken(token) {},
+      async operation(model, onToken) {
+        attempts.push(model);
+
+        if (attempts.length <= 3) {
+          throw new Error("The model timed out while processing the request. Try again.");
+        }
+
+        return {
+          model
+        };
+      }
+    });
+
+    assert.deepEqual(attempts, [
+      "grok expert",
+      "grok expert",
+      "grok-4.3-fast",
+      "grok-4.3-fast"
+    ]);
+    assert.deepEqual(result, {
+      model: "grok-4.3-fast"
+    });
+  } finally {
+    delete process.env.MODEL_TIMEOUT_RETRY_DELAY_MS;
+  }
+});

@@ -452,7 +452,8 @@ export async function continueResponseConversation({
 
         return withFastModelFallback({
           publicModel,
-          async operation(model) {
+          onToken,
+          async operation(model, currentOnToken) {
             return accountClient.addResponse({
               conversationId: previousRecord.grok.conversationId,
               parentResponseId: previousRecord.grok.assistantResponseId,
@@ -460,7 +461,7 @@ export async function continueResponseConversation({
               model,
               message: lastUserMessage.text,
               fileAttachments,
-              onToken
+              onToken: currentOnToken
             });
           }
         });
@@ -502,13 +503,14 @@ export async function continueResponseConversation({
 
     return withFastModelFallback({
       publicModel,
-      async operation(model) {
+      onToken,
+      async operation(model, currentOnToken) {
         return accountClient.createConversationAndRespond({
           instructions,
           model,
           message: replay.message,
           fileAttachments: replayFileAttachments,
-          onToken
+          onToken: currentOnToken
         });
       }
     });

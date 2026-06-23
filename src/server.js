@@ -283,13 +283,14 @@ async function executeConversationRequest({
 
     return withFastModelFallback({
       publicModel,
-      async operation(model) {
+      onToken,
+      async operation(model, currentOnToken) {
         return accountClient.createConversationAndRespond({
           instructions,
           model,
           message,
           fileAttachments,
-          onToken
+          onToken: currentOnToken
         });
       }
     });
