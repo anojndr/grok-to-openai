@@ -171,7 +171,7 @@ test("GET /v1/responses/:responseId hydrates image results from stored attachmen
       incomplete_details: null,
       instructions: null,
       max_output_tokens: null,
-      model: "grok-4-auto",
+      model: "grok-4.3-auto",
       output: [
         {
           id: "ig_image_123",

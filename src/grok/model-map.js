@@ -2,30 +2,6 @@ export const GROK_43_BETA_MODE_ID = "grok-420-computer-use-sa";
 
 const MODELS = [
   {
-    id: "grok-4-auto",
-    modeId: "auto",
-    object: "model",
-    owned_by: "xai-web"
-  },
-  {
-    id: "grok-4-fast",
-    modeId: "fast",
-    object: "model",
-    owned_by: "xai-web"
-  },
-  {
-    id: "grok-4-expert",
-    modeId: "expert",
-    object: "model",
-    owned_by: "xai-web"
-  },
-  {
-    id: "grok-4-heavy",
-    modeId: "heavy",
-    object: "model",
-    owned_by: "xai-web"
-  },
-  {
     id: "grok-4.3-auto",
     modeId: "auto",
     object: "model",
@@ -71,11 +47,7 @@ const aliasToMode = new Map([
   ["grok-fast", "fast"],
   ["grok-expert", "expert"],
   ["grok-heavy", "heavy"],
-  ["grok-4", "auto"],
-  ["grok-4-auto", "auto"],
-  ["grok-4-fast", "fast"],
-  ["grok-4-expert", "expert"],
-  ["grok-4-heavy", "heavy"],
+
   ["grok-4.3", "auto"],
   ["grok-4.3-auto", "auto"],
   ["grok-4.3-fast", "fast"],
@@ -84,11 +56,6 @@ const aliasToMode = new Map([
   ["grok-4.3-beta", GROK_43_BETA_MODE_ID],
   ["grok-4-3", "auto"],
   ["grok-4-3-beta", GROK_43_BETA_MODE_ID],
-  ["grok-3", "auto"],
-  ["grok-3-auto", "auto"],
-  ["grok-3-fast", "fast"],
-  ["grok-3-expert", "expert"],
-  ["grok-3-heavy", "heavy"],
   ["grok 4.3", "auto"],
   ["grok 4.3 beta", GROK_43_BETA_MODE_ID],
   ["grok 4.3 (beta)", GROK_43_BETA_MODE_ID],
@@ -124,25 +91,25 @@ function inferModeFromModelName(normalizedModel) {
 }
 
 export function resolveModel(requestedModel, reasoningEffort, fallbackModel) {
-  const normalized = (requestedModel || fallbackModel || "grok-4-auto").toLowerCase();
+  const normalized = (requestedModel || fallbackModel || "grok-4.3-auto").toLowerCase();
   const explicitMode = aliasToMode.get(normalized) || inferModeFromModelName(normalized);
 
   if (explicitMode) {
     return {
-      publicModel: requestedModel || fallbackModel || "grok-4-auto",
+      publicModel: requestedModel || fallbackModel || "grok-4.3-auto",
       grokModeId: explicitMode
     };
   }
 
   if (reasoningEffort === "high") {
     return {
-      publicModel: requestedModel || fallbackModel || "grok-4-expert",
+      publicModel: requestedModel || fallbackModel || "grok-4.3-expert",
       grokModeId: "expert"
     };
   }
 
   return {
-    publicModel: requestedModel || fallbackModel || "grok-4-auto",
+    publicModel: requestedModel || fallbackModel || "grok-4.3-auto",
     grokModeId: "auto"
   };
 }

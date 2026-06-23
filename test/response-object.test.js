@@ -6,7 +6,7 @@ test("createResponseEnvelope defaults image outputs to result_url without inline
   const response = createResponseEnvelope({
     id: "resp_123",
     messageId: "msg_123",
-    model: "grok-4-auto",
+    model: "grok-4.3-auto",
     text: "Done.",
     images: [
       {

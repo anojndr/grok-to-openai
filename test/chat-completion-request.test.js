@@ -7,7 +7,7 @@ import {
 
 test("prepareChatCompletionRequest parses, normalizes, and resolves once", async () => {
   const reqBody = {
-    model: "grok-4-fast",
+    model: "grok-4.3-fast",
     messages: [{ role: "user", content: "Hello" }]
   };
   const parsed = {
@@ -22,7 +22,7 @@ test("prepareChatCompletionRequest parses, normalizes, and resolves once", async
 
   const prepared = await prepareChatCompletionRequest(reqBody, {
     fileStore: { sentinel: "store" },
-    defaultModel: "grok-4-auto",
+    defaultModel: "grok-4.3-auto",
     parse(value) {
       calls.push(["parse", value]);
       return parsed;
@@ -45,14 +45,14 @@ test("prepareChatCompletionRequest parses, normalizes, and resolves once", async
   assert.deepEqual(calls, [
     ["parse", reqBody],
     ["normalize", parsed, { sentinel: "store" }],
-    ["resolve", "grok-4-fast", undefined, "grok-4-auto"]
+    ["resolve", "grok-4.3-fast", undefined, "grok-4.3-auto"]
   ]);
 });
 
 test("runPreparedChatCompletionRequest uses prepared context without re-parsing or re-resolving", async () => {
   const prepared = {
     parsed: {
-      model: "grok-4-fast",
+      model: "grok-4.3-fast",
       messages: [{ role: "user", content: "Hello" }]
     },
     normalized: {

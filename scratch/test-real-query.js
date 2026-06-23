@@ -10,7 +10,7 @@ async function main() {
     browserProfileDir: process.env.BROWSER_PROFILE_DIR || '.browser-profile',
     headless: process.env.HEADLESS !== 'false',
     chromeExecutablePath: process.env.CHROME_EXECUTABLE_PATH || undefined,
-    defaultModel: process.env.DEFAULT_MODEL || 'grok-4-auto',
+    defaultModel: process.env.DEFAULT_MODEL || 'grok-4.3-auto',
     importCookiesOnBoot: process.env.IMPORT_COOKIES_ON_BOOT === 'true',
   };
 
@@ -28,7 +28,7 @@ async function main() {
     let responseText = "";
     const response = await client.createConversationAndRespond({
       instructions: "You are a helpful assistant.",
-      model: "grok-4-auto",
+      model: "grok-4.3-auto",
       message: "Hello! Reply with exactly the words 'Bypassed anti bot' and nothing else.",
       fileAttachments: [],
       onToken: (token) => {

@@ -33,9 +33,9 @@ Playwright browser profile. It does not use the official xAI API.
   fallback selection advances in deterministic top-to-bottom order, wraps back
   to the secondary account after the last fallback, and raises after two full
   fallback passes fail.
-- If `grok-4-auto`, `grok-4-expert`, `grok-4-heavy`, or `grok-4.3-beta`
+- If `grok-4.3-auto`, `grok-4.3-expert`, `grok-4.3-heavy`, or `grok-4.3-beta`
   exhaust every configured account or hit an upstream beta stream failure, the
-  bridge retries once in `grok-4-fast`.
+  bridge retries once in `grok-4.3-fast`.
 - Follow-up requests first try the account that owns the stored Grok thread. If
   that follow-up fails, the bridge rebuilds the full conversation history,
   including attachments, as one replay message and retries across the account
@@ -53,15 +53,15 @@ Playwright browser profile. It does not use the official xAI API.
 
 `GET /v1/models` returns:
 
-- `grok-4-auto`
-- `grok-4-fast`
-- `grok-4-expert`
-- `grok-4-heavy`
+- `grok-4.3-auto`
+- `grok-4.3-fast`
+- `grok-4.3-expert`
+- `grok-4.3-heavy`
 - `grok-4.3-beta`
 
 Accepted aliases are intentionally broad:
 
-- `grok`, `grok-latest`, `grok-4`, `grok-3`, `gpt-4o`, `gpt-4.1`, and `gpt-5`
+- `grok`, `grok-latest`, `grok-4.3`, `gpt-4o`, `gpt-4.1`, and `gpt-5`
   all route to auto mode.
 - `grok-4.3-beta`, `grok-4.3`, `grok 4.3 (beta)`, and the exact upstream
   `grok-420-computer-use-sa` all route to Grok 4.3 beta mode.
@@ -145,7 +145,7 @@ is used for both generated images and searched/public image cards:
 - Streaming forwards Grok token deltas live for every model instead of
   buffering `auto`, `expert`, or `heavy` responses until completion.
 - Live streaming suppresses Grok thinking-phase tokens. This uses Grok's actual
-  stream metadata, so `grok-4-auto` also hides thought when it internally
+  stream metadata, so `grok-4.3-auto` also hides thought when it internally
   escalates to Expert or Heavy behavior.
 - If Grok's final normalized answer differs from the raw live stream, the
   closing `/v1/responses` events still carry the canonical final text, with
@@ -197,7 +197,7 @@ IMPORT_COOKIES_ON_BOOT=true
 BROWSER_PROFILE_DIR=.browser-profile
 DATA_DIR=.data
 DATABASE_URL=postgresql://user:pass@db.example.com:5432/groktoopenai?sslmode=disable
-DEFAULT_MODEL=grok-4-auto
+DEFAULT_MODEL=grok-4.3-auto
 IMGBB_API_KEY=your-imgbb-api-key
 IMGBB_EXPIRATION=
 ALLOW_ORIGINS=*
@@ -286,7 +286,7 @@ curl http://127.0.0.1:8787/v1/responses \
   -H "Authorization: Bearer sk-local-test" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "grok-4-auto",
+    "model": "grok-4.3-auto",
     "input": "Reply with the single word PONG."
   }'
 ```
@@ -298,7 +298,7 @@ curl -N http://127.0.0.1:8787/v1/responses \
   -H "Authorization: Bearer sk-local-test" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "grok-4-fast",
+    "model": "grok-4.3-fast",
     "input": "Write one short paragraph.",
     "stream": true
   }'
@@ -311,7 +311,7 @@ curl http://127.0.0.1:8787/v1/chat/completions \
   -H "Authorization: Bearer sk-local-test" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "grok-4-auto",
+    "model": "grok-4.3-auto",
     "messages": [
       {
         "role": "user",
@@ -345,7 +345,7 @@ curl http://127.0.0.1:8787/v1/responses \
   -H "Authorization: Bearer sk-local-test" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "grok-4-auto",
+    "model": "grok-4.3-auto",
     "input": [
       {
         "role": "user",
@@ -365,7 +365,7 @@ curl http://127.0.0.1:8787/v1/responses \
   -H "Authorization: Bearer sk-local-test" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "grok-4-auto",
+    "model": "grok-4.3-auto",
     "input": [
       {
         "role": "user",
@@ -384,7 +384,7 @@ Continue a prior Responses thread:
 FIRST=$(curl -s http://127.0.0.1:8787/v1/responses \
   -H "Authorization: Bearer sk-local-test" \
   -H "Content-Type: application/json" \
-  -d '{"model":"grok-4-auto","input":"Tell me a joke."}')
+  -d '{"model":"grok-4.3-auto","input":"Tell me a joke."}')
 
 RESP_ID=$(printf '%s' "$FIRST" | node -e 'process.stdin.once("data", d => console.log(JSON.parse(d).id))')
 
@@ -392,7 +392,7 @@ curl http://127.0.0.1:8787/v1/responses \
   -H "Authorization: Bearer sk-local-test" \
   -H "Content-Type: application/json" \
   -d "{
-    \"model\": \"grok-4-auto\",
+    \"model\": \"grok-4.3-auto\",
     \"previous_response_id\": \"$RESP_ID\",
     \"input\": [{\"role\":\"user\",\"content\":\"Tell me another.\"}]
   }"
@@ -405,7 +405,7 @@ curl http://127.0.0.1:8787/v1/responses \
   -H "Authorization: Bearer sk-local-test" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "grok-4-auto",
+    "model": "grok-4.3-auto",
     "input": "Summarize the latest AI news in one paragraph.",
     "source_attribution": {
       "include_sources": true,
