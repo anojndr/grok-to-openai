@@ -382,7 +382,8 @@ export class GrokClient {
     instructions,
     model,
     message,
-    fileAttachments,
+    fileAttachments = [],
+    imageAttachments = [],
     onToken
   }) {
     const { publicModel, grokModeId } = resolveModel(
@@ -401,7 +402,7 @@ export class GrokClient {
         temporary: false,
         message,
         fileAttachments,
-        imageAttachments: [],
+        imageAttachments,
         disableSearch: false,
         enableImageGeneration: true,
         returnImageBytes: false,
@@ -432,7 +433,8 @@ export class GrokClient {
     instructions,
     model,
     message,
-    fileAttachments,
+    fileAttachments = [],
+    imageAttachments = [],
     onToken
   }) {
     const { publicModel, grokModeId } = resolveModel(
@@ -452,7 +454,7 @@ export class GrokClient {
         parentResponseId,
         disableSearch: false,
         enableImageGeneration: true,
-        imageAttachments: [],
+        imageAttachments,
         returnImageBytes: false,
         returnRawGrokInXaiRequest: false,
         fileAttachments,

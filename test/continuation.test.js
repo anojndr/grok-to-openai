@@ -568,7 +568,9 @@ test("continueResponseConversation falls back to replaying history when the Grok
   assert.equal(createConversationArgs.instructions, "Answer only the latest user message.");
   assert.equal(createConversationArgs.model, "grok-4.3-auto");
   assert.deepEqual(createConversationArgs.fileAttachments, [
-    "upload_2_1",
+    "upload_2_1"
+  ]);
+  assert.deepEqual(createConversationArgs.imageAttachments, [
     "upload_2_2"
   ]);
   assert.match(
@@ -764,8 +766,10 @@ test("continueResponseConversation replays full history for xAI stream missing-c
   ]);
   assert.deepEqual(createConversationArgs.fileAttachments, [
     "upload_2_1",
+    "upload_2_3"
+  ]);
+  assert.deepEqual(createConversationArgs.imageAttachments, [
     "upload_2_2",
-    "upload_2_3",
     "upload_2_4"
   ]);
   assert.match(

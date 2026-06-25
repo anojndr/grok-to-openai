@@ -444,11 +444,23 @@ export async function continueResponseConversation({
     const result = await accounts.withAccount(
       preferredAccountIndex,
       async (accountClient) => {
-        const fileAttachments = await uploadFilesForAccount(
+        const uploadedIds = await uploadFilesForAccount(
           uploadFilesToGrok,
           accountClient,
           lastUserMessage.files
         );
+
+        const fileAttachments = [];
+        const imageAttachments = [];
+        for (let i = 0; i < lastUserMessage.files.length; i++) {
+          const file = lastUserMessage.files[i];
+          const metadataId = uploadedIds[i];
+          if (file.mimeType && file.mimeType.startsWith("image/")) {
+            imageAttachments.push(metadataId);
+          } else {
+            fileAttachments.push(metadataId);
+          }
+        }
 
         return withFastModelFallback({
           publicModel,
@@ -461,6 +473,7 @@ export async function continueResponseConversation({
               model,
               message: lastUserMessage.text,
               fileAttachments,
+              imageAttachments,
               onToken: currentOnToken
             });
           }
@@ -495,11 +508,23 @@ export async function continueResponseConversation({
   });
 
   const replayResult = await accounts.withFallback(async (accountClient) => {
-    const replayFileAttachments = await uploadFilesForAccount(
+    const uploadedIds = await uploadFilesForAccount(
       uploadFilesToGrok,
       accountClient,
       replay.files
     );
+
+    const fileAttachments = [];
+    const imageAttachments = [];
+    for (let i = 0; i < replay.files.length; i++) {
+      const file = replay.files[i];
+      const metadataId = uploadedIds[i];
+      if (file.mimeType && file.mimeType.startsWith("image/")) {
+        imageAttachments.push(metadataId);
+      } else {
+        fileAttachments.push(metadataId);
+      }
+    }
 
     return withFastModelFallback({
       publicModel,
@@ -509,7 +534,8 @@ export async function continueResponseConversation({
           instructions,
           model,
           message: replay.message,
-          fileAttachments: replayFileAttachments,
+          fileAttachments,
+          imageAttachments,
           onToken: currentOnToken
         });
       }

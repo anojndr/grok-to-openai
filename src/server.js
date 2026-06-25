@@ -279,7 +279,19 @@ async function executeConversationRequest({
   onToken
 }) {
   const result = await grokAccounts.withFallback(async (accountClient) => {
-    const fileAttachments = await uploadFilesToGrok(accountClient, files);
+    const uploadedIds = await uploadFilesToGrok(accountClient, files);
+    const fileAttachments = [];
+    const imageAttachments = [];
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const metadataId = uploadedIds[i];
+      if (file.mimeType && file.mimeType.startsWith("image/")) {
+        imageAttachments.push(metadataId);
+      } else {
+        fileAttachments.push(metadataId);
+      }
+    }
 
     return withFastModelFallback({
       publicModel,
@@ -290,6 +302,7 @@ async function executeConversationRequest({
           model,
           message,
           fileAttachments,
+          imageAttachments,
           onToken: currentOnToken
         });
       }
