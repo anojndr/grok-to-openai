@@ -104,7 +104,13 @@ function looksLikeDirectAssistantResponse(response) {
 
 export function applyGrokEvent(state, payload) {
   if (payload.error) {
-    throw new HttpError(502, payload.error.message || "Grok request failed", payload.error);
+    const message = payload.error.message || "";
+    const isRateLimit =
+      /too\s*many\s*requests/i.test(message) ||
+      payload.error.code === 429 ||
+      payload.error.status === 429;
+    const status = isRateLimit ? 429 : 502;
+    throw new HttpError(status, message || "Grok request failed", payload.error);
   }
 
   const result = payload.result;

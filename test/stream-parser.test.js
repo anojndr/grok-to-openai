@@ -158,3 +158,34 @@ test("applyGrokEvent ignores empty streamed tokens while preserving the response
   assert.equal(state.sawVisibleToken, false);
   assert.equal(state.assistantText, "");
 });
+
+test("applyGrokEvent maps stream rate limit errors to HTTP 429", () => {
+  const state = collectGrokStreamingState();
+
+  assert.throws(
+    () => {
+      applyGrokEvent(state, {
+        error: {
+          message: "Too many requests",
+          code: 429
+        }
+      });
+    },
+    (error) => {
+      return error.name === "HttpError" && error.status === 429 && error.message === "Too many requests";
+    }
+  );
+
+  assert.throws(
+    () => {
+      applyGrokEvent(state, {
+        error: {
+          message: "Generic Grok failure"
+        }
+      });
+    },
+    (error) => {
+      return error.name === "HttpError" && error.status === 502 && error.message === "Generic Grok failure";
+    }
+  );
+});

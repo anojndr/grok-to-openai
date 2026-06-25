@@ -9,14 +9,25 @@ export class HttpError extends Error {
 
 export function toOpenAIError(error) {
   if (error instanceof HttpError) {
+    const status = error.status;
+    let type = "invalid_request_error";
+    let code = error.details?.code ?? null;
+
+    if (status === 429) {
+      type = "requests";
+      code = code ?? "rate_limit_exceeded";
+    } else if (status >= 500) {
+      type = "server_error";
+    }
+
     return {
-      status: error.status,
+      status,
       body: {
         error: {
           message: error.message,
-          type: "invalid_request_error",
+          type,
           param: null,
-          code: error.details?.code ?? null
+          code
         }
       }
     };

@@ -72,6 +72,16 @@ function isCloudflareResponse(response) {
   return isCloudflareErrorText(response?.text || "");
 }
 
+function isStorageExhaustedResponse(response) {
+  const text = response?.text || "";
+  return (
+    response?.meta?.status >= 400 &&
+    (text.includes("storage-exhausted") ||
+      text.includes("storage allowance") ||
+      text.includes("User exceeds their storage allowance"))
+  );
+}
+
 function isTransientUploadResponse(response) {
   const status = response?.meta?.status || 0;
 
@@ -253,6 +263,7 @@ export class GrokClient {
       this.config.fileUploadRetryDelaysMs,
       DEFAULT_FILE_UPLOAD_RETRY_DELAYS_MS
     );
+    let cleanedUpStorage = false;
 
     for (let attempt = 0; attempt < retryDelays.length; attempt += 1) {
       if (attempt > 0) {
@@ -280,6 +291,15 @@ export class GrokClient {
         }
 
         throw error;
+      }
+
+      if (response && response.meta && response.meta.status >= 400) {
+        if (isStorageExhaustedResponse(response) && !cleanedUpStorage) {
+          cleanedUpStorage = true;
+          await this.deleteOldestConversations(20);
+          attempt = Math.max(-1, attempt - 1);
+          continue;
+        }
       }
 
       if (
@@ -314,6 +334,47 @@ export class GrokClient {
           cause: error instanceof Error ? error.message : String(error)
         }
       );
+    }
+  }
+
+  async deleteConversation(conversationId) {
+    const requestId = createId("grokreq");
+    const response = await this.browser.request({
+      requestId,
+      url: `${this.config.grokBaseUrl}/rest/app-chat/conversations/${conversationId}`,
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json"
+      }
+    });
+
+    if (!response.meta || response.meta.status >= 400) {
+      throwGrokHttpError("Grok conversation deletion failed", response);
+    }
+    return true;
+  }
+
+  async deleteOldestConversations(count = 20) {
+    try {
+      console.warn("Grok storage exhausted. Fetching conversations to prune...");
+      const conversationsResponse = await this.requestJson({
+        path: "/rest/app-chat/conversations?limit=50",
+        method: "GET"
+      });
+      const list = conversationsResponse?.conversations ?? (Array.isArray(conversationsResponse) ? conversationsResponse : []);
+      if (!list.length) {
+        return;
+      }
+      const oldest = list.slice(-count);
+      console.warn(`Pruning ${oldest.length} oldest conversations to free up storage space.`);
+      for (const conv of oldest) {
+        const id = conv?.conversationId;
+        if (id) {
+          await this.deleteConversation(id).catch(() => {});
+        }
+      }
+    } catch (error) {
+      console.warn("Failed to delete oldest conversations:", error);
     }
   }
 

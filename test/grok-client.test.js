@@ -956,3 +956,143 @@ test("conversation requests reuse the same deviceEnvInfo object", async () => {
     requests[1].body.deviceEnvInfo
   );
 });
+
+test("deleteConversation makes a DELETE request to Grok API", async () => {
+  const requests = [];
+  const client = new GrokClient({
+    grokBaseUrl: "https://grok.com",
+    defaultModel: "grok-4.3-auto"
+  });
+
+  client.browser = {
+    async request(request) {
+      requests.push(request);
+      return {
+        meta: { status: 200 },
+        text: "{}"
+      };
+    }
+  };
+
+  const success = await client.deleteConversation("conv_123");
+  assert.equal(success, true);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].method, "DELETE");
+  assert.equal(requests[0].url, "https://grok.com/rest/app-chat/conversations/conv_123");
+});
+
+test("deleteOldestConversations lists and deletes oldest conversations", async () => {
+  const requests = [];
+  const client = new GrokClient({
+    grokBaseUrl: "https://grok.com",
+    defaultModel: "grok-4.3-auto"
+  });
+
+  client.browser = {
+    async request(request) {
+      requests.push(request);
+      if (request.method === "GET") {
+        return {
+          meta: { status: 200 },
+          text: JSON.stringify({
+            conversations: [
+              { conversationId: "conv_newest" },
+              { conversationId: "conv_mid" },
+              { conversationId: "conv_oldest" }
+            ]
+          })
+        };
+      }
+      return {
+        meta: { status: 200 },
+        text: "{}"
+      };
+    }
+  };
+
+  // Delete oldest 2 conversations (conv_mid and conv_oldest)
+  await client.deleteOldestConversations(2);
+
+  // Requests:
+  // 1. GET /rest/app-chat/conversations?limit=50
+  // 2. DELETE /rest/app-chat/conversations/conv_mid
+  // 3. DELETE /rest/app-chat/conversations/conv_oldest
+  assert.equal(requests.length, 3);
+  assert.equal(requests[0].method, "GET");
+  assert.equal(requests[1].method, "DELETE");
+  assert.equal(requests[1].url, "https://grok.com/rest/app-chat/conversations/conv_mid");
+  assert.equal(requests[2].method, "DELETE");
+  assert.equal(requests[2].url, "https://grok.com/rest/app-chat/conversations/conv_oldest");
+});
+
+test("uploadFile automatically self-heals by pruning conversations when storage is exhausted", async () => {
+  const requests = [];
+  const client = new GrokClient({
+    grokBaseUrl: "https://grok.com",
+    defaultModel: "grok-4.3-auto",
+    fileUploadRetryDelaysMs: [0]
+  });
+
+  client.browser = {
+    async request(request) {
+      requests.push(request);
+      if (request.url.includes("/upload-file")) {
+        if (requests.filter(r => r.url.includes("/upload-file")).length === 1) {
+          // First upload attempt fails with storage allowance error
+          return {
+            meta: { status: 400 },
+            text: JSON.stringify({
+              code: 8,
+              message: "User exceeds their storage allowance [WKE=file:storage-exhausted]",
+              details: []
+            })
+          };
+        }
+        // Second upload attempt (after deletion) succeeds
+        return {
+          meta: { status: 200 },
+          text: JSON.stringify({
+            fileMetadataId: "file-healed-123"
+          })
+        };
+      } else if (request.url.includes("/conversations") && request.method === "GET") {
+        return {
+          meta: { status: 200 },
+          text: JSON.stringify({
+            conversations: [
+              { conversationId: "conv_1" },
+              { conversationId: "conv_2" }
+            ]
+          })
+        };
+      }
+      return {
+        meta: { status: 200 },
+        text: "{}"
+      };
+    }
+  };
+
+  const uploadResult = await client.uploadFile({
+    filename: "notes.txt",
+    mimeType: "text/plain",
+    bytes: Buffer.from("test contents")
+  });
+
+  assert.equal(uploadResult.fileMetadataId, "file-healed-123");
+  
+  // Total requests:
+  // 1. POST /upload-file (fails)
+  // 2. GET /conversations?limit=50 (prune list)
+  // 3. DELETE /conversations/conv_1 (delete)
+  // 4. DELETE /conversations/conv_2 (delete)
+  // 5. POST /upload-file (retried, succeeds)
+  assert.equal(requests.length, 5);
+  assert.equal(requests[0].url.includes("/upload-file"), true);
+  assert.equal(requests[1].method, "GET");
+  assert.equal(requests[2].method, "DELETE");
+  assert.equal(requests[2].url.includes("/conv_1"), true);
+  assert.equal(requests[3].method, "DELETE");
+  assert.equal(requests[3].url.includes("/conv_2"), true);
+  assert.equal(requests[4].url.includes("/upload-file"), true);
+});
