@@ -288,6 +288,7 @@ async function executeConversationRequest({
       const metadataId = uploadedIds[i];
       if (file.mimeType && file.mimeType.startsWith("image/")) {
         imageAttachments.push(metadataId);
+        fileAttachments.push(metadataId);
       } else {
         fileAttachments.push(metadataId);
       }
