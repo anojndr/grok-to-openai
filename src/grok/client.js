@@ -296,7 +296,7 @@ export class GrokClient {
       if (response && response.meta && response.meta.status >= 400) {
         if (isStorageExhaustedResponse(response) && !cleanedUpStorage) {
           cleanedUpStorage = true;
-          await this.deleteOldestConversations(20);
+          await this.deleteOldestAssets(20);
           attempt = Math.max(-1, attempt - 1);
           continue;
         }
@@ -375,6 +375,47 @@ export class GrokClient {
       }
     } catch (error) {
       console.warn("Failed to delete oldest conversations:", error);
+    }
+  }
+
+  async deleteAsset(assetId) {
+    const requestId = createId("grokreq");
+    const response = await this.browser.request({
+      requestId,
+      url: `${this.config.grokBaseUrl}/rest/assets/${assetId}`,
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json"
+      }
+    });
+
+    if (!response.meta || response.meta.status >= 400) {
+      throwGrokHttpError("Grok asset deletion failed", response);
+    }
+    return true;
+  }
+
+  async deleteOldestAssets(count = 20) {
+    try {
+      console.warn("Grok storage exhausted. Fetching assets to prune...");
+      const assetsResponse = await this.requestJson({
+        path: "/rest/assets?pageSize=50&orderBy=ORDER_BY_LAST_USE_TIME",
+        method: "GET"
+      });
+      const list = assetsResponse?.assets ?? (Array.isArray(assetsResponse) ? assetsResponse : []);
+      if (!list.length) {
+        return;
+      }
+      const oldest = list.slice(-count);
+      console.warn(`Pruning ${oldest.length} oldest assets to free up storage space.`);
+      for (const asset of oldest) {
+        const id = asset?.assetId;
+        if (id) {
+          await this.deleteAsset(id).catch(() => {});
+        }
+      }
+    } catch (error) {
+      console.warn("Failed to delete oldest assets:", error);
     }
   }
 

@@ -1025,7 +1025,51 @@ test("deleteOldestConversations lists and deletes oldest conversations", async (
   assert.equal(requests[2].url, "https://grok.com/rest/app-chat/conversations/conv_oldest");
 });
 
-test("uploadFile automatically self-heals by pruning conversations when storage is exhausted", async () => {
+test("deleteOldestAssets lists and deletes oldest assets", async () => {
+  const requests = [];
+  const client = new GrokClient({
+    grokBaseUrl: "https://grok.com",
+    defaultModel: "grok-4.3-auto"
+  });
+
+  client.browser = {
+    async request(request) {
+      requests.push(request);
+      if (request.method === "GET") {
+        return {
+          meta: { status: 200 },
+          text: JSON.stringify({
+            assets: [
+              { assetId: "asset_newest" },
+              { assetId: "asset_mid" },
+              { assetId: "asset_oldest" }
+            ]
+          })
+        };
+      }
+      return {
+        meta: { status: 200 },
+        text: "{}"
+      };
+    }
+  };
+
+  // Delete oldest 2 assets (asset_mid and asset_oldest)
+  await client.deleteOldestAssets(2);
+
+  // Requests:
+  // 1. GET /rest/assets?pageSize=50&orderBy=ORDER_BY_LAST_USE_TIME
+  // 2. DELETE /rest/assets/asset_mid
+  // 3. DELETE /rest/assets/asset_oldest
+  assert.equal(requests.length, 3);
+  assert.equal(requests[0].method, "GET");
+  assert.equal(requests[1].method, "DELETE");
+  assert.equal(requests[1].url, "https://grok.com/rest/assets/asset_mid");
+  assert.equal(requests[2].method, "DELETE");
+  assert.equal(requests[2].url, "https://grok.com/rest/assets/asset_oldest");
+});
+
+test("uploadFile automatically self-heals by pruning assets when storage is exhausted", async () => {
   const requests = [];
   const client = new GrokClient({
     grokBaseUrl: "https://grok.com",
@@ -1055,13 +1099,13 @@ test("uploadFile automatically self-heals by pruning conversations when storage 
             fileMetadataId: "file-healed-123"
           })
         };
-      } else if (request.url.includes("/conversations") && request.method === "GET") {
+      } else if (request.url.includes("/assets") && request.method === "GET") {
         return {
           meta: { status: 200 },
           text: JSON.stringify({
-            conversations: [
-              { conversationId: "conv_1" },
-              { conversationId: "conv_2" }
+            assets: [
+              { assetId: "asset_1" },
+              { assetId: "asset_2" }
             ]
           })
         };
@@ -1083,16 +1127,16 @@ test("uploadFile automatically self-heals by pruning conversations when storage 
   
   // Total requests:
   // 1. POST /upload-file (fails)
-  // 2. GET /conversations?limit=50 (prune list)
-  // 3. DELETE /conversations/conv_1 (delete)
-  // 4. DELETE /conversations/conv_2 (delete)
+  // 2. GET /assets?pageSize=50... (prune list)
+  // 3. DELETE /assets/asset_1 (delete)
+  // 4. DELETE /assets/asset_2 (delete)
   // 5. POST /upload-file (retried, succeeds)
   assert.equal(requests.length, 5);
   assert.equal(requests[0].url.includes("/upload-file"), true);
   assert.equal(requests[1].method, "GET");
   assert.equal(requests[2].method, "DELETE");
-  assert.equal(requests[2].url.includes("/conv_1"), true);
+  assert.equal(requests[2].url.includes("/asset_1"), true);
   assert.equal(requests[3].method, "DELETE");
-  assert.equal(requests[3].url.includes("/conv_2"), true);
+  assert.equal(requests[3].url.includes("/asset_2"), true);
   assert.equal(requests[4].url.includes("/upload-file"), true);
 });
