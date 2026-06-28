@@ -522,6 +522,8 @@ async function getResponseBody(response) {
   return Buffer.isBuffer(body) ? body : Buffer.from(body);
 }
 
+let globalStatsigCache = null;
+
 export class BrowserSession {
   constructor(config) {
     this.config = config;
@@ -544,6 +546,7 @@ export class BrowserSession {
     this.statsigChunkUrl = null;
     this.statsigModuleId = null;
     this.bindingsInstalled = false;
+    globalStatsigCache = null;
   }
 
   async loadStatsigChunkSource() {
@@ -552,6 +555,12 @@ export class BrowserSession {
         url: this.statsigChunkUrl,
         moduleId: this.statsigModuleId
       };
+    }
+
+    if (globalStatsigCache) {
+      this.statsigChunkUrl = globalStatsigCache.url;
+      this.statsigModuleId = globalStatsigCache.moduleId;
+      return globalStatsigCache;
     }
 
     const page = await this.ensurePage();
@@ -629,10 +638,12 @@ export class BrowserSession {
     this.statsigChunkUrl = generatorUrl;
     this.statsigModuleId = numericModuleId;
 
-    return {
+    globalStatsigCache = {
       url: this.statsigChunkUrl,
       moduleId: this.statsigModuleId
     };
+
+    return globalStatsigCache;
   }
 
   async init() {
@@ -779,10 +790,12 @@ export class BrowserSession {
         waitUntil: "domcontentloaded"
       });
       try {
-        await page.waitForLoadState("networkidle", { timeout: 3000 });
+        const networkIdleTimeout = this.config.browserNetworkIdleTimeoutMs ?? 1000;
+        await page.waitForLoadState("networkidle", { timeout: networkIdleTimeout });
       } catch (e) {}
       try {
-        await page.waitForTimeout(2000);
+        const pageLoadDelay = this.config.browserPageLoadDelayMs ?? 1000;
+        await page.waitForTimeout(pageLoadDelay);
       } catch (e) {}
       await this.validatePage(page, response);
 

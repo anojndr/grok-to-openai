@@ -46,6 +46,14 @@ export const config = {
   grokPassword: process.env.GROK_PASSWORD ?? "",
   headless: envBool("HEADLESS", true),
   importCookiesOnBoot: envBool("IMPORT_COOKIES_ON_BOOT", true),
+  browserNetworkIdleTimeoutMs: Number(process.env.BROWSER_NETWORK_IDLE_TIMEOUT_MS ?? "1000"),
+  browserPageLoadDelayMs: Number(process.env.BROWSER_PAGE_LOAD_DELAY_MS ?? "1000"),
+  responseHydrationDelaysMs: process.env.RESPONSE_HYDRATION_DELAYS_MS
+    ? process.env.RESPONSE_HYDRATION_DELAYS_MS.split(",").map(Number).filter(Number.isFinite)
+    : null,
+  responseHydrationThinkingDelaysMs: process.env.RESPONSE_HYDRATION_THINKING_DELAYS_MS
+    ? process.env.RESPONSE_HYDRATION_THINKING_DELAYS_MS.split(",").map(Number).filter(Number.isFinite)
+    : null,
   defaultModel: process.env.DEFAULT_MODEL ?? "grok-4.3-auto",
   defaultMode: process.env.DEFAULT_MODE ?? "auto",
   allowOrigins: process.env.ALLOW_ORIGINS ?? "*",

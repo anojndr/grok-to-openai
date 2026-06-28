@@ -25,6 +25,14 @@ export class GrokAccountPool {
     this.unavailableAccountIndexes = new Set();
   }
 
+  async init() {
+    const accounts = await this.getAccounts();
+    const primaryAccount = this.getPrimaryAccount(accounts);
+    if (primaryAccount) {
+      await primaryAccount.client.init();
+    }
+  }
+
   async getAccounts() {
     if (this.accountsPromise) {
       return this.accountsPromise;

@@ -1007,4 +1007,8 @@ server = app.listen(config.port, config.host, () => {
   console.log(
     `grok-to-openai listening on http://${config.host}:${config.port}`
   );
+
+  grokAccounts.init().catch((err) => {
+    console.error("Failed to pre-initialize Grok account pool on boot:", err);
+  });
 });

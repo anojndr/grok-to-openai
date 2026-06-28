@@ -41,11 +41,13 @@ function isAssistantSender(sender) {
 
 const DEFAULT_RESPONSE_HYDRATION_DELAYS_MS = Object.freeze([
   0,
-  250,
-  500,
-  1000,
-  2000,
-  4000
+  50,
+  100,
+  200,
+  400,
+  800,
+  1500,
+  3000
 ]);
 
 const DEFAULT_FILE_UPLOAD_RETRY_DELAYS_MS = Object.freeze([
@@ -153,6 +155,7 @@ async function recoverFromUploadError(browser, error, attempt) {
 
 const DEFAULT_THINKING_RESPONSE_HYDRATION_DELAYS_MS = Object.freeze([
   ...DEFAULT_RESPONSE_HYDRATION_DELAYS_MS,
+  4000,
   8000,
   15000,
   ...Array.from({ length: 11 }, () => 30000)
@@ -242,6 +245,10 @@ export class GrokClient {
   constructor(config) {
     this.config = config;
     this.browser = new BrowserSession(config);
+  }
+
+  async init() {
+    await this.browser.init();
   }
 
   async uploadFile({ filename, mimeType, bytes }) {
