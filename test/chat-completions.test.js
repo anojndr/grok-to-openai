@@ -24,7 +24,7 @@ test("renderChatCompletionContent appends markdown image embeds", () => {
 
 test("createChatCompletion exposes bridge-specific image urls", () => {
   const response = createChatCompletion({
-    model: "grok-4.3-auto",
+    model: "grok-4.5-auto",
     content: "![Generated Image](https://assets.grok.com/generated/cat.jpg)",
     imageUrls: [
       {
@@ -54,7 +54,7 @@ test("createChatCompletion exposes bridge-specific image urls", () => {
 
 test("createChatCompletion preserves searched image source metadata", () => {
   const response = createChatCompletion({
-    model: "grok-4.3-auto",
+    model: "grok-4.5-auto",
     content: "![Example Source image](https://images.example.com/face.jpg)",
     imageUrls: [
       {

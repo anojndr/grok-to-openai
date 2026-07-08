@@ -14,7 +14,7 @@ import {
   hasCompleteAssistantPayload as hasCompleteAssistantPayloadValue,
   hasRenderableAssistantPayload
 } from "./assistant-payload.js";
-import { resolveModel, GROK_43_BETA_MODE_ID } from "./model-map.js";
+import { resolveModel, GROK_45_BETA_MODE_ID } from "./model-map.js";
 
 const DEVICE_ENV_INFO = Object.freeze({
   darkModeEnabled: false,

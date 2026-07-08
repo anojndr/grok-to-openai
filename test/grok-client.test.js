@@ -7,7 +7,7 @@ function createClient(configOverrides = {}) {
   const requests = [];
   const client = new GrokClient({
     grokBaseUrl: "https://grok.com",
-    defaultModel: "grok-4.3-auto",
+    defaultModel: "grok-4.5-auto",
     ...configOverrides
   });
 
@@ -124,7 +124,7 @@ test("uploadFile infers CSV text uploads from the filename and sends UTF-8 bytes
 test("uploadFile reports Cloudflare challenge pages as blocked Grok sessions", async () => {
   const client = new GrokClient({
     grokBaseUrl: "https://grok.com",
-    defaultModel: "grok-4.3-auto",
+    defaultModel: "grok-4.5-auto",
     fileUploadRetryDelaysMs: [0]
   });
 
@@ -156,7 +156,7 @@ test("uploadFile retries a transient Cloudflare challenge before returning the u
   let recreatePageCalls = 0;
   const client = new GrokClient({
     grokBaseUrl: "https://grok.com",
-    defaultModel: "grok-4.3-auto",
+    defaultModel: "grok-4.5-auto",
     fileUploadRetryDelaysMs: [0, 0]
   });
 
@@ -203,7 +203,7 @@ test("uploadFile retries when the browser session throws a transient Cloudflare 
   let recreateContextCalls = 0;
   const client = new GrokClient({
     grokBaseUrl: "https://grok.com",
-    defaultModel: "grok-4.3-auto",
+    defaultModel: "grok-4.5-auto",
     fileUploadRetryDelaysMs: [0, 0]
   });
 
@@ -249,7 +249,7 @@ test("uploadFile retries transient upstream upload failures before returning the
   const requests = [];
   const client = new GrokClient({
     grokBaseUrl: "https://grok.com",
-    defaultModel: "grok-4.3-auto",
+    defaultModel: "grok-4.5-auto",
     fileUploadRetryDelaysMs: [0, 0]
   });
 
@@ -296,7 +296,7 @@ test("uploadFile classifies a 200 Cloudflare challenge body as a blocked Grok se
   let recreateContextCalls = 0;
   const client = new GrokClient({
     grokBaseUrl: "https://grok.com",
-    defaultModel: "grok-4.3-auto",
+    defaultModel: "grok-4.5-auto",
     fileUploadRetryDelaysMs: [0, 0, 0]
   });
 
@@ -338,7 +338,7 @@ test("uploadFile classifies a 200 Cloudflare challenge body as a blocked Grok se
 test("createConversationAndRespond captures a delayed final response without a trailing newline", async () => {
   const client = new GrokClient({
     grokBaseUrl: "https://grok.com",
-    defaultModel: "grok-4.3-auto"
+    defaultModel: "grok-4.5-auto"
   });
 
   client.browser = {
@@ -366,7 +366,7 @@ test("createConversationAndRespond captures a delayed final response without a t
   };
 
   const result = await client.createConversationAndRespond({
-    model: "grok-4.3-auto",
+    model: "grok-4.5-auto",
     message: "Run this snippet and summarize the result."
   });
 
@@ -378,7 +378,7 @@ test("addResponse hydrates the final assistant response when the stream closes b
   const requests = [];
   const client = new GrokClient({
     grokBaseUrl: "https://grok.com",
-    defaultModel: "grok-4.3-auto"
+    defaultModel: "grok-4.5-auto"
   });
 
   client.browser = {
@@ -457,7 +457,7 @@ test("addResponse hydrates the final assistant response when the stream closes b
   const result = await client.addResponse({
     conversationId: "conv_123",
     parentResponseId: "parent_123",
-    model: "grok-4.3-auto",
+    model: "grok-4.5-auto",
     message: "Follow up"
   });
 
@@ -471,7 +471,7 @@ test("createConversationAndRespond hydrates the final assistant response by stre
   const requests = [];
   const client = new GrokClient({
     grokBaseUrl: "https://grok.com",
-    defaultModel: "grok-4.3-auto",
+    defaultModel: "grok-4.5-auto",
     responseHydrationThinkingDelaysMs: [0]
   });
 
@@ -530,7 +530,7 @@ test("createConversationAndRespond hydrates the final assistant response by stre
   };
 
   const result = await client.createConversationAndRespond({
-    model: "grok-4.3-expert",
+    model: "grok-4.5-expert",
     message: "Follow up"
   });
 
@@ -546,7 +546,7 @@ test("createConversationAndRespond keeps polling until the saved assistant respo
   let loadResponsesAttempts = 0;
   const client = new GrokClient({
     grokBaseUrl: "https://grok.com",
-    defaultModel: "grok-4.3-auto",
+    defaultModel: "grok-4.5-auto",
     responseHydrationThinkingDelaysMs: [0, 1, 1]
   });
 
@@ -625,7 +625,7 @@ test("createConversationAndRespond keeps polling until the saved assistant respo
   };
 
   const result = await client.createConversationAndRespond({
-    model: "grok-4.3-expert",
+    model: "grok-4.5-expert",
     message: "Follow up"
   });
 
@@ -637,7 +637,7 @@ test("createConversationAndRespond keeps polling past placeholder assistant mess
   let loadResponsesAttempts = 0;
   const client = new GrokClient({
     grokBaseUrl: "https://grok.com",
-    defaultModel: "grok-4.3-auto",
+    defaultModel: "grok-4.5-auto",
     responseHydrationThinkingDelaysMs: [0, 1]
   });
 
@@ -710,7 +710,7 @@ test("createConversationAndRespond keeps polling past placeholder assistant mess
   };
 
   const result = await client.createConversationAndRespond({
-    model: "grok-4.3-expert",
+    model: "grok-4.5-expert",
     message: "Follow up"
   });
 
@@ -723,7 +723,7 @@ test("createConversationAndRespond rejects empty assistant responses that includ
   const requests = [];
   const client = new GrokClient({
     grokBaseUrl: "https://grok.com",
-    defaultModel: "grok-4.3-auto",
+    defaultModel: "grok-4.5-auto",
     responseHydrationDelaysMs: [0],
     responseHydrationThinkingDelaysMs: [0]
   });
@@ -792,7 +792,7 @@ test("createConversationAndRespond rejects empty assistant responses that includ
 
   await assert.rejects(
     client.createConversationAndRespond({
-      model: "grok-4.3-fast",
+      model: "grok-4.5-fast",
       message: "Reply with exactly: pong"
     }),
     (error) => {
@@ -812,7 +812,7 @@ test("createConversationAndRespond rejects empty assistant responses that includ
 test("createConversationAndRespond classifies xAI browser context stream failures as transient upstream errors", async () => {
   const client = new GrokClient({
     grokBaseUrl: "https://grok.com",
-    defaultModel: "grok-4.3-auto",
+    defaultModel: "grok-4.5-auto",
     responseHydrationDelaysMs: [0],
     responseHydrationThinkingDelaysMs: [0]
   });
@@ -851,7 +851,7 @@ test("createConversationAndRespond classifies xAI browser context stream failure
 
   await assert.rejects(
     client.createConversationAndRespond({
-      model: "grok-4.3-beta",
+      model: "grok-4.5-beta",
       message: "Reply with exactly: pong"
     }),
     (error) => {
@@ -868,7 +868,7 @@ test("createConversationAndRespond forwards heavy mode IDs to Grok", async () =>
   const requests = [];
   const client = new GrokClient({
     grokBaseUrl: "https://grok.com",
-    defaultModel: "grok-4.3-auto"
+    defaultModel: "grok-4.5-auto"
   });
 
   client.browser = {
@@ -884,7 +884,7 @@ test("createConversationAndRespond forwards heavy mode IDs to Grok", async () =>
   };
 
   await client.createConversationAndRespond({
-    model: "grok-4.3-heavy",
+    model: "grok-4.5-heavy",
     message: "Think harder."
   });
 
@@ -892,11 +892,11 @@ test("createConversationAndRespond forwards heavy mode IDs to Grok", async () =>
   assert.equal(requests[0].body.modeId, "heavy");
 });
 
-test("createConversationAndRespond forwards Grok 4.3 beta mode IDs to Grok", async () => {
+test("createConversationAndRespond forwards Grok 4.5 beta mode IDs to Grok", async () => {
   const requests = [];
   const client = new GrokClient({
     grokBaseUrl: "https://grok.com",
-    defaultModel: "grok-4.3-auto"
+    defaultModel: "grok-4.5-auto"
   });
 
   client.browser = {
@@ -912,7 +912,7 @@ test("createConversationAndRespond forwards Grok 4.3 beta mode IDs to Grok", asy
   };
 
   await client.createConversationAndRespond({
-    model: "grok-4.3-beta",
+    model: "grok-4.5-beta",
     message: "Use the beta model."
   });
 
@@ -924,7 +924,7 @@ test("conversation requests reuse the same deviceEnvInfo object", async () => {
   const requests = [];
   const client = new GrokClient({
     grokBaseUrl: "https://grok.com",
-    defaultModel: "grok-4.3-auto"
+    defaultModel: "grok-4.5-auto"
   });
 
   client.browser = {
@@ -940,13 +940,13 @@ test("conversation requests reuse the same deviceEnvInfo object", async () => {
   };
 
   await client.createConversationAndRespond({
-    model: "grok-4.3-auto",
+    model: "grok-4.5-auto",
     message: "First"
   });
   await client.addResponse({
     conversationId: "conv_123",
     parentResponseId: "resp_123",
-    model: "grok-4.3-auto",
+    model: "grok-4.5-auto",
     message: "Second"
   });
 
@@ -961,7 +961,7 @@ test("deleteConversation makes a DELETE request to Grok API", async () => {
   const requests = [];
   const client = new GrokClient({
     grokBaseUrl: "https://grok.com",
-    defaultModel: "grok-4.3-auto"
+    defaultModel: "grok-4.5-auto"
   });
 
   client.browser = {
@@ -985,7 +985,7 @@ test("deleteOldestConversations lists and deletes oldest conversations", async (
   const requests = [];
   const client = new GrokClient({
     grokBaseUrl: "https://grok.com",
-    defaultModel: "grok-4.3-auto"
+    defaultModel: "grok-4.5-auto"
   });
 
   client.browser = {
@@ -1029,7 +1029,7 @@ test("deleteOldestAssets lists and deletes oldest assets", async () => {
   const requests = [];
   const client = new GrokClient({
     grokBaseUrl: "https://grok.com",
-    defaultModel: "grok-4.3-auto"
+    defaultModel: "grok-4.5-auto"
   });
 
   client.browser = {
@@ -1073,7 +1073,7 @@ test("uploadFile automatically self-heals by pruning assets when storage is exha
   const requests = [];
   const client = new GrokClient({
     grokBaseUrl: "https://grok.com",
-    defaultModel: "grok-4.3-auto",
+    defaultModel: "grok-4.5-auto",
     fileUploadRetryDelaysMs: [0]
   });
 

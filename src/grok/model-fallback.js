@@ -1,7 +1,7 @@
-import { GROK_43_BETA_MODE_ID, resolveModel } from "./model-map.js";
+import { GROK_45_BETA_MODE_ID, resolveModel } from "./model-map.js";
 import { GROK_SESSION_BLOCKED_ERROR_CODE } from "./browser-session.js";
 
-const FAST_FALLBACK_MODEL = "grok-4.3-fast";
+const FAST_FALLBACK_MODEL = "grok-4.5-fast";
 
 export function shouldFallbackToFast(publicModel) {
   const { grokModeId } = resolveModel(publicModel, undefined, publicModel);
@@ -9,7 +9,7 @@ export function shouldFallbackToFast(publicModel) {
     grokModeId === "auto" ||
     grokModeId === "expert" ||
     grokModeId === "heavy" ||
-    grokModeId === GROK_43_BETA_MODE_ID
+    grokModeId === GROK_45_BETA_MODE_ID
   );
 }
 

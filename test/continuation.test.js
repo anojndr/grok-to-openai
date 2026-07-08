@@ -546,7 +546,7 @@ test("continueResponseConversation falls back to replaying history when the Grok
       }
     ],
     instructions: "Answer only the latest user message.",
-    publicModel: "grok-4.3-auto",
+    publicModel: "grok-4.5-auto",
     grokClient,
     uploadFilesToGrok,
     fileStore,
@@ -566,7 +566,7 @@ test("continueResponseConversation falls back to replaying history when the Grok
     "turn-005-user-attachment-001-follow-up.png"
   ]);
   assert.equal(createConversationArgs.instructions, "Answer only the latest user message.");
-  assert.equal(createConversationArgs.model, "grok-4.3-auto");
+  assert.equal(createConversationArgs.model, "grok-4.5-auto");
   assert.deepEqual(createConversationArgs.fileAttachments, [
     "upload_2_1",
     "upload_2_2"
@@ -582,7 +582,7 @@ test("continueResponseConversation falls back to replaying history when the Grok
   assert.match(createConversationArgs.message, /Turn 5 \| User/);
   assert.deepEqual(result, {
     accountIndex: 0,
-    model: "grok-4.3-auto",
+    model: "grok-4.5-auto",
     state: {
       responses: []
     }
@@ -639,7 +639,7 @@ test("continueResponseConversation does not hydrate prior history unless replay 
       }
     ],
     instructions: "Answer only the latest user message.",
-    publicModel: "grok-4.3-auto",
+    publicModel: "grok-4.5-auto",
     grokClient,
     uploadFilesToGrok,
     fileStore,
@@ -654,7 +654,7 @@ test("continueResponseConversation does not hydrate prior history unless replay 
   assert.equal(historyLoadCalls, 0);
   assert.deepEqual(result, {
     accountIndex: 0,
-    model: "grok-4.3-auto",
+    model: "grok-4.5-auto",
     state: {
       responses: []
     }
@@ -752,7 +752,7 @@ test("continueResponseConversation replays full history for xAI stream missing-c
       }
     ],
     instructions: "Answer only the latest user message.",
-    publicModel: "grok-4.3-auto",
+    publicModel: "grok-4.5-auto",
     grokClient,
     uploadFilesToGrok,
     fileStore
@@ -789,7 +789,7 @@ test("continueResponseConversation replays full history for xAI stream missing-c
   );
   assert.deepEqual(result, {
     accountIndex: 0,
-    model: "grok-4.3-auto",
+    model: "grok-4.5-auto",
     state: {
       responses: []
     }
@@ -884,7 +884,7 @@ test("continueResponseConversation replays full history on follow-up errors so a
       }
     ],
     instructions: "Answer only the latest user message.",
-    publicModel: "grok-4.3-auto",
+    publicModel: "grok-4.5-auto",
     grokAccounts,
     uploadFilesToGrok,
     fileStore
@@ -897,7 +897,7 @@ test("continueResponseConversation replays full history on follow-up errors so a
   ]);
   assert.deepEqual(result, {
     accountIndex: 1,
-    model: "grok-4.3-auto",
+    model: "grok-4.5-auto",
     state: {
       responses: []
     }
@@ -955,7 +955,7 @@ test("continueResponseConversation tries grok fast on the same replay account be
         async createConversationAndRespond(args) {
           replayModels.push(args.model);
 
-          if (args.model === "grok-4.3-auto") {
+          if (args.model === "grok-4.5-auto") {
             throw new HttpError(503, "Grok request failed: upstream overloaded");
           }
 
@@ -996,19 +996,19 @@ test("continueResponseConversation tries grok fast on the same replay account be
       }
     ],
     instructions: "Answer only the latest user message.",
-    publicModel: "grok-4.3-auto",
+    publicModel: "grok-4.5-auto",
     grokAccounts,
     uploadFilesToGrok,
     fileStore
   });
 
-  assert.deepEqual(replayModels, ["grok-4.3-auto", "grok-4.3-fast"]);
+  assert.deepEqual(replayModels, ["grok-4.5-auto", "grok-4.5-fast"]);
   assert.equal(fallbackCallCount, 1);
   assert.equal(uploadCalls.length, 2);
   assert.deepEqual(uploadCalls[1], ["turn-001-user-attachment-001-context.txt"]);
   assert.deepEqual(result, {
     accountIndex: 0,
-    model: "grok-4.3-fast",
+    model: "grok-4.5-fast",
     state: {
       responses: []
     }
@@ -1066,7 +1066,7 @@ test("continueResponseConversation tries grok fast on the same replay account fo
         async createConversationAndRespond(args) {
           replayModels.push(args.model);
 
-          if (args.model === "grok-4.3-heavy") {
+          if (args.model === "grok-4.5-heavy") {
             throw new HttpError(503, "Grok request failed: upstream overloaded");
           }
 
@@ -1107,19 +1107,19 @@ test("continueResponseConversation tries grok fast on the same replay account fo
       }
     ],
     instructions: "Answer only the latest user message.",
-    publicModel: "grok-4.3-heavy",
+    publicModel: "grok-4.5-heavy",
     grokAccounts,
     uploadFilesToGrok,
     fileStore
   });
 
-  assert.deepEqual(replayModels, ["grok-4.3-heavy", "grok-4.3-fast"]);
+  assert.deepEqual(replayModels, ["grok-4.5-heavy", "grok-4.5-fast"]);
   assert.equal(fallbackCallCount, 1);
   assert.equal(uploadCalls.length, 2);
   assert.deepEqual(uploadCalls[1], ["turn-001-user-attachment-001-context.txt"]);
   assert.deepEqual(result, {
     accountIndex: 0,
-    model: "grok-4.3-fast",
+    model: "grok-4.5-fast",
     state: {
       responses: []
     }
