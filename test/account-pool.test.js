@@ -319,3 +319,55 @@ test("getAccounts splits multi-account cookie text into isolated account configs
     "/tmp/grok-profile/account-002"
   );
 });
+
+test("cooldown automatically removes unavailable status after cooldown period", async () => {
+  const accounts = [
+    createMockAccount("primary", ["primary-ok"]),
+    createMockAccount("secondary", ["unused"])
+  ];
+  const pool = new GrokAccountPool({}, { accounts });
+  
+  // Mark primary as unavailable
+  pool.unavailableAccountIndexes.add(0);
+  pool.unavailableAccountTimestamps.set(0, Date.now() - 1000); // 1 sec ago
+  
+  // Cooldown is set to 500ms, so it should be considered available again
+  assert.equal(pool.isAccountUnavailable(0, 500), false);
+  assert.equal(pool.unavailableAccountIndexes.has(0), false);
+});
+
+test("withFallback rotates on 429 rate limit error", async () => {
+  const rateLimitError = new HttpError(429, "Too Many Requests");
+  const accounts = [
+    createMockAccount("primary", [rateLimitError]),
+    createMockAccount("secondary", ["secondary-ok"])
+  ];
+  const pool = new GrokAccountPool({}, { accounts });
+
+  const result = await pool.withFallback(async (client) => {
+    return client.run();
+  });
+
+  assert.deepEqual(result, {
+    accountIndex: 1,
+    value: "secondary-ok"
+  });
+  assert.ok(pool.unavailableAccountIndexes.has(0));
+});
+
+test("withFallback resets unavailable status when all accounts are exhausted", async () => {
+  const rateLimitError = new HttpError(429, "Too Many Requests");
+  const accounts = [
+    createMockAccount("primary", [rateLimitError, "primary-recovered"]),
+    createMockAccount("secondary", [rateLimitError, "secondary-recovered"])
+  ];
+  const pool = new GrokAccountPool({}, { accounts });
+
+  const result = await pool.withFallback(async (client) => {
+    return client.run();
+  });
+
+  assert.equal(result.value, "primary-recovered");
+  assert.equal(pool.unavailableAccountIndexes.size, 0);
+});
+

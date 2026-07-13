@@ -835,10 +835,57 @@ export class BrowserSession {
     return this.ensurePage();
   }
 
+  async dismissModals(page) {
+    try {
+      const result = await page.evaluate(() => {
+        const bodyText = document.body ? (document.body.innerText || "") : "";
+        const hasToS = bodyText.includes("Terms of Service") || 
+                      bodyText.includes("Acceptable Use Policy") || 
+                      bodyText.includes("Terms of Use") ||
+                      bodyText.includes("privacy policy") ||
+                      bodyText.includes("cookie-consent") ||
+                      bodyText.includes("updating our Terms") ||
+                      bodyText.includes("Updates to our Terms");
+                      
+        if (!hasToS) {
+          return { clicked: false, reason: "No ToS/Cookie text found" };
+        }
+        
+        const candidates = Array.from(document.querySelectorAll('button, div[role="button"], span, a, [class*="button"], [id*="button"]'));
+        const targets = ["got it", "accept", "agree", "i agree", "allow", "close", "gotit"];
+        
+        for (const el of candidates) {
+          const text = (el.innerText || el.textContent || "").trim().toLowerCase();
+          if (targets.includes(text)) {
+            const rect = el.getBoundingClientRect();
+            if (rect.width > 0 && rect.height > 0) {
+              el.click();
+              return { clicked: true, text: text, elementClass: el.className };
+            }
+          }
+        }
+        
+        return { clicked: false, reason: "No matching button found among candidates" };
+      });
+      
+      if (result.clicked) {
+        console.warn(`[BrowserSession] Dismissed modal by clicking "${result.text}" button.`);
+        await page.waitForTimeout(2000);
+      }
+    } catch (error) {
+      // Ignore errors during evaluation
+    }
+  }
+
   async validatePage(page, response = null) {
     const expectedOrigin = getOrigin(this.config.grokBaseUrl);
     const pageUrl = typeof page.url === "function" ? page.url() : "";
     const pageOrigin = getOrigin(pageUrl);
+
+    if (expectedOrigin && pageOrigin && pageOrigin === expectedOrigin) {
+      await this.dismissModals(page);
+    }
+
     const readPageSnapshot = () =>
       page.evaluate(() => ({
         title: document.title || "",

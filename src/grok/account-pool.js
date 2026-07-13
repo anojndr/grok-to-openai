@@ -23,6 +23,36 @@ export class GrokAccountPool {
     this.accountsPromise = null;
     this.activeFallbackAccountIndex = null;
     this.unavailableAccountIndexes = new Set();
+    this.unavailableAccountTimestamps = new Map();
+  }
+
+  isAccountUnavailable(index, cooldownMs = 15 * 60 * 1000) {
+    if (!this.unavailableAccountIndexes.has(index)) {
+      return false;
+    }
+    const timestamp = this.unavailableAccountTimestamps.get(index);
+    if (timestamp && Date.now() - timestamp > cooldownMs) {
+      this.unavailableAccountIndexes.delete(index);
+      this.unavailableAccountTimestamps.delete(index);
+      return false;
+    }
+    return true;
+  }
+
+  checkPoolExhaustion(accounts) {
+    if (!accounts || accounts.length === 0) {
+      return false;
+    }
+    for (const index of Array.from(this.unavailableAccountIndexes)) {
+      this.isAccountUnavailable(index);
+    }
+    if (this.unavailableAccountIndexes.size >= accounts.length) {
+      console.warn(`All ${accounts.length} configured accounts in pool are marked as unavailable. Resetting pool status to retry them.`);
+      this.unavailableAccountIndexes.clear();
+      this.unavailableAccountTimestamps.clear();
+      return true;
+    }
+    return false;
   }
 
   async init() {
@@ -86,6 +116,8 @@ export class GrokAccountPool {
 
   async withAccount(accountIndex, operation) {
     const accounts = await this.getAccounts();
+    this.checkPoolExhaustion(accounts);
+
     const normalizedIndex = Number.isInteger(accountIndex) ? accountIndex : 0;
     const account = accounts[normalizedIndex];
 
@@ -93,7 +125,7 @@ export class GrokAccountPool {
       throw new Error(`Unknown Grok account index: ${accountIndex}`);
     }
 
-    if (this.unavailableAccountIndexes.has(account.index)) {
+    if (this.isAccountUnavailable(account.index)) {
       return this.withFallback(operation);
     }
 
@@ -118,6 +150,8 @@ export class GrokAccountPool {
 
   async withFallback(operation, options = {}) {
     const accounts = await this.getAccounts();
+    this.checkPoolExhaustion(accounts);
+
     let primaryAccount = this.getPrimaryAccount(accounts);
 
     if (!primaryAccount && !this.getFallbackAccounts(accounts).length) {
@@ -210,18 +244,20 @@ export class GrokAccountPool {
   }
 
   getFallbackAccounts(accounts) {
+    this.checkPoolExhaustion(accounts);
     return accounts
       .slice(1)
-      .filter((account) => !this.unavailableAccountIndexes.has(account.index));
+      .filter((account) => !this.isAccountUnavailable(account.index));
   }
 
   getPrimaryAccount(accounts) {
+    this.checkPoolExhaustion(accounts);
     const primaryAccount = accounts[0];
     if (!primaryAccount) {
       return null;
     }
 
-    return this.unavailableAccountIndexes.has(primaryAccount.index)
+    return this.isAccountUnavailable(primaryAccount.index)
       ? null
       : primaryAccount;
   }
@@ -266,6 +302,7 @@ export class GrokAccountPool {
   async handleFailure(account, accounts, error = null) {
     if (this.isSessionUnavailableError(error)) {
       this.unavailableAccountIndexes.add(account.index);
+      this.unavailableAccountTimestamps.set(account.index, Date.now());
       await account.client.close?.();
 
       if (account.index === this.activeFallbackAccountIndex) {
@@ -314,6 +351,27 @@ export class GrokAccountPool {
   }
 
   isSessionUnavailableError(error) {
-    return error?.details?.code === GROK_SESSION_BLOCKED_ERROR_CODE;
+    if (!error) {
+      return false;
+    }
+
+    if (error.details?.code === GROK_SESSION_BLOCKED_ERROR_CODE) {
+      return true;
+    }
+
+    if (error.status === 429) {
+      return true;
+    }
+
+    const message = String(error.message || "").toLowerCase();
+    if (
+      message.includes("too many requests") ||
+      message.includes("rate limit") ||
+      message.includes("429")
+    ) {
+      return true;
+    }
+
+    return false;
   }
 }
