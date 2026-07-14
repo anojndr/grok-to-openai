@@ -1,4 +1,5 @@
 import path from "node:path";
+import fs from "node:fs/promises";
 import { readCookieSetsFromSource } from "../lib/cookies.js";
 import { GrokClient } from "./client.js";
 import { GROK_SESSION_BLOCKED_ERROR_CODE } from "./browser-session.js";
@@ -24,6 +25,8 @@ export class GrokAccountPool {
     this.activeFallbackAccountIndex = null;
     this.unavailableAccountIndexes = new Set();
     this.unavailableAccountTimestamps = new Map();
+    this.lastLoadedContent = "";
+    this.loadedAccounts = null;
   }
 
   isAccountUnavailable(index, cooldownMs = 15 * 60 * 1000) {
@@ -50,6 +53,7 @@ export class GrokAccountPool {
       console.warn(`All ${accounts.length} configured accounts in pool are marked as unavailable. Resetting pool status to retry them.`);
       this.unavailableAccountIndexes.clear();
       this.unavailableAccountTimestamps.clear();
+      this.accountsPromise = null; // Clear cached promise to trigger a reload of cookies on next request
       return true;
     }
     return false;
@@ -80,21 +84,45 @@ export class GrokAccountPool {
       }));
     }
 
+    const rawText = this.config.grokCookiesText ?? "";
+    let content = "";
+    if (rawText.trim()) {
+      content = rawText;
+    } else if (this.config.grokCookieFile) {
+      try {
+        content = await fs.readFile(this.config.grokCookieFile, "utf8");
+      } catch (e) {
+        content = "";
+      }
+    }
+
+    if (this.lastLoadedContent === content && this.loadedAccounts) {
+      return this.loadedAccounts;
+    }
+
+    // Clean up old clients if config/content changed
+    if (this.loadedAccounts) {
+      await Promise.all(this.loadedAccounts.map((acc) => acc.client.close?.()));
+    }
+
     const cookieSets = await readCookieSetsFromSource({
       filePath: this.config.grokCookieFile,
       rawText: this.config.grokCookiesText
     });
 
     if (!cookieSets.length) {
-      return [
+      this.lastLoadedContent = content;
+      this.loadedAccounts = [
         {
           index: 0,
           client: this.clientFactory(this.config)
         }
       ];
+      return this.loadedAccounts;
     }
 
-    return cookieSets.map((cookies, index) => {
+    this.lastLoadedContent = content;
+    this.loadedAccounts = cookieSets.map((cookies, index) => {
       const accountConfig = {
         ...this.config,
         grokCookieFile: "",
@@ -112,6 +140,8 @@ export class GrokAccountPool {
         client: this.clientFactory(accountConfig)
       };
     });
+
+    return this.loadedAccounts;
   }
 
   async withAccount(accountIndex, operation) {
@@ -359,7 +389,7 @@ export class GrokAccountPool {
       return true;
     }
 
-    if (error.status === 429) {
+    if (error.status === 429 || error.status === 503) {
       return true;
     }
 
@@ -367,7 +397,14 @@ export class GrokAccountPool {
     if (
       message.includes("too many requests") ||
       message.includes("rate limit") ||
-      message.includes("429")
+      message.includes("429") ||
+      message.includes("heavy usage") ||
+      message.includes("try again later") ||
+      message.includes("upgrade plan") ||
+      message.includes("resourceexhausted") ||
+      message.includes("overload") ||
+      message.includes("admission denied") ||
+      message.includes("load_shed")
     ) {
       return true;
     }

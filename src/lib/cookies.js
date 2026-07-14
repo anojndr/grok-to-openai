@@ -37,42 +37,201 @@ export function parseNetscapeCookieText(text) {
 export function parseNetscapeCookieTextGroups(text) {
   const lines = text.split(/\r?\n/);
   const groups = [];
-  let currentLines = [];
-  let sawCookieLine = false;
+  let currentCookies = [];
+  const currentKeys = new Set();
 
   const flush = () => {
-    if (!currentLines.length) {
-      return;
+    if (currentCookies.length) {
+      groups.push(currentCookies);
     }
-
-    const cookies = parseNetscapeCookieText(currentLines.join("\n"));
-    if (cookies.length) {
-      groups.push(cookies);
-    }
-
-    currentLines = [];
-    sawCookieLine = false;
+    currentCookies = [];
+    currentKeys.clear();
   };
 
   for (const rawLine of lines) {
     const trimmed = rawLine.trim();
-    const isHeader = trimmed === "# Netscape HTTP Cookie File";
-    const isCookieLine = Boolean(trimmed) && !trimmed.startsWith("#");
+    if (!trimmed) {
+      continue;
+    }
 
-    if (isHeader && sawCookieLine) {
+    const isHeader = trimmed.startsWith("#") && /netscape|http cookie/i.test(trimmed);
+    if (isHeader && currentCookies.length > 0) {
       flush();
     }
 
-    currentLines.push(rawLine);
+    if (trimmed.startsWith("#")) {
+      continue;
+    }
 
-    if (isCookieLine) {
-      sawCookieLine = true;
+    const parsedList = parseNetscapeCookieText(rawLine);
+    if (parsedList && parsedList.length > 0) {
+      const cookie = parsedList[0];
+      const key = `${cookie.domain}:${cookie.name}:${cookie.path}`;
+
+      if (currentKeys.has(key)) {
+        flush();
+      }
+
+      currentCookies.push(cookie);
+      currentKeys.add(key);
     }
   }
 
   flush();
 
   return groups;
+}
+
+function parseMultipleJson(text) {
+  const results = [];
+  let index = 0;
+
+  while (index < text.length) {
+    while (index < text.length && /\s/.test(text[index])) {
+      index++;
+    }
+    if (index >= text.length) {
+      break;
+    }
+
+    if (text[index] !== "[" && text[index] !== "{") {
+      const nextStart = text.slice(index).search(/[\[{]/);
+      if (nextStart === -1) {
+        break;
+      }
+      index += nextStart;
+    }
+
+    const startChar = text[index];
+    const endChar = startChar === "[" ? "]" : "}";
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    let foundEnd = false;
+    let i = index;
+
+    for (; i < text.length; i++) {
+      const char = text[i];
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (char === '"') {
+        inString = !inString;
+        continue;
+      }
+      if (!inString) {
+        if (char === startChar) {
+          depth++;
+        } else if (char === endChar) {
+          depth--;
+          if (depth === 0) {
+            foundEnd = true;
+            i++;
+            break;
+          }
+        }
+      }
+    }
+
+    if (foundEnd) {
+      const jsonStr = text.slice(index, i);
+      try {
+        const parsed = JSON.parse(jsonStr);
+        results.push(parsed);
+        index = i;
+      } catch (e) {
+        index++;
+      }
+    } else {
+      break;
+    }
+  }
+
+  return results.length ? results : null;
+}
+
+function normalizeParsedCookieJson(parsed) {
+  if (!parsed) {
+    return null;
+  }
+
+  const isCookie = (obj) =>
+    obj && typeof obj === "object" && "name" in obj && "value" in obj && !("cookies" in obj);
+
+  const getCookiesFromAccount = (acc) => {
+    if (Array.isArray(acc)) {
+      return acc;
+    }
+    if (acc && typeof acc === "object") {
+      if (Array.isArray(acc.cookies)) {
+        return acc.cookies;
+      }
+    }
+    return null;
+  };
+
+  if (Array.isArray(parsed)) {
+    if (parsed.length === 0) {
+      return [];
+    }
+
+    if (Array.isArray(parsed[0])) {
+      return parsed.map(getCookiesFromAccount).filter(Boolean);
+    }
+
+    if (parsed.every(isCookie)) {
+      return [parsed];
+    }
+
+    const accountsCookies = parsed.map(getCookiesFromAccount).filter(Boolean);
+    if (accountsCookies.length > 0) {
+      return accountsCookies;
+    }
+
+    return [parsed];
+  }
+
+  if (parsed && typeof parsed === "object") {
+    if (Array.isArray(parsed.cookies)) {
+      return [parsed.cookies];
+    }
+    if (Array.isArray(parsed.accounts)) {
+      return parsed.accounts.map(getCookiesFromAccount).filter(Boolean);
+    }
+  }
+
+  return null;
+}
+
+export function parseCookieJson(text) {
+  try {
+    const trimmed = text.trim();
+    if (!trimmed.startsWith("[") && !trimmed.startsWith("{")) {
+      return null;
+    }
+
+    const parsedDocs = parseMultipleJson(trimmed);
+    if (!parsedDocs) {
+      return null;
+    }
+
+    const allAccounts = [];
+    for (const doc of parsedDocs) {
+      const normalized = normalizeParsedCookieJson(doc);
+      if (normalized) {
+        allAccounts.push(...normalized);
+      }
+    }
+
+    return allAccounts;
+  } catch (e) {
+    return null;
+  }
 }
 
 async function readCookieSourceText({ filePath = "", rawText = "" }) {
@@ -93,6 +252,11 @@ export async function readCookieSetsFromSource({ filePath = "", rawText = "" }) 
     return [];
   }
 
+  const jsonGroups = parseCookieJson(content);
+  if (jsonGroups) {
+    return jsonGroups;
+  }
+
   return parseNetscapeCookieTextGroups(content);
 }
 
@@ -100,3 +264,4 @@ export async function readCookiesFromSource({ filePath = "", rawText = "" }) {
   const groups = await readCookieSetsFromSource({ filePath, rawText });
   return groups[0] ?? [];
 }
+

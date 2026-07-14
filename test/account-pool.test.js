@@ -355,6 +355,25 @@ test("withFallback rotates on 429 rate limit error", async () => {
   assert.ok(pool.unavailableAccountIndexes.has(0));
 });
 
+test("withFallback rotates on heavy usage error", async () => {
+  const heavyUsageError = new HttpError(502, "Grok is under heavy usage right now. Please try again later, use a different model or upgrade plan for higher limits.");
+  const accounts = [
+    createMockAccount("primary", [heavyUsageError]),
+    createMockAccount("secondary", ["secondary-ok"])
+  ];
+  const pool = new GrokAccountPool({}, { accounts });
+
+  const result = await pool.withFallback(async (client) => {
+    return client.run();
+  });
+
+  assert.deepEqual(result, {
+    accountIndex: 1,
+    value: "secondary-ok"
+  });
+  assert.ok(pool.unavailableAccountIndexes.has(0));
+});
+
 test("withFallback resets unavailable status when all accounts are exhausted", async () => {
   const rateLimitError = new HttpError(429, "Too Many Requests");
   const accounts = [

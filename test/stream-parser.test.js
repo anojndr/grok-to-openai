@@ -180,6 +180,19 @@ test("applyGrokEvent maps stream rate limit errors to HTTP 429", () => {
     () => {
       applyGrokEvent(state, {
         error: {
+          message: "Grok is under heavy usage right now. Please try again later, use a different model or upgrade plan for higher limits."
+        }
+      });
+    },
+    (error) => {
+      return error.name === "HttpError" && error.status === 429 && error.message.includes("heavy usage");
+    }
+  );
+
+  assert.throws(
+    () => {
+      applyGrokEvent(state, {
+        error: {
           message: "Generic Grok failure"
         }
       });

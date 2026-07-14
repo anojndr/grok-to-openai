@@ -107,6 +107,9 @@ export function applyGrokEvent(state, payload) {
     const message = payload.error.message || "";
     const isRateLimit =
       /too\s*many\s*requests/i.test(message) ||
+      /heavy\s*usage/i.test(message) ||
+      /try\s*again\s*later/i.test(message) ||
+      /upgrade\s*plan/i.test(message) ||
       payload.error.code === 429 ||
       payload.error.status === 429;
     const status = isRateLimit ? 429 : 502;
