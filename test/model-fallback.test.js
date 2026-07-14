@@ -28,6 +28,30 @@ test("withFastModelFallback retries expert requests with grok-4.5-fast after the
   });
 });
 
+test("withFastModelFallback retries auto requests with grok-4.5-fast after the first attempt fails", async () => {
+  const attempts = [];
+
+  const result = await withFastModelFallback({
+    publicModel: "grok auto",
+    async operation(model) {
+      attempts.push(model);
+
+      if (attempts.length === 1) {
+        throw new Error("all accounts failed");
+      }
+
+      return {
+        model
+      };
+    }
+  });
+
+  assert.deepEqual(attempts, ["grok auto", "grok-4.5-fast"]);
+  assert.deepEqual(result, {
+    model: "grok-4.5-fast"
+  });
+});
+
 test("withFastModelFallback retries heavy requests with grok-4.5-fast after the first attempt fails", async () => {
   const attempts = [];
 

@@ -884,6 +884,21 @@ export class BrowserSession {
 
     if (expectedOrigin && pageOrigin && pageOrigin === expectedOrigin) {
       await this.dismissModals(page);
+
+      let pagePathname = "";
+      try {
+        pagePathname = new URL(pageUrl).pathname.toLowerCase();
+      } catch {}
+
+      if (
+        pagePathname === "/login" ||
+        pagePathname === "/signin" ||
+        pagePathname === "/sign-in" ||
+        pagePathname === "/register" ||
+        pagePathname === "/signup"
+      ) {
+        throw createSessionBlockedError(`redirected to login page (${pagePathname})`);
+      }
     }
 
     const readPageSnapshot = () =>

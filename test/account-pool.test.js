@@ -390,3 +390,61 @@ test("withFallback resets unavailable status when all accounts are exhausted", a
   assert.equal(pool.unavailableAccountIndexes.size, 0);
 });
 
+test("withFallback rotates on 401 unauthenticated error", async () => {
+  const authError = new HttpError(401, "Unauthorized");
+  const accounts = [
+    createMockAccount("primary", [authError]),
+    createMockAccount("secondary", ["secondary-ok"])
+  ];
+  const pool = new GrokAccountPool({}, { accounts });
+
+  const result = await pool.withFallback(async (client) => {
+    return client.run();
+  });
+
+  assert.deepEqual(result, {
+    accountIndex: 1,
+    value: "secondary-ok"
+  });
+  assert.ok(pool.unavailableAccountIndexes.has(0));
+});
+
+test("withFallback rotates on 403 forbidden error", async () => {
+  const forbiddenError = new HttpError(403, "Forbidden");
+  const accounts = [
+    createMockAccount("primary", [forbiddenError]),
+    createMockAccount("secondary", ["secondary-ok"])
+  ];
+  const pool = new GrokAccountPool({}, { accounts });
+
+  const result = await pool.withFallback(async (client) => {
+    return client.run();
+  });
+
+  assert.deepEqual(result, {
+    accountIndex: 1,
+    value: "secondary-ok"
+  });
+  assert.ok(pool.unavailableAccountIndexes.has(0));
+});
+
+test("withFallback rotates on login redirect error message", async () => {
+  const redirectError = new Error("redirected to login page (/login)");
+  const accounts = [
+    createMockAccount("primary", [redirectError]),
+    createMockAccount("secondary", ["secondary-ok"])
+  ];
+  const pool = new GrokAccountPool({}, { accounts });
+
+  const result = await pool.withFallback(async (client) => {
+    return client.run();
+  });
+
+  assert.deepEqual(result, {
+    accountIndex: 1,
+    value: "secondary-ok"
+  });
+  assert.ok(pool.unavailableAccountIndexes.has(0));
+});
+
+

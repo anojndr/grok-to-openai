@@ -389,7 +389,12 @@ export class GrokAccountPool {
       return true;
     }
 
-    if (error.status === 429 || error.status === 503) {
+    if (
+      error.status === 401 ||
+      error.status === 403 ||
+      error.status === 429 ||
+      error.status === 503
+    ) {
       return true;
     }
 
@@ -397,14 +402,32 @@ export class GrokAccountPool {
     if (
       message.includes("too many requests") ||
       message.includes("rate limit") ||
-      message.includes("429") ||
+      message.includes("rate_limit") ||
+      message.includes("rate-limit") ||
+      message.includes("limit reached") ||
+      message.includes("reached your limit") ||
+      message.includes("exceeded limit") ||
       message.includes("heavy usage") ||
       message.includes("try again later") ||
       message.includes("upgrade plan") ||
       message.includes("resourceexhausted") ||
       message.includes("overload") ||
       message.includes("admission denied") ||
-      message.includes("load_shed")
+      message.includes("load_shed") ||
+      message.includes("unauthenticated") ||
+      message.includes("unauthorized") ||
+      message.includes("login required") ||
+      message.includes("sign in") ||
+      message.includes("session expired") ||
+      message.includes("session_expired") ||
+      message.includes("invalid session") ||
+      message.includes("invalid_session") ||
+      message.includes("auth_error") ||
+      message.includes("forbidden") ||
+      message.includes("401") ||
+      message.includes("403") ||
+      message.includes("redirected to login page") ||
+      message.includes("grok session is blocked or not authenticated")
     ) {
       return true;
     }

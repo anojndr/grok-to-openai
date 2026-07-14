@@ -665,3 +665,28 @@ test("close resets binding state so a later init reinstalls page bindings", asyn
   assert.equal(contexts[1].bindings.length, 8);
   assert.equal(contexts[0].closeCalls, 1);
 });
+
+test("validatePage throws session blocked error when redirected to login page", async () => {
+  const session = new BrowserSession({
+    grokBaseUrl: "https://grok.com"
+  });
+
+  const mockPage = {
+    url() {
+      return "https://grok.com/login";
+    },
+    async evaluate(fn) {
+      return { title: "Login - Grok", text: "Sign in to Grok" };
+    }
+  };
+
+  await assert.rejects(
+    session.validatePage(mockPage),
+    (err) => {
+      assert.equal(err.details?.code, GROK_SESSION_BLOCKED_ERROR_CODE);
+      assert.match(err.message, /redirected to login page/);
+      return true;
+    }
+  );
+});
+
