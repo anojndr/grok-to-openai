@@ -297,6 +297,7 @@ async function executeConversationRequest({
     return withFastModelFallback({
       publicModel,
       onToken,
+      accountClient,
       async operation(model, currentOnToken) {
         return accountClient.createConversationAndRespond({
           instructions,

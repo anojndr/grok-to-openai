@@ -13,7 +13,12 @@ export function shouldFallbackToFast(publicModel) {
   );
 }
 
-export async function withFastModelFallback({ publicModel, operation, onToken }) {
+export async function withFastModelFallback({
+  publicModel,
+  operation,
+  onToken,
+  accountClient
+}) {
   let hasEmittedTokens = false;
   const wrappedOnToken = onToken
     ? (token, meta) => {
@@ -46,9 +51,30 @@ export async function withFastModelFallback({ publicModel, operation, onToken })
     }
   };
 
+  const { grokModeId } = resolveModel(publicModel, undefined, publicModel);
+
+  if (accountClient && accountClient.unsupportedModes?.has(grokModeId)) {
+    if (shouldFallbackToFast(publicModel)) {
+      return await runWithRetry(FAST_FALLBACK_MODEL);
+    }
+  }
+
   try {
     return await runWithRetry(publicModel);
   } catch (error) {
+    const isModelNotFound =
+      error &&
+      String(error.message || "")
+        .toLowerCase()
+        .includes("model is not found");
+
+    if (isModelNotFound && accountClient) {
+      if (!accountClient.unsupportedModes) {
+        accountClient.unsupportedModes = new Set();
+      }
+      accountClient.unsupportedModes.add(grokModeId);
+    }
+
     if (
       hasEmittedTokens ||
       !shouldFallbackToFast(publicModel) ||
@@ -60,3 +86,4 @@ export async function withFastModelFallback({ publicModel, operation, onToken })
     return await runWithRetry(FAST_FALLBACK_MODEL);
   }
 }
+

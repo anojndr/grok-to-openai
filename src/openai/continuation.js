@@ -466,6 +466,7 @@ export async function continueResponseConversation({
         return withFastModelFallback({
           publicModel,
           onToken,
+          accountClient,
           async operation(model, currentOnToken) {
             return accountClient.addResponse({
               conversationId: previousRecord.grok.conversationId,
@@ -531,6 +532,7 @@ export async function continueResponseConversation({
     return withFastModelFallback({
       publicModel,
       onToken,
+      accountClient,
       async operation(model, currentOnToken) {
         return accountClient.createConversationAndRespond({
           instructions,

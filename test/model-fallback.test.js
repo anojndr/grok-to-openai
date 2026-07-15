@@ -230,3 +230,56 @@ test("withFastModelFallback retries both primary and fast model if both experien
     delete process.env.MODEL_TIMEOUT_RETRY_DELAY_MS;
   }
 });
+
+test("withFastModelFallback bypasses premium model requests immediately on subsequent attempts if accountClient has the model in unsupportedModes", async () => {
+  const attempts = [];
+  const accountClient = {
+    unsupportedModes: new Set(["expert"])
+  };
+
+  const result = await withFastModelFallback({
+    publicModel: "grok expert",
+    accountClient,
+    async operation(model) {
+      attempts.push(model);
+      return {
+        model
+      };
+    }
+  });
+
+  assert.deepEqual(attempts, ["grok-4.5-fast"]);
+  assert.deepEqual(result, {
+    model: "grok-4.5-fast"
+  });
+});
+
+test("withFastModelFallback adds mode to accountClient.unsupportedModes when a Model is not found error occurs", async () => {
+  const attempts = [];
+  const accountClient = {
+    unsupportedModes: new Set()
+  };
+
+  const result = await withFastModelFallback({
+    publicModel: "grok expert",
+    accountClient,
+    async operation(model) {
+      attempts.push(model);
+
+      if (attempts.length === 1) {
+        throw new Error("Model is not found");
+      }
+
+      return {
+        model
+      };
+    }
+  });
+
+  assert.deepEqual(attempts, ["grok expert", "grok-4.5-fast"]);
+  assert.deepEqual(result, {
+    model: "grok-4.5-fast"
+  });
+  assert.ok(accountClient.unsupportedModes.has("expert"));
+});
+
