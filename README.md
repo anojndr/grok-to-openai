@@ -27,15 +27,26 @@ Playwright browser profile. It does not use the official xAI API.
 - If the original Grok conversation no longer exists, the bridge can replay the
   locally stored conversation history and attachments to continue the thread.
 - A single `GROK_COOKIE_FILE` or `GROK_COOKIES_TEXT` value can define one or
-  many Grok accounts by concatenating multiple Netscape cookie-file blocks.
+  many Grok accounts by concatenating multiple Netscape cookie-file blocks or
+  providing JSON arrays/objects of cookies. The bridge automatically hot-reloads
+  these configuration files and updates the active clients when contents change.
 - New requests and replay fallbacks always try the primary account first, then
-  the current active fallback account. Failed fallback accounts are closed,
-  fallback selection advances in deterministic top-to-bottom order, wraps back
+  the current active fallback account. Failed fallback accounts are temporarily quarantined (placed on a 15-minute cooldown), closed,
+  and fallback selection advances in deterministic top-to-bottom order, wraps back
   to the secondary account after the last fallback, and raises after two full
   fallback passes fail.
+- Account rotation and quarantining are triggered by upstream rate-limit errors
+  (HTTP `429`, "too many requests", "heavy usage"), authentication issues (HTTP `401`/`403`, "session expired", or redirect to login pages), and standard session blocks.
+- During browser initialization, the bridge automatically dismisses standard Terms
+  of Service, Acceptable Use Policies, cookie consents, and privacy update modals
+  by dynamically clicking consent buttons on the page.
 - If `grok-4.5-auto`, `grok-4.5-expert`, `grok-4.5-heavy`, or `grok-4.5-beta`
   exhaust every configured account or hit an upstream beta stream failure, the
   bridge retries once in `grok-4.5-fast`.
+- If an account hits a "Model is not found" upstream error for a premium model, the
+  bridge dynamically caches that model as unsupported for that specific account. Subsequent
+  requests for the model on that account bypass the upstream check entirely and fall
+  back directly to `grok-4.5-fast` (if model fallback is enabled).
 - Follow-up requests first try the account that owns the stored Grok thread. If
   that follow-up fails, the bridge rebuilds the full conversation history,
   including attachments, as one replay message and retries across the account
@@ -70,6 +81,9 @@ Accepted aliases are intentionally broad:
 - If `model` is omitted, `DEFAULT_MODEL` is used.
 - If no explicit mode is present, `reasoning.effort=high` on Responses or
   `reasoning_effort=high` on Chat Completions routes to expert mode.
+- If a premium/expert model request returns a "Model is not found" error, the
+  bridge caches this unsupported model internally for the active account to skip future
+  upstream attempts, routing immediately to `grok-4.5-fast` instead.
 
 ## Response shapes
 
@@ -210,11 +224,12 @@ Supported configuration:
   Leave empty to disable bearer auth.
 - `CHROME_EXECUTABLE_PATH`, `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH`
 - `GROK_COOKIE_FILE`
-  Netscape-format cookie file. You can concatenate multiple Netscape cookie
-  files into one file to define multiple accounts.
+  Cookie file path. Supports standard Netscape format or JSON format.
+  - Netscape format: multiple accounts can be defined by concatenating multiple cookie blocks.
+  - JSON format: can be a single array of cookie objects, an array of arrays (one per account), concatenated JSON arrays, or an array of account objects containing a `cookies` field.
+  The bridge watches this file and hot-reloads it when changed.
 - `GROK_COOKIES_TEXT`
-  Inline Netscape-format cookie text. Multiple concatenated Netscape blocks are
-  treated as multiple accounts.
+  Inline cookie text in Netscape format or JSON format (same parsing rules as `GROK_COOKIE_FILE`).
 - `GROK_BASE_URL`
   Defaults to `https://grok.com`.
 - `HEADLESS`, `IMPORT_COOKIES_ON_BOOT`
@@ -254,16 +269,20 @@ Imgbb notes:
 - The bridge now sets Imgbb's optional upload `name` field from the filename
   and rejects images above Imgbb's documented `32 MB` maximum before upload.
 
-For multi-account setups, concatenate each account's full Netscape cookie file
-into the same secret file in the order you want the bridge to use them. When
-more than one account is configured, `BROWSER_PROFILE_DIR` is automatically
-split into per-account subdirectories such as `account-001`, `account-002`,
-and so on. At runtime the bridge keeps the primary account profile alive and
-only one fallback profile active at a time; failed fallback profiles are
-closed and reinitialized on demand.
+### Multi-account and Failover Routing
 
-Log in manually, then restart with `HEADLESS=true` if you want a headless
-server again.
+The bridge supports running a pool of multiple Grok accounts for load-balancing, rate-limit resilience, and automatic failover:
+
+- **Configuring Multiple Accounts**: 
+  - **Netscape format**: Concatenate multiple Netscape cookie blocks (with `# Netscape HTTP Cookie File` headers or separated by duplicate key occurrences) into a single file or env variable.
+  - **JSON format**: Supply a JSON array containing arrays of cookie objects, or an array of account objects with a `cookies` property, or multiple concatenated JSON arrays.
+- **Isolated Browser Profiles**: When multiple accounts are configured, `BROWSER_PROFILE_DIR` is automatically split into per-account subdirectories (e.g. `account-001`, `account-002`, etc.) to keep browser state and local storage fully isolated.
+- **Failover & Rotation**: The bridge automatically starts with the primary account (index 0). If a request fails due to rate limits (HTTP `429` / "too many requests" / "heavy usage") or authentication/session issues (HTTP `401`/`403`, "session expired", or redirect to login pages), that account is temporarily quarantined. The bridge then rotates to the next active fallback account.
+- **Quarantine & Dynamic Cooldown**: When an account is quarantined, it is placed on a 15-minute cooldown. If all configured accounts are exhausted, the bridge will reset the unavailable status to retry the pool.
+- **Hot-Reloading**: The bridge monitors `GROK_COOKIE_FILE` and `GROK_COOKIES_TEXT`. If changes are detected, it hot-reloads the cookies, gracefully closes existing browser sessions, and re-initializes the account pool in-place without requiring a server reboot.
+- **Automatic ToS Modal Dismissal**: During browser startup, the bridge evaluates the page context and automatically dismisses standard Terms of Service, Acceptable Use Policies, cookie consents, or privacy update modals by simulating button clicks (e.g. "Got it", "I agree", "Close") to prevent automation blocks.
+
+Log in manually (by running with `HEADLESS=false` temporarily) if cookies need to be refreshed, then restart with `HEADLESS=true` for headless server execution.
 
 Start the server:
 
