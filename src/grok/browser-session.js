@@ -426,14 +426,25 @@ function isRecoverablePageError(message) {
   );
 }
 
-function isRecoverableContextError(message) {
+export function isRecoverableContextError(message) {
   const normalized = String(message || "").toLowerCase();
+
+  if (normalized.includes("target page, context or browser has been closed")) {
+    return false;
+  }
 
   return (
     normalized.includes("target.createtarget") ||
     normalized.includes("failed to open a new tab") ||
-    (normalized.includes("browsercontext.newpage") &&
-      normalized.includes("protocol error"))
+    normalized.includes("browsercontext.newpage") ||
+    normalized.includes("browser has been closed") ||
+    normalized.includes("context has been closed") ||
+    normalized.includes("connection closed") ||
+    (normalized.includes("protocol error") &&
+      (normalized.includes("target") ||
+        normalized.includes("context") ||
+        normalized.includes("browser") ||
+        normalized.includes("page")))
   );
 }
 
@@ -772,8 +783,16 @@ export class BrowserSession {
 
   async ensurePage() {
     if (this.page && !this.page.isClosed()) {
-      await this.validatePage(this.page);
-      return this.page;
+      try {
+        await this.validatePage(this.page);
+        return this.page;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (isRecoverableContextError(msg)) {
+          return this.recreateContext();
+        }
+        this.page = null;
+      }
     }
 
     if (this.pagePromise) {
@@ -781,7 +800,21 @@ export class BrowserSession {
     }
 
     const pagePromise = (async () => {
-      const page = await this.context.newPage();
+      if (!this.context) {
+        await this.init();
+      }
+
+      let page;
+      try {
+        page = await this.context.newPage();
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (isRecoverableContextError(msg)) {
+          return this.recreateContext();
+        }
+        throw err;
+      }
+
       page.on("console", (msg) => {
         if (this.config?.verbose) {
           console.log(`[BROWSER CONSOLE] [${msg.type()}] ${msg.text()}`);
@@ -794,26 +827,35 @@ export class BrowserSession {
           this.pageUserAgent = null;
         }
       });
-      const response = await page.goto(this.config.grokBaseUrl, {
-        waitUntil: "domcontentloaded"
-      });
-      try {
-        const networkIdleTimeout = this.config.browserNetworkIdleTimeoutMs ?? 1000;
-        await page.waitForLoadState("networkidle", { timeout: networkIdleTimeout });
-      } catch (e) {}
-      try {
-        const pageLoadDelay = this.config.browserPageLoadDelayMs ?? 1000;
-        await page.waitForTimeout(pageLoadDelay);
-      } catch (e) {}
-      await this.validatePage(page, response);
 
       try {
-        this.pageUserAgent = await page.evaluate(() => navigator.userAgent);
-      } catch {
-        this.pageUserAgent = null;
+        const response = await page.goto(this.config.grokBaseUrl, {
+          waitUntil: "domcontentloaded"
+        });
+        try {
+          const networkIdleTimeout = this.config.browserNetworkIdleTimeoutMs ?? 1000;
+          await page.waitForLoadState("networkidle", { timeout: networkIdleTimeout });
+        } catch (e) {}
+        try {
+          const pageLoadDelay = this.config.browserPageLoadDelayMs ?? 1000;
+          await page.waitForTimeout(pageLoadDelay);
+        } catch (e) {}
+        await this.validatePage(page, response);
+
+        try {
+          this.pageUserAgent = await page.evaluate(() => navigator.userAgent);
+        } catch {
+          this.pageUserAgent = null;
+        }
+
+        return page;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (isRecoverableContextError(msg)) {
+          return this.recreateContext();
+        }
+        throw err;
       }
-
-      return page;
     })();
 
     this.pagePromise = pagePromise;
@@ -832,7 +874,15 @@ export class BrowserSession {
       await this.page.close().catch(() => {});
     }
     this.page = null;
-    return this.ensurePage();
+    try {
+      return await this.ensurePage();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (isRecoverableContextError(message)) {
+        return this.recreateContext();
+      }
+      throw error;
+    }
   }
 
   async recreateContext() {
@@ -1035,11 +1085,21 @@ export class BrowserSession {
           onChunk ? 0 : Number.POSITIVE_INFINITY
         );
         clearTextBuffer(textBuffer);
-        const page = await this.recreatePage();
+        let page;
+        try {
+          page = await this.recreatePage();
+        } catch (recreateErr) {
+          const recMsg = recreateErr instanceof Error ? recreateErr.message : String(recreateErr);
+          if (isRecoverableContextError(recMsg)) {
+            page = await this.recreateContext();
+          } else {
+            throw recreateErr;
+          }
+        }
         await run(page);
       } else {
         if (message.toLowerCase().includes("failed to fetch")) {
-          await this.validatePage(await this.ensurePage());
+          await this.validatePage(await this.ensurePage()).catch(() => {});
         }
         throw error;
       }
@@ -1084,7 +1144,7 @@ export class BrowserSession {
       };
     }
 
-    const page = await this.context.newPage();
+    const page = await this.ensurePage();
     const navigationResponses = [];
     const captureResponse = (response) => {
       if (isPrimaryNavigationResponse(page, response)) {

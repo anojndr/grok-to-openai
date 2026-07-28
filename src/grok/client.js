@@ -80,7 +80,10 @@ function isStorageExhaustedResponse(response) {
     response?.meta?.status >= 400 &&
     (text.includes("storage-exhausted") ||
       text.includes("storage allowance") ||
-      text.includes("User exceeds their storage allowance"))
+      text.includes("User exceeds their storage allowance") ||
+      text.includes("storage limit") ||
+      text.includes("out of storage") ||
+      text.includes("storage quota"))
   );
 }
 
@@ -304,6 +307,7 @@ export class GrokClient {
         if (isStorageExhaustedResponse(response) && !cleanedUpStorage) {
           cleanedUpStorage = true;
           await this.deleteOldestAssets(20);
+          await this.deleteOldestConversations(20);
           attempt = Math.max(-1, attempt - 1);
           continue;
         }
@@ -370,18 +374,22 @@ export class GrokClient {
       });
       const list = conversationsResponse?.conversations ?? (Array.isArray(conversationsResponse) ? conversationsResponse : []);
       if (!list.length) {
-        return;
+        return 0;
       }
       const oldest = list.slice(-count);
       console.warn(`Pruning ${oldest.length} oldest conversations to free up storage space.`);
+      let deletedCount = 0;
       for (const conv of oldest) {
         const id = conv?.conversationId;
         if (id) {
           await this.deleteConversation(id).catch(() => {});
+          deletedCount++;
         }
       }
+      return deletedCount;
     } catch (error) {
       console.warn("Failed to delete oldest conversations:", error);
+      return 0;
     }
   }
 
@@ -411,18 +419,22 @@ export class GrokClient {
       });
       const list = assetsResponse?.assets ?? (Array.isArray(assetsResponse) ? assetsResponse : []);
       if (!list.length) {
-        return;
+        return 0;
       }
       const oldest = list.slice(-count);
       console.warn(`Pruning ${oldest.length} oldest assets to free up storage space.`);
+      let deletedCount = 0;
       for (const asset of oldest) {
         const id = asset?.assetId;
         if (id) {
           await this.deleteAsset(id).catch(() => {});
+          deletedCount++;
         }
       }
+      return deletedCount;
     } catch (error) {
       console.warn("Failed to delete oldest assets:", error);
+      return 0;
     }
   }
 

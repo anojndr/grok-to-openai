@@ -4,7 +4,8 @@ import { chromium } from "playwright-core";
 import {
   BrowserSession,
   GROK_SESSION_BLOCKED_ERROR_CODE,
-  ERROR_RESPONSE_TEXT_LIMIT
+  ERROR_RESPONSE_TEXT_LIMIT,
+  isRecoverableContextError
 } from "../src/grok/browser-session.js";
 
 function createSession(evaluateRequest) {
@@ -732,4 +733,47 @@ test("loadStatsigChunkSource parses modern async/await import pattern from JS ch
     globalThis.fetch = originalFetch;
   }
 });
+
+test("isRecoverableContextError correctly identifies context/target errors", () => {
+  assert.equal(isRecoverableContextError("browserContext.newPage: Protocol error (Target.createTarget): Failed to open a new tab"), true);
+  assert.equal(isRecoverableContextError("Target page, context or browser has been closed"), false);
+  assert.equal(isRecoverableContextError("browser has been closed"), true);
+  assert.equal(isRecoverableContextError("some random syntax error"), false);
+});
+
+test("ensurePage recovers from context error by calling recreateContext", async () => {
+  const session = new BrowserSession({ grokBaseUrl: "https://grok.com" });
+  let recreateCalled = false;
+  session.init = async () => {};
+  session.context = {
+    newPage: async () => {
+      throw new Error("browserContext.newPage: Protocol error (Target.createTarget): Failed to open a new tab");
+    }
+  };
+  session.recreateContext = async () => {
+    recreateCalled = true;
+    return { isMockPage: true };
+  };
+
+  const page = await session.ensurePage();
+  assert.equal(recreateCalled, true);
+  assert.equal(page.isMockPage, true);
+});
+
+test("recreatePage falls back to recreateContext on context error", async () => {
+  const session = new BrowserSession({ grokBaseUrl: "https://grok.com" });
+  let recreateContextCalled = false;
+  session.ensurePage = async () => {
+    throw new Error("Protocol error (Target.createTarget): Failed to open a new tab");
+  };
+  session.recreateContext = async () => {
+    recreateContextCalled = true;
+    return { isMockPage: true };
+  };
+
+  const page = await session.recreatePage();
+  assert.equal(recreateContextCalled, true);
+  assert.equal(page.isMockPage, true);
+});
+
 

@@ -53,6 +53,10 @@ export class GrokAccountPool {
       console.warn(`All ${accounts.length} configured accounts in pool are marked as unavailable. Resetting pool status to retry them.`);
       this.unavailableAccountIndexes.clear();
       this.unavailableAccountTimestamps.clear();
+      if (this.loadedAccounts) {
+        Promise.all(this.loadedAccounts.map((acc) => acc.client.close?.().catch(() => {}))).catch(() => {});
+        this.loadedAccounts = null;
+      }
       this.accountsPromise = null; // Clear cached promise to trigger a reload of cookies on next request
       return true;
     }

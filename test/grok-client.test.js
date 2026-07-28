@@ -1109,6 +1109,13 @@ test("uploadFile automatically self-heals by pruning assets when storage is exha
             ]
           })
         };
+      } else if (request.url.includes("/conversations") && request.method === "GET") {
+        return {
+          meta: { status: 200 },
+          text: JSON.stringify({
+            conversations: []
+          })
+        };
       }
       return {
         meta: { status: 200 },
@@ -1130,13 +1137,17 @@ test("uploadFile automatically self-heals by pruning assets when storage is exha
   // 2. GET /assets?pageSize=50... (prune list)
   // 3. DELETE /assets/asset_1 (delete)
   // 4. DELETE /assets/asset_2 (delete)
-  // 5. POST /upload-file (retried, succeeds)
-  assert.equal(requests.length, 5);
+  // 5. GET /conversations?limit=50... (prune conversations list)
+  // 6. POST /upload-file (retried, succeeds)
+  assert.equal(requests.length, 6);
   assert.equal(requests[0].url.includes("/upload-file"), true);
   assert.equal(requests[1].method, "GET");
+  assert.equal(requests[1].url.includes("/assets"), true);
   assert.equal(requests[2].method, "DELETE");
   assert.equal(requests[2].url.includes("/asset_1"), true);
   assert.equal(requests[3].method, "DELETE");
   assert.equal(requests[3].url.includes("/asset_2"), true);
-  assert.equal(requests[4].url.includes("/upload-file"), true);
+  assert.equal(requests[4].method, "GET");
+  assert.equal(requests[4].url.includes("/conversations"), true);
+  assert.equal(requests[5].url.includes("/upload-file"), true);
 });
