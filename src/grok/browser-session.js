@@ -590,11 +590,19 @@ export class BrowserSession {
     let statsigModuleId = null;
 
     for (const [url, text] of Object.entries(chunkTexts)) {
-      if (text.includes("x-statsig-id")) {
+      const idx = text.indexOf("x-statsig-id");
+      if (idx !== -1) {
         middlewareUrl = url;
-        const match = /\.([a-zA-Z_0-9]+)\((\d+)\)\.then\(/g.exec(text);
-        if (match) {
-          statsigModuleId = match[2];
+        const legacyMatch = /\.([a-zA-Z_0-9]+)\((\d+)\)\.then\(/g.exec(text);
+        if (legacyMatch) {
+          statsigModuleId = legacyMatch[2];
+          break;
+        }
+
+        const snippet = text.slice(Math.max(0, idx - 1500), idx);
+        const matches = Array.from(snippet.matchAll(/\b[a-zA-Z_0-9\.]+\((\d{5,})\)/g));
+        if (matches.length) {
+          statsigModuleId = matches[matches.length - 1][1];
           break;
         }
       }

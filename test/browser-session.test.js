@@ -690,3 +690,46 @@ test("validatePage throws session blocked error when redirected to login page", 
   );
 });
 
+test("loadStatsigChunkSource parses modern async/await import pattern from JS chunks", async () => {
+  const session = new BrowserSession({
+    grokBaseUrl: "https://grok.com"
+  });
+
+  const mockPage = {
+    async evaluate() {
+      return ["https://grok.com/_next/static/chunks/middleware.js", "https://grok.com/_next/static/chunks/entry.js"];
+    }
+  };
+
+  session.ensurePage = async () => mockPage;
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    if (url.includes("middleware.js")) {
+      return {
+        ok: true,
+        async text() {
+          return `let un=(a=async()=>(await e.A(4629918)).default(),async function(e,t){let i=await n;return await i(e,t)}),ui=async e=>{e.init.headers.set("x-statsig-id",t);return e};`;
+        }
+      };
+    }
+    if (url.includes("entry.js")) {
+      return {
+        ok: true,
+        async text() {
+          return `4629918,s=>{s.v(t=>Promise.all(["static/chunks/generator.js"].map(t=>s.l(t))).then(()=>t(1645e3)))}`;
+        }
+      };
+    }
+    return { ok: false };
+  };
+
+  try {
+    const res = await session.loadStatsigChunkSource();
+    assert.equal(res.url, "https://grok.com/_next/static/chunks/generator.js");
+    assert.equal(res.moduleId, 1645000);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
