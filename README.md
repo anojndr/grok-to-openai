@@ -156,14 +156,12 @@ is used for both generated images and searched/public image cards:
   keep working.
 - Responses usage is `null`. Non-streaming Chat Completions returns placeholder
   zero usage.
-- Streaming forwards Grok token deltas live for every model instead of
-  buffering `auto`, `expert`, or `heavy` responses until completion.
-- Live streaming suppresses Grok thinking-phase tokens. This uses Grok's actual
-  stream metadata, so `grok-4.5-auto` also hides thought when it internally
-  escalates to Expert or Heavy behavior.
-- If Grok's final normalized answer differs from the raw live stream, the
-  closing `/v1/responses` events still carry the canonical final text, with
-  Grok Expert and Heavy thought sections removed from bridge output.
+- Streaming sends lifecycle events as soon as Grok starts responding, but
+  buffers provisional Grok text until the final assistant payload is hydrated.
+- The bridge then emits only the canonical final answer, preventing planning
+  preambles, superseded drafts, and thinking-phase text from leaking into the
+  append-only OpenAI stream when Grok's raw tokens diverge from its final message.
+- Streaming and non-streaming responses now expose the same normalized answer.
 - Streaming text strips inline citation tags instead of rewriting them on the
   fly.
 - Streaming `/v1/responses` still returns final source attribution metadata in

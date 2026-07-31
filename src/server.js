@@ -32,19 +32,14 @@ import {
   createChatCompletionChunk,
   renderChatCompletionContent
 } from "./openai/chat-completions.js";
+import { createCanonicalTextStream } from "./openai/canonical-text-stream.js";
 import { initSse, writeSseEvent } from "./openai/sse.js";
 import { createId, unixTimestampSeconds } from "./lib/ids.js";
-import { createTextAccumulator } from "./lib/text-accumulator.js";
-import { createGrokMarkupStreamSanitizer } from "./grok/markup.js";
 import { withFastModelFallback } from "./grok/model-fallback.js";
 import { buildAssistantOutput } from "./grok/output.js";
 import { ImgbbClient, rehostGeneratedImages } from "./imgbb/client.js";
 import { listModels, resolveModel } from "./grok/model-map.js";
-import {
-  renderThoughtAndResponse
-} from "./grok/thought.js";
 import { buildStoredGrokState } from "./grok/response-state.js";
-import { getStreamingTextSuffix } from "./openai/streaming-text.js";
 import { GrokAccountPool } from "./grok/account-pool.js";
 import {
   buildJsonBodyTooLargeMessage,
@@ -529,8 +524,6 @@ app.post("/v1/responses", async (req, res, next) => {
       const streamingSourceAttribution = createStreamingSourceAttributionRequest(
         parsed.source_attribution
       );
-      const sanitizer = createGrokMarkupStreamSanitizer();
-      const emittedText = createTextAccumulator();
       let emittedResponsePrelude = false;
       let emittedMessagePrelude = false;
       const emitResponsePrelude = () => {
@@ -585,7 +578,6 @@ app.post("/v1/responses", async (req, res, next) => {
         }
 
         emitMessagePrelude();
-        emittedText.append(delta);
         writeSseEvent(res, "response.output_text.delta", {
           type: "response.output_text.delta",
           item_id: messageId,
@@ -594,6 +586,10 @@ app.post("/v1/responses", async (req, res, next) => {
           delta
         });
       };
+      const canonicalTextStream = createCanonicalTextStream({
+        onActivity: emitResponsePrelude,
+        onText: emitTextDelta
+      });
       const result = await runResponseRequest(parsed, normalized, {
         previousRecord,
         loadPreviousHistory: parsed.previous_response_id
@@ -604,32 +600,17 @@ app.post("/v1/responses", async (req, res, next) => {
               return record?.history ?? null;
             }
           : null,
-        onToken(token, meta) {
-          if (meta?.isThinking) {
-            return;
-          }
-
-          emitTextDelta(sanitizer.write(token));
+        onToken(token) {
+          canonicalTextStream.observe(token);
         }
       });
-      emitTextDelta(sanitizer.flush());
       const assistantOutput = await buildHostedAssistantOutput(
         result.state,
         streamingSourceAttribution,
         result.accountIndex
       );
       const images = assistantOutput.images;
-      const renderedText = renderThoughtAndResponse({
-        thoughtText: assistantOutput.thoughtText,
-        responseText: assistantOutput.text
-      });
-      const emittedTextValue = emittedText.toString();
-      const pendingText = getStreamingTextSuffix(renderedText, emittedTextValue);
-      if (pendingText) {
-        emitTextDelta(pendingText);
-      }
-
-      const text = renderedText || emittedText.toString();
+      const text = canonicalTextStream.finish(assistantOutput.text);
       const hasMessage = Boolean(text);
 
       if (hasMessage) {
@@ -831,8 +812,6 @@ app.post("/v1/chat/completions", async (req, res, next) => {
       const streamingSourceAttribution = createStreamingSourceAttributionRequest(
         parsed.source_attribution
       );
-      const sanitizer = createGrokMarkupStreamSanitizer();
-      const emittedText = createTextAccumulator();
       let emittedAssistantRole = false;
       const ensureAssistantRoleEmitted = () => {
         if (emittedAssistantRole) {
@@ -858,7 +837,6 @@ app.post("/v1/chat/completions", async (req, res, next) => {
         }
 
         ensureAssistantRoleEmitted();
-        emittedText.append(delta);
         res.write(
           `data: ${JSON.stringify(
             createChatCompletionChunk({
@@ -870,32 +848,25 @@ app.post("/v1/chat/completions", async (req, res, next) => {
           )}\n\n`
         );
       };
+      const canonicalTextStream = createCanonicalTextStream({
+        onActivity: ensureAssistantRoleEmitted,
+        onText: emitTextDelta
+      });
       const result = await runChatCompletionRequest(prepared, {
-        onToken(token, meta) {
-          if (meta?.isThinking) {
-            return;
-          }
-
-          emitTextDelta(sanitizer.write(token));
+        onToken(token) {
+          canonicalTextStream.observe(token);
         }
       });
-      emitTextDelta(sanitizer.flush());
       const assistantOutput = await buildHostedAssistantOutput(
         result.state,
         streamingSourceAttribution,
         result.accountIndex
       );
       const content = renderChatCompletionContent({
-        text: renderThoughtAndResponse({
-          thoughtText: assistantOutput.thoughtText,
-          responseText: assistantOutput.text
-        }),
+        text: assistantOutput.text,
         images: assistantOutput.images
       });
-      const pendingText = getStreamingTextSuffix(content, emittedText.toString());
-      if (pendingText) {
-        emitTextDelta(pendingText);
-      }
+      canonicalTextStream.finish(content);
 
       ensureAssistantRoleEmitted();
       if (assistantOutput.images.length) {
