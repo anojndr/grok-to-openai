@@ -48,6 +48,8 @@ export const config = {
   importCookiesOnBoot: envBool("IMPORT_COOKIES_ON_BOOT", true),
   browserNetworkIdleTimeoutMs: Number(process.env.BROWSER_NETWORK_IDLE_TIMEOUT_MS ?? "1000"),
   browserPageLoadDelayMs: Number(process.env.BROWSER_PAGE_LOAD_DELAY_MS ?? "1000"),
+  browserStreamBatchMaxChars: Number(process.env.BROWSER_STREAM_BATCH_MAX_CHARS ?? "16384"),
+  browserStreamBatchDelayMs: Number(process.env.BROWSER_STREAM_BATCH_DELAY_MS ?? "2"),
   responseHydrationDelaysMs: process.env.RESPONSE_HYDRATION_DELAYS_MS
     ? process.env.RESPONSE_HYDRATION_DELAYS_MS.split(",").map(Number).filter(Number.isFinite)
     : null,

@@ -252,6 +252,7 @@ export class GrokClient {
 
   async init() {
     await this.browser.init();
+    await this.browser.loadStatsigChunkSource();
   }
 
   async uploadFile({ filename, mimeType, bytes }) {

@@ -54,7 +54,12 @@ function appendTextChunk(buffer, chunk) {
   buffer.length += nextChunk.length;
 }
 
-function installGrokBridgePageHelpers() {
+export function installGrokBridgePageHelpers() {
+  if (typeof window.__grokBridgeFetch === "function") {
+    window.grokBridgeFetch = window.__grokBridgeFetch;
+    return;
+  }
+
   // Element caching to survive anti-bot DOM removal
   const savedElements = [];
 
@@ -302,13 +307,6 @@ function installGrokBridgePageHelpers() {
     window.grokBridgeEnsureStatsigGenerator = ensureStatsigGenerator;
   }
 
-  if (typeof window.__grokBridgeFetch === "function") {
-    if (typeof window.grokBridgeFetch !== "function") {
-      window.grokBridgeFetch = window.__grokBridgeFetch;
-    }
-    return;
-  }
-
   window.__grokBridgeFetch = async (request) => {
     try {
       const url = new URL(request.url, location.origin);
@@ -369,6 +367,66 @@ function installGrokBridgePageHelpers() {
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
+      const requestedBatchMaxChars = Number(request.streamBatchMaxChars);
+      const requestedBatchDelayMs = Number(request.streamBatchDelayMs);
+      const batchMaxChars =
+        Number.isFinite(requestedBatchMaxChars) && requestedBatchMaxChars > 0
+          ? Math.floor(requestedBatchMaxChars)
+          : 16384;
+      const batchDelayMs =
+        Number.isFinite(requestedBatchDelayMs) && requestedBatchDelayMs >= 0
+          ? requestedBatchDelayMs
+          : 2;
+      let bufferedChunk = "";
+      let flushTimer = null;
+      let flushError = null;
+      let flushChain = Promise.resolve();
+
+      const flushBufferedChunk = () => {
+        if (flushTimer !== null) {
+          clearTimeout(flushTimer);
+          flushTimer = null;
+        }
+
+        if (!bufferedChunk || flushError) {
+          return flushChain;
+        }
+
+        const chunk = bufferedChunk;
+        bufferedChunk = "";
+        flushChain = flushChain
+          .then(() => window.__grokBridgeCallBinding("__grokBridgeChunk", {
+            requestId: request.requestId,
+            chunk
+          }))
+          .catch((error) => {
+            flushError ??= error;
+          });
+
+        return flushChain;
+      };
+
+      const queueChunk = async (chunk) => {
+        if (!chunk) {
+          return;
+        }
+
+        bufferedChunk += chunk;
+        if (bufferedChunk.length >= batchMaxChars) {
+          await flushBufferedChunk();
+          if (flushError) {
+            throw flushError;
+          }
+          return;
+        }
+
+        if (flushTimer === null) {
+          flushTimer = setTimeout(() => {
+            flushTimer = null;
+            flushBufferedChunk();
+          }, batchDelayMs);
+        }
+      };
 
       while (true) {
         const { value, done } = await reader.read();
@@ -377,20 +435,14 @@ function installGrokBridgePageHelpers() {
         }
 
         const chunk = decoder.decode(value, { stream: true });
-        if (chunk) {
-          await window.__grokBridgeCallBinding("__grokBridgeChunk", {
-            requestId: request.requestId,
-            chunk
-          });
-        }
+        await queueChunk(chunk);
       }
 
       const finalChunk = decoder.decode();
-      if (finalChunk) {
-        await window.__grokBridgeCallBinding("__grokBridgeChunk", {
-          requestId: request.requestId,
-          chunk: finalChunk
-        });
+      await queueChunk(finalChunk);
+      await flushBufferedChunk();
+      if (flushError) {
+        throw flushError;
       }
 
       await window.__grokBridgeCallBinding("__grokBridgeDone", {
@@ -533,7 +585,7 @@ async function getResponseBody(response) {
   return Buffer.isBuffer(body) ? body : Buffer.from(body);
 }
 
-let globalStatsigCache = null;
+const globalStatsigCache = new Map();
 
 export class BrowserSession {
   constructor(config) {
@@ -545,8 +597,11 @@ export class BrowserSession {
     this.pending = new Map();
     this.statsigChunkUrl = null;
     this.statsigModuleId = null;
+    this.statsigPromise = null;
     this.bindingsInstalled = false;
     this.initPromise = null;
+    this.validatedPage = null;
+    this.validatedPageUrl = null;
   }
 
   resetContextState() {
@@ -556,8 +611,10 @@ export class BrowserSession {
     this.pageUserAgent = null;
     this.statsigChunkUrl = null;
     this.statsigModuleId = null;
+    this.statsigPromise = null;
     this.bindingsInstalled = false;
-    globalStatsigCache = null;
+    this.validatedPage = null;
+    this.validatedPageUrl = null;
   }
 
   async loadStatsigChunkSource() {
@@ -568,12 +625,31 @@ export class BrowserSession {
       };
     }
 
-    if (globalStatsigCache) {
-      this.statsigChunkUrl = globalStatsigCache.url;
-      this.statsigModuleId = globalStatsigCache.moduleId;
-      return globalStatsigCache;
+    const cacheKey = this.config.grokBaseUrl;
+    const cached = globalStatsigCache.get(cacheKey);
+    if (cached) {
+      this.statsigChunkUrl = cached.url;
+      this.statsigModuleId = cached.moduleId;
+      return cached;
     }
 
+    if (this.statsigPromise) {
+      return this.statsigPromise;
+    }
+
+    const statsigPromise = this.discoverStatsigChunkSource(cacheKey);
+    this.statsigPromise = statsigPromise;
+
+    try {
+      return await statsigPromise;
+    } finally {
+      if (this.statsigPromise === statsigPromise) {
+        this.statsigPromise = null;
+      }
+    }
+  }
+
+  async discoverStatsigChunkSource(cacheKey) {
     const page = await this.ensurePage();
     const urls = await page.evaluate(() =>
       Array.from(document.querySelectorAll("script"))
@@ -657,12 +733,13 @@ export class BrowserSession {
     this.statsigChunkUrl = generatorUrl;
     this.statsigModuleId = numericModuleId;
 
-    globalStatsigCache = {
+    const discovered = {
       url: this.statsigChunkUrl,
       moduleId: this.statsigModuleId
     };
+    globalStatsigCache.set(cacheKey, discovered);
 
-    return globalStatsigCache;
+    return discovered;
   }
 
   async init() {
@@ -783,8 +860,18 @@ export class BrowserSession {
 
   async ensurePage() {
     if (this.page && !this.page.isClosed()) {
+      const pageUrl = typeof this.page.url === "function" ? this.page.url() : "";
+      if (
+        this.validatedPage === this.page &&
+        this.validatedPageUrl === pageUrl
+      ) {
+        return this.page;
+      }
+
       try {
         await this.validatePage(this.page);
+        this.validatedPage = this.page;
+        this.validatedPageUrl = pageUrl;
         return this.page;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -821,10 +908,21 @@ export class BrowserSession {
         }
       });
       this.page = page;
+      this.validatedPage = null;
+      this.validatedPageUrl = null;
       page.on("close", () => {
         if (this.page === page) {
           this.page = null;
           this.pageUserAgent = null;
+          this.validatedPage = null;
+          this.validatedPageUrl = null;
+        }
+      });
+      page.on("framenavigated", (frame) => {
+        const mainFrame = typeof page.mainFrame === "function" ? page.mainFrame() : null;
+        if (this.page === page && (!mainFrame || frame === mainFrame)) {
+          this.validatedPage = null;
+          this.validatedPageUrl = null;
         }
       });
 
@@ -841,6 +939,8 @@ export class BrowserSession {
           await page.waitForTimeout(pageLoadDelay);
         } catch (e) {}
         await this.validatePage(page, response);
+        this.validatedPage = page;
+        this.validatedPageUrl = typeof page.url === "function" ? page.url() : "";
 
         try {
           this.pageUserAgent = await page.evaluate(() => navigator.userAgent);
@@ -874,6 +974,8 @@ export class BrowserSession {
       await this.page.close().catch(() => {});
     }
     this.page = null;
+    this.validatedPage = null;
+    this.validatedPageUrl = null;
     try {
       return await this.ensurePage();
     } catch (error) {
@@ -1001,7 +1103,6 @@ export class BrowserSession {
   }
 
   async evaluateRequest(page, payload) {
-    await page.evaluate(installGrokBridgePageHelpers);
     return page.evaluate((requestPayload) => window.__grokBridgeFetch(requestPayload), payload);
   }
 
@@ -1030,7 +1131,9 @@ export class BrowserSession {
       body,
       headers,
       statsigChunkUrl,
-      statsigModuleId
+      statsigModuleId,
+      streamBatchMaxChars: this.config.browserStreamBatchMaxChars,
+      streamBatchDelayMs: this.config.browserStreamBatchDelayMs
     };
 
     const run = async (page) => {

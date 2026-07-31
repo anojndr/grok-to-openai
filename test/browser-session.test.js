@@ -5,6 +5,7 @@ import {
   BrowserSession,
   GROK_SESSION_BLOCKED_ERROR_CODE,
   ERROR_RESPONSE_TEXT_LIMIT,
+  installGrokBridgePageHelpers,
   isRecoverableContextError
 } from "../src/grok/browser-session.js";
 
@@ -98,6 +99,47 @@ test("request caps buffered error bodies for streamed responses", async () => {
   assert.equal(response.meta?.status, 500);
   assert.equal(response.text.length, ERROR_RESPONSE_TEXT_LIMIT);
   assert.equal(response.text, "x".repeat(ERROR_RESPONSE_TEXT_LIMIT));
+});
+
+test("warmed requests use one browser evaluation", async () => {
+  const session = new BrowserSession({
+    grokBaseUrl: "https://grok.com"
+  });
+  let evaluateCalls = 0;
+  const page = {
+    isClosed() {
+      return false;
+    },
+    url() {
+      return "https://grok.com/";
+    },
+    async evaluate(_fn, payload) {
+      evaluateCalls += 1;
+      const pending = session.pending.get(payload.requestId);
+      pending.onMeta({
+        requestId: payload.requestId,
+        status: 200,
+        headers: {}
+      });
+      pending.onChunk("ok");
+      pending.resolve();
+    }
+  };
+
+  session.context = {};
+  session.page = page;
+  session.validatedPage = page;
+  session.validatedPageUrl = page.url();
+  session.statsigChunkUrl = "https://grok.com/statsig.js";
+  session.statsigModuleId = 1;
+
+  const response = await session.request({
+    requestId: "req-warm-fast-path",
+    url: "https://grok.com/rest/test"
+  });
+
+  assert.equal(response.text, "ok");
+  assert.equal(evaluateCalls, 1);
 });
 
 test("request recreates the page when the Grok bridge helper is missing", async () => {
@@ -330,6 +372,131 @@ test("installBindings exposes both canonical and legacy Grok bridge names", asyn
     "__grokBridgeError",
     "grokBridgeError"
   ]);
+});
+
+test("page bridge batches fast response chunks and installs idempotently", async () => {
+  const originalGlobals = new Map();
+  const globalNames = ["window", "document", "location", "MutationObserver", "fetch"];
+  for (const name of globalNames) {
+    originalGlobals.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
+  }
+
+  const chunkPayloads = [];
+  const metadataPayloads = [];
+  const donePayloads = [];
+  const errorPayloads = [];
+  let observerCount = 0;
+  const document = {
+    documentElement: {},
+    querySelectorAll() {
+      return [];
+    },
+    querySelector() {
+      return null;
+    },
+    getElementsByClassName() {
+      return [];
+    }
+  };
+  const window = {
+    __grokStatsigGen: async () => "statsig-id",
+    async __grokBridgeMeta(payload) {
+      metadataPayloads.push(payload);
+    },
+    async __grokBridgeChunk(payload) {
+      chunkPayloads.push(payload);
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    },
+    async __grokBridgeDone(payload) {
+      donePayloads.push(payload);
+    },
+    async __grokBridgeError(payload) {
+      errorPayloads.push(payload);
+    }
+  };
+  const encodedChunk = new TextEncoder().encode("x");
+  let readCount = 0;
+
+  Object.defineProperties(globalThis, {
+    window: { configurable: true, writable: true, value: window },
+    document: { configurable: true, writable: true, value: document },
+    location: {
+      configurable: true,
+      writable: true,
+      value: { origin: "https://grok.com" }
+    },
+    MutationObserver: {
+      configurable: true,
+      writable: true,
+      value: class {
+        constructor() {
+          observerCount += 1;
+        }
+
+        observe() {}
+      }
+    },
+    fetch: {
+      configurable: true,
+      writable: true,
+      value: async () => ({
+        status: 200,
+        headers: {
+          forEach(callback) {
+            callback("application/x-ndjson", "content-type");
+          }
+        },
+        body: {
+          getReader() {
+            return {
+              async read() {
+                if (readCount >= 1024) {
+                  return { done: true, value: undefined };
+                }
+
+                readCount += 1;
+                return { done: false, value: encodedChunk };
+              }
+            };
+          }
+        }
+      })
+    }
+  });
+
+  try {
+    installGrokBridgePageHelpers();
+    const installedQuerySelectorAll = document.querySelectorAll;
+    installGrokBridgePageHelpers();
+
+    assert.equal(observerCount, 1);
+    assert.equal(document.querySelectorAll, installedQuerySelectorAll);
+
+    await window.__grokBridgeFetch({
+      requestId: "req-batched-stream",
+      url: "https://grok.com/rest/test",
+      method: "GET",
+      headers: {},
+      statsigChunkUrl: "https://grok.com/statsig.js",
+      statsigModuleId: 1,
+      streamBatchMaxChars: 128,
+      streamBatchDelayMs: 1000
+    });
+  } finally {
+    for (const [name, descriptor] of originalGlobals) {
+      if (descriptor) {
+        Object.defineProperty(globalThis, name, descriptor);
+      } else {
+        delete globalThis[name];
+      }
+    }
+  }
+
+  assert.equal(metadataPayloads.length, 1);
+  assert.equal(donePayloads.length, 1);
+  assert.deepEqual(errorPayloads, []);
+  assert.equal(chunkPayloads.length, 8);
+  assert.equal(chunkPayloads.map((payload) => payload.chunk).join(""), "x".repeat(1024));
 });
 
 function createMockResponse({
@@ -775,5 +942,4 @@ test("recreatePage falls back to recreateContext on context error", async () => 
   assert.equal(recreateContextCalled, true);
   assert.equal(page.isMockPage, true);
 });
-
 

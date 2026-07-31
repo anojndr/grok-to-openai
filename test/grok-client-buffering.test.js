@@ -59,3 +59,22 @@ test("uploadFile base64-encodes normalized buffers without wrapping them in Buff
     "01020304"
   );
 });
+
+test("init preloads the Statsig request generator", async () => {
+  const client = new GrokClient({
+    grokBaseUrl: "https://grok.com"
+  });
+  const calls = [];
+  client.browser = {
+    async init() {
+      calls.push("browser");
+    },
+    async loadStatsigChunkSource() {
+      calls.push("statsig");
+    }
+  };
+
+  await client.init();
+
+  assert.deepEqual(calls, ["browser", "statsig"]);
+});
