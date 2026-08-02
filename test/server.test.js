@@ -102,6 +102,7 @@ async function startServer(options = {}) {
 }
 
 async function stopServer({ child, dataDir }) {
+  let forced = false;
   if (child.exitCode == null) {
     const exitPromise = once(child, "exit");
     child.kill("SIGTERM");
@@ -112,12 +113,14 @@ async function stopServer({ child, dataDir }) {
   }
 
   if (child.exitCode == null) {
+    forced = true;
     const exitPromise = once(child, "exit");
     child.kill("SIGKILL");
     await exitPromise;
   }
 
   await fs.rm(dataDir, { recursive: true, force: true });
+  assert.equal(forced, false, "Server did not shut down cleanly after SIGTERM");
 }
 
 test("server accepts JSON bodies larger than the former 8mb cap", async () => {

@@ -5,6 +5,7 @@ import { readCookiesFromSource } from "../lib/cookies.js";
 
 export const ERROR_RESPONSE_TEXT_LIMIT = 128 * 1024;
 export const GROK_SESSION_BLOCKED_ERROR_CODE = "grok_session_blocked";
+export const GROK_REQUEST_TIMEOUT_ERROR_CODE = "grok_request_timeout";
 
 function clearTextBuffer(buffer) {
   buffer.chunks.length = 0;
@@ -57,8 +58,21 @@ function appendTextChunk(buffer, chunk) {
 export function installGrokBridgePageHelpers() {
   if (typeof window.__grokBridgeFetch === "function") {
     window.grokBridgeFetch = window.__grokBridgeFetch;
+    window.grokBridgeAbortRequest = window.__grokBridgeAbortRequest;
     return;
   }
+
+  const requestControllers = new Map();
+  window.__grokBridgeAbortRequest = (requestId) => {
+    const controller = requestControllers.get(requestId);
+    if (!controller) {
+      return false;
+    }
+
+    controller.abort();
+    return true;
+  };
+  window.grokBridgeAbortRequest = window.__grokBridgeAbortRequest;
 
   // Element caching to survive anti-bot DOM removal
   const savedElements = [];
@@ -398,6 +412,9 @@ export function installGrokBridgePageHelpers() {
   }
 
   window.__grokBridgeFetch = async (request) => {
+    const controller = new AbortController();
+    requestControllers.set(request.requestId, controller);
+
     try {
       const url = new URL(request.url, location.origin);
       let statsigId;
@@ -434,7 +451,8 @@ export function installGrokBridgePageHelpers() {
         method: request.method,
         headers,
         body: request.body ? JSON.stringify(request.body) : undefined,
-        credentials: "include"
+        credentials: "include",
+        signal: controller.signal
       });
 
       const responseHeaders = {};
@@ -548,6 +566,8 @@ export function installGrokBridgePageHelpers() {
       } catch {
         throw error;
       }
+    } finally {
+      requestControllers.delete(request.requestId);
     }
   };
 
@@ -690,6 +710,7 @@ export class BrowserSession {
     this.statsigPromise = null;
     this.bindingsInstalled = false;
     this.initPromise = null;
+    this.closePromise = null;
     this.validatedPage = null;
     this.validatedPageUrl = null;
   }
@@ -1196,6 +1217,16 @@ export class BrowserSession {
     return page.evaluate((requestPayload) => window.__grokBridgeFetch(requestPayload), payload);
   }
 
+  async abortRequest(page, requestId) {
+    return page
+      .evaluate(
+        (activeRequestId) =>
+          window.__grokBridgeAbortRequest?.(activeRequestId) ?? false,
+        requestId
+      )
+      .catch(() => false);
+  }
+
   async request({
     requestId,
     url,
@@ -1228,6 +1259,18 @@ export class BrowserSession {
 
     const run = async (page) => {
       await new Promise((resolve, reject) => {
+        const configuredTimeout = Number(this.config.browserRequestTimeoutMs);
+        const timeoutMs =
+          Number.isFinite(configuredTimeout) && configuredTimeout > 0
+            ? configuredTimeout
+            : 10 * 60 * 1000;
+        let timeout;
+        const finish = (callback, value) => {
+          clearTimeout(timeout);
+          this.pending.delete(requestId);
+          callback(value);
+        };
+
         this.pending.set(requestId, {
           onMeta(payload) {
             meta = payload;
@@ -1244,13 +1287,28 @@ export class BrowserSession {
             appendTextChunk(textBuffer, chunk);
             onChunk?.(chunk);
           },
-          resolve,
-          reject
+          resolve() {
+            finish(resolve);
+          },
+          reject(error) {
+            finish(reject, error);
+          }
         });
 
+        timeout = setTimeout(() => {
+          void this.abortRequest(page, requestId);
+          finish(
+            reject,
+            new HttpError(
+              504,
+              `Grok request timed out after ${timeoutMs} ms`,
+              { code: GROK_REQUEST_TIMEOUT_ERROR_CODE }
+            )
+          );
+        }, timeoutMs);
+
         this.evaluateRequest(page, payload).catch((error) => {
-          this.pending.delete(requestId);
-          reject(error);
+          finish(reject, error);
         });
       });
     };
@@ -1337,7 +1395,10 @@ export class BrowserSession {
       };
     }
 
-    const page = await this.ensurePage();
+    const page = await this.context?.newPage();
+    if (!page) {
+      throw new Error("Asset fetch failed because no browser context is available");
+    }
     const navigationResponses = [];
     const captureResponse = (response) => {
       if (isPrimaryNavigationResponse(page, response)) {
@@ -1395,12 +1456,36 @@ export class BrowserSession {
   }
 
   async close() {
-    const initPromise = this.initPromise;
-    if (initPromise) {
-      await initPromise.catch(() => {});
+    if (this.closePromise) {
+      return this.closePromise;
     }
 
-    await this.context?.close();
-    this.resetContextState();
+    const closePromise = (async () => {
+      const initPromise = this.initPromise;
+      if (initPromise) {
+        await initPromise.catch(() => {});
+      }
+
+      const context = this.context;
+      try {
+        await context?.close();
+      } finally {
+        const closeError = new Error("Browser session closed");
+        for (const pending of this.pending.values()) {
+          pending.reject(closeError);
+        }
+        this.pending.clear();
+        this.resetContextState();
+      }
+    })();
+
+    this.closePromise = closePromise;
+    try {
+      await closePromise;
+    } finally {
+      if (this.closePromise === closePromise) {
+        this.closePromise = null;
+      }
+    }
   }
 }

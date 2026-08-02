@@ -12,6 +12,20 @@ function envBool(name, fallback = false) {
   return ["1", "true", "yes", "on"].includes(value.toLowerCase());
 }
 
+function envInteger(name, fallback, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
+  const rawValue = process.env[name];
+  if (rawValue == null || rawValue === "") {
+    return fallback;
+  }
+
+  const value = Number(rawValue);
+  if (!Number.isInteger(value) || value < min || value > max) {
+    throw new Error(`${name} must be an integer between ${min} and ${max}`);
+  }
+
+  return value;
+}
+
 function resolveOptionalPath(value) {
   if (!value) {
     return "";
@@ -22,7 +36,7 @@ function resolveOptionalPath(value) {
 
 export const config = {
   host: process.env.HOST ?? "127.0.0.1",
-  port: Number(process.env.PORT ?? "8787"),
+  port: envInteger("PORT", 8787, { min: 1, max: 65535 }),
   apiKey: process.env.BRIDGE_API_KEY ?? "",
   chromeExecutablePath: resolveOptionalPath(
     process.env.CHROME_EXECUTABLE_PATH ??
@@ -46,11 +60,13 @@ export const config = {
   grokPassword: process.env.GROK_PASSWORD ?? "",
   headless: envBool("HEADLESS", true),
   importCookiesOnBoot: envBool("IMPORT_COOKIES_ON_BOOT", true),
-  browserNetworkIdleTimeoutMs: Number(process.env.BROWSER_NETWORK_IDLE_TIMEOUT_MS ?? "1000"),
-  browserPageLoadDelayMs: Number(process.env.BROWSER_PAGE_LOAD_DELAY_MS ?? "1000"),
-  browserStreamBatchMaxChars: Number(process.env.BROWSER_STREAM_BATCH_MAX_CHARS ?? "16384"),
-  browserStreamBatchDelayMs: Number(process.env.BROWSER_STREAM_BATCH_DELAY_MS ?? "2"),
-  fileUploadConcurrency: Number(process.env.FILE_UPLOAD_CONCURRENCY ?? "4"),
+  browserNetworkIdleTimeoutMs: envInteger("BROWSER_NETWORK_IDLE_TIMEOUT_MS", 1000),
+  browserPageLoadDelayMs: envInteger("BROWSER_PAGE_LOAD_DELAY_MS", 1000),
+  browserStreamBatchMaxChars: envInteger("BROWSER_STREAM_BATCH_MAX_CHARS", 16384, { min: 1 }),
+  browserStreamBatchDelayMs: envInteger("BROWSER_STREAM_BATCH_DELAY_MS", 2),
+  browserRequestTimeoutMs: envInteger("BROWSER_REQUEST_TIMEOUT_MS", 10 * 60 * 1000, { min: 1 }),
+  shutdownTimeoutMs: envInteger("SHUTDOWN_TIMEOUT_MS", 30 * 1000, { min: 1 }),
+  fileUploadConcurrency: envInteger("FILE_UPLOAD_CONCURRENCY", 4, { min: 1 }),
   responseHydrationDelaysMs: process.env.RESPONSE_HYDRATION_DELAYS_MS
     ? process.env.RESPONSE_HYDRATION_DELAYS_MS.split(",").map(Number).filter(Number.isFinite)
     : null,

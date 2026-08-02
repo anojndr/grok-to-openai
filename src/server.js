@@ -81,27 +81,76 @@ const imgbb = new ImgbbClient(config);
 let server;
 let shutdownPromise = null;
 
+async function closeHttpServer() {
+  if (!server?.listening) {
+    return false;
+  }
+
+  return new Promise((resolve) => {
+    let settled = false;
+    let forced = false;
+    const finish = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
+      resolve(forced);
+    };
+    const timeout = setTimeout(() => {
+      forced = true;
+      console.warn(
+        `HTTP shutdown exceeded ${config.shutdownTimeoutMs} ms; closing remaining connections`
+      );
+      server.closeAllConnections?.();
+      finish();
+    }, config.shutdownTimeoutMs);
+    timeout.unref?.();
+
+    server.close((error) => {
+      if (error) {
+        console.error("Failed to close the HTTP server cleanly:", error);
+      }
+      finish();
+    });
+  });
+}
+
 async function shutdown() {
   if (shutdownPromise) {
     return shutdownPromise;
   }
 
   shutdownPromise = (async () => {
-    server?.close();
-    await closeStores();
-    await grokAccounts.close();
-    process.exit(0);
+    const forced = await closeHttpServer();
+    const results = await Promise.allSettled([
+      closeStores(),
+      grokAccounts.close({ force: forced })
+    ]);
+    const failures = results.filter((result) => result.status === "rejected");
+    if (failures.length) {
+      for (const failure of failures) {
+        console.error("Shutdown cleanup failed:", failure.reason);
+      }
+      process.exitCode = 1;
+    }
   })();
 
   return shutdownPromise;
 }
 
 process.on("SIGINT", () => {
-  void shutdown();
+  void shutdown().catch((error) => {
+    console.error("Shutdown failed:", error);
+    process.exitCode = 1;
+  });
 });
 
 process.on("SIGTERM", () => {
-  void shutdown();
+  void shutdown().catch((error) => {
+    console.error("Shutdown failed:", error);
+    process.exitCode = 1;
+  });
 });
 
 function maybeHandleStreamingError(req, res, error) {
@@ -190,6 +239,9 @@ app.post("/v1/files", upload.single("file"), async (req, res, next) => {
 
     res.status(200).json(record);
   } catch (error) {
+    if (req.file?.path) {
+      await fs.rm(req.file.path, { force: true }).catch(() => {});
+    }
     if (maybeHandleStreamingError(req, res, error)) {
       return;
     }

@@ -95,11 +95,7 @@ function parseMultipleJson(text) {
     }
 
     if (text[index] !== "[" && text[index] !== "{") {
-      const nextStart = text.slice(index).search(/[\[{]/);
-      if (nextStart === -1) {
-        break;
-      }
-      index += nextStart;
+      return null;
     }
 
     const startChar = text[index];
@@ -144,11 +140,11 @@ function parseMultipleJson(text) {
         const parsed = JSON.parse(jsonStr);
         results.push(parsed);
         index = i;
-      } catch (e) {
-        index++;
+      } catch {
+        return null;
       }
     } else {
-      break;
+      return null;
     }
   }
 
@@ -161,7 +157,11 @@ function normalizeParsedCookieJson(parsed) {
   }
 
   const isCookie = (obj) =>
-    obj && typeof obj === "object" && "name" in obj && "value" in obj && !("cookies" in obj);
+    obj &&
+    typeof obj === "object" &&
+    typeof obj.name === "string" &&
+    typeof obj.value === "string" &&
+    !("cookies" in obj);
 
   const getCookiesFromAccount = (acc) => {
     if (Array.isArray(acc)) {
@@ -180,28 +180,37 @@ function normalizeParsedCookieJson(parsed) {
       return [];
     }
 
-    if (Array.isArray(parsed[0])) {
-      return parsed.map(getCookiesFromAccount).filter(Boolean);
+    if (parsed.every(Array.isArray)) {
+      return parsed.every((cookies) => cookies.every(isCookie)) ? parsed : null;
     }
 
     if (parsed.every(isCookie)) {
       return [parsed];
     }
 
-    const accountsCookies = parsed.map(getCookiesFromAccount).filter(Boolean);
-    if (accountsCookies.length > 0) {
+    const accountsCookies = parsed.map(getCookiesFromAccount);
+    if (
+      accountsCookies.every(
+        (cookies) => Array.isArray(cookies) && cookies.every(isCookie)
+      )
+    ) {
       return accountsCookies;
     }
 
-    return [parsed];
+    return null;
   }
 
   if (parsed && typeof parsed === "object") {
-    if (Array.isArray(parsed.cookies)) {
+    if (Array.isArray(parsed.cookies) && parsed.cookies.every(isCookie)) {
       return [parsed.cookies];
     }
     if (Array.isArray(parsed.accounts)) {
-      return parsed.accounts.map(getCookiesFromAccount).filter(Boolean);
+      const accountsCookies = parsed.accounts.map(getCookiesFromAccount);
+      return accountsCookies.every(
+        (cookies) => Array.isArray(cookies) && cookies.every(isCookie)
+      )
+        ? accountsCookies
+        : null;
     }
   }
 
@@ -221,17 +230,37 @@ export function parseCookieJson(text) {
     }
 
     const allAccounts = [];
+    let recognizedDocument = false;
     for (const doc of parsedDocs) {
       const normalized = normalizeParsedCookieJson(doc);
-      if (normalized) {
+      if (normalized !== null) {
+        recognizedDocument = true;
         allAccounts.push(...normalized);
       }
     }
 
-    return allAccounts;
+    return recognizedDocument ? allAccounts : null;
   } catch (e) {
     return null;
   }
+}
+
+export function parseCookieSets(text) {
+  if (!text.trim()) {
+    return [];
+  }
+
+  const jsonGroups = parseCookieJson(text);
+  if (jsonGroups) {
+    return jsonGroups;
+  }
+
+  const netscapeGroups = parseNetscapeCookieTextGroups(text);
+  if (netscapeGroups.length) {
+    return netscapeGroups;
+  }
+
+  throw new SyntaxError("Cookie source does not contain valid JSON or Netscape cookies");
 }
 
 async function readCookieSourceText({ filePath = "", rawText = "" }) {
@@ -248,20 +277,10 @@ async function readCookieSourceText({ filePath = "", rawText = "" }) {
 
 export async function readCookieSetsFromSource({ filePath = "", rawText = "" }) {
   const content = await readCookieSourceText({ filePath, rawText });
-  if (!content.trim()) {
-    return [];
-  }
-
-  const jsonGroups = parseCookieJson(content);
-  if (jsonGroups) {
-    return jsonGroups;
-  }
-
-  return parseNetscapeCookieTextGroups(content);
+  return parseCookieSets(content);
 }
 
 export async function readCookiesFromSource({ filePath = "", rawText = "" }) {
   const groups = await readCookieSetsFromSource({ filePath, rawText });
   return groups[0] ?? [];
 }
-

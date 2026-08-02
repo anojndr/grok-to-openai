@@ -209,6 +209,8 @@ IMPORT_COOKIES_ON_BOOT=true
 BROWSER_PROFILE_DIR=.browser-profile
 BROWSER_STREAM_BATCH_MAX_CHARS=16384
 BROWSER_STREAM_BATCH_DELAY_MS=2
+BROWSER_REQUEST_TIMEOUT_MS=600000
+SHUTDOWN_TIMEOUT_MS=30000
 FILE_UPLOAD_CONCURRENCY=4
 DATA_DIR=.data
 DATABASE_URL=postgresql://user:pass@db.example.com:5432/groktoopenai?sslmode=disable
@@ -239,6 +241,12 @@ Supported configuration:
   Tune browser-to-Node stream batching. Defaults to `16384` characters and
   `2` milliseconds to reduce Playwright round-trips without noticeably delaying
   live token delivery.
+- `BROWSER_REQUEST_TIMEOUT_MS`
+  Maximum lifetime of one Grok browser request. Defaults to `600000` (10
+  minutes); timed-out page fetches are aborted and returned as HTTP `504`.
+- `SHUTDOWN_TIMEOUT_MS`
+  Time allowed for active HTTP requests to drain before remaining connections
+  are closed. Defaults to `30000` (30 seconds).
 - `FILE_UPLOAD_CONCURRENCY`
   Maximum number of attachments uploaded to Grok concurrently per request.
   Defaults to `4`; set it to `1` to restore sequential uploads.
@@ -287,7 +295,7 @@ The bridge supports running a pool of multiple Grok accounts for load-balancing,
 - **Isolated Browser Profiles**: When multiple accounts are configured, `BROWSER_PROFILE_DIR` is automatically split into per-account subdirectories (e.g. `account-001`, `account-002`, etc.) to keep browser state and local storage fully isolated.
 - **Failover & Rotation**: The bridge automatically starts with the primary account (index 0). If a request fails due to rate limits (HTTP `429` / "too many requests" / "heavy usage") or authentication/session issues (HTTP `401`/`403`, "session expired", or redirect to login pages), that account is temporarily quarantined. The bridge then rotates to the next active fallback account.
 - **Quarantine & Dynamic Cooldown**: When an account is quarantined, it is placed on a 15-minute cooldown. If all configured accounts are exhausted, the bridge will reset the unavailable status to retry the pool.
-- **Hot-Reloading**: The bridge monitors `GROK_COOKIE_FILE` and `GROK_COOKIES_TEXT`. If changes are detected, it hot-reloads the cookies, gracefully closes existing browser sessions, and re-initializes the account pool in-place without requiring a server reboot.
+- **Hot-Reloading**: The bridge checks `GROK_COOKIE_FILE` and `GROK_COOKIES_TEXT` before account selection. Valid changes are loaded in place, active requests are allowed to finish before their old sessions close, and unreadable or malformed updates retain the last known-good pool.
 - **Automatic ToS Modal Dismissal**: During browser startup, the bridge evaluates the page context and automatically dismisses standard Terms of Service, Acceptable Use Policies, cookie consents, or privacy update modals by simulating button clicks (e.g. "Got it", "I agree", "Close") to prevent automation blocks.
 
 Log in manually (by running with `HEADLESS=false` temporarily) if cookies need to be refreshed, then restart with `HEADLESS=true` for headless server execution.

@@ -4,6 +4,7 @@ import { chromium } from "playwright-core";
 import {
   BrowserSession,
   GROK_SESSION_BLOCKED_ERROR_CODE,
+  GROK_REQUEST_TIMEOUT_ERROR_CODE,
   ERROR_RESPONSE_TEXT_LIMIT,
   installGrokBridgePageHelpers,
   isRecoverableContextError
@@ -99,6 +100,29 @@ test("request caps buffered error bodies for streamed responses", async () => {
   assert.equal(response.meta?.status, 500);
   assert.equal(response.text.length, ERROR_RESPONSE_TEXT_LIMIT);
   assert.equal(response.text, "x".repeat(ERROR_RESPONSE_TEXT_LIMIT));
+});
+
+test("request aborts page fetches that exceed the configured timeout", async () => {
+  const session = createSession(() => new Promise(() => {}));
+  session.config.browserRequestTimeoutMs = 10;
+  let abortedRequestId = null;
+  session.abortRequest = async (_page, requestId) => {
+    abortedRequestId = requestId;
+    return true;
+  };
+
+  await assert.rejects(
+    session.request({
+      requestId: "req-timeout",
+      url: "https://grok.com/rest/test"
+    }),
+    (error) =>
+      error?.status === 504 &&
+      error?.details?.code === GROK_REQUEST_TIMEOUT_ERROR_CODE
+  );
+
+  assert.equal(abortedRequestId, "req-timeout");
+  assert.equal(session.pending.has("req-timeout"), false);
 });
 
 test("warmed requests use one browser evaluation", async () => {
@@ -452,28 +476,42 @@ test("page bridge batches fast response chunks and installs idempotently", async
     fetch: {
       configurable: true,
       writable: true,
-      value: async () => ({
-        status: 200,
-        headers: {
-          forEach(callback) {
-            callback("application/x-ndjson", "content-type");
-          }
-        },
-        body: {
-          getReader() {
-            return {
-              async read() {
-                if (readCount >= 1024) {
-                  return { done: true, value: undefined };
-                }
-
-                readCount += 1;
-                return { done: false, value: encodedChunk };
-              }
-            };
-          }
+      value: async (url, options) => {
+        if (url.endsWith("/abort")) {
+          return new Promise((_resolve, reject) => {
+            const rejectAborted = () =>
+              reject(new DOMException("The operation was aborted", "AbortError"));
+            if (options.signal.aborted) {
+              rejectAborted();
+              return;
+            }
+            options.signal.addEventListener("abort", rejectAborted, { once: true });
+          });
         }
-      })
+
+        return {
+          status: 200,
+          headers: {
+            forEach(callback) {
+              callback("application/x-ndjson", "content-type");
+            }
+          },
+          body: {
+            getReader() {
+              return {
+                async read() {
+                  if (readCount >= 1024) {
+                    return { done: true, value: undefined };
+                  }
+
+                  readCount += 1;
+                  return { done: false, value: encodedChunk };
+                }
+              };
+            }
+          }
+        };
+      }
     }
   });
 
@@ -497,6 +535,18 @@ test("page bridge batches fast response chunks and installs idempotently", async
       streamBatchMaxChars: 128,
       streamBatchDelayMs: 1000
     });
+
+    const abortedFetch = window.__grokBridgeFetch({
+      requestId: "req-aborted-stream",
+      url: "https://grok.com/abort",
+      method: "GET",
+      headers: {},
+      statsigChunkUrl: "https://grok.com/statsig.js",
+      statsigModuleId: 1
+    });
+    assert.equal(window.__grokBridgeAbortRequest("req-aborted-stream"), true);
+    await abortedFetch;
+    assert.equal(window.__grokBridgeAbortRequest("req-aborted-stream"), false);
   } finally {
     for (const [name, descriptor] of originalGlobals) {
       if (descriptor) {
@@ -509,7 +559,8 @@ test("page bridge batches fast response chunks and installs idempotently", async
 
   assert.equal(metadataPayloads.length, 1);
   assert.equal(donePayloads.length, 1);
-  assert.deepEqual(errorPayloads, []);
+  assert.equal(errorPayloads.length, 1);
+  assert.match(errorPayloads[0].message, /AbortError/);
   assert.equal(chunkPayloads.length, 8);
   assert.equal(chunkPayloads.map((payload) => payload.chunk).join(""), "x".repeat(1024));
 });
@@ -736,8 +787,10 @@ test("fetchAsset returns the last browser navigation response for the asset", as
   const session = new BrowserSession({
     grokBaseUrl: "https://grok.com"
   });
+  const sharedPage = createMockPage("Mozilla/5.0 Shared");
 
   session.init = async () => {};
+  session.page = sharedPage;
   session.context = {
     async newPage() {
       return page;
@@ -749,6 +802,7 @@ test("fetchAsset returns the last browser navigation response for the asset", as
   assert.equal(asset.contentType, "image/png");
   assert.equal(asset.bytes.toString("utf8"), "final-image");
   assert.equal(page.closed, true);
+  assert.equal(sharedPage.closed, false);
 });
 
 test("recreatePage refreshes the cached user agent for the new page", async () => {

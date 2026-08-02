@@ -1,6 +1,6 @@
 import path from "node:path";
 import fs from "node:fs/promises";
-import { readCookieSetsFromSource } from "../lib/cookies.js";
+import { parseCookieSets } from "../lib/cookies.js";
 import { GrokClient } from "./client.js";
 import { GROK_SESSION_BLOCKED_ERROR_CODE } from "./browser-session.js";
 
@@ -25,8 +25,14 @@ export class GrokAccountPool {
     this.activeFallbackAccountIndex = null;
     this.unavailableAccountIndexes = new Set();
     this.unavailableAccountTimestamps = new Map();
-    this.lastLoadedContent = "";
+    this.lastLoadedContent = null;
+    this.lastReloadWarning = null;
     this.loadedAccounts = null;
+    this.activeClientOperations = new Map();
+    this.pendingClientCloses = new Set();
+    this.clientClosePromises = new Map();
+    this.knownClients = new Set();
+    this.closed = false;
   }
 
   isAccountUnavailable(index, cooldownMs = 15 * 60 * 1000) {
@@ -53,11 +59,8 @@ export class GrokAccountPool {
       console.warn(`All ${accounts.length} configured accounts in pool are marked as unavailable. Resetting pool status to retry them.`);
       this.unavailableAccountIndexes.clear();
       this.unavailableAccountTimestamps.clear();
-      if (this.loadedAccounts) {
-        Promise.all(this.loadedAccounts.map((acc) => acc.client.close?.().catch(() => {}))).catch(() => {});
-        this.loadedAccounts = null;
-      }
-      this.accountsPromise = null; // Clear cached promise to trigger a reload of cookies on next request
+      this.activeFallbackAccountIndex = null;
+      void this.closeAccountsWhenIdle(accounts);
       return true;
     }
     return false;
@@ -67,85 +70,249 @@ export class GrokAccountPool {
     const accounts = await this.getAccounts();
     const primaryAccount = this.getPrimaryAccount(accounts);
     if (primaryAccount) {
-      await primaryAccount.client.init();
+      await this.runAccountOperation(primaryAccount, (client) => client.init());
     }
   }
 
   async getAccounts() {
+    if (this.closed) {
+      throw new Error("Grok account pool is closed");
+    }
+
     if (this.accountsPromise) {
       return this.accountsPromise;
     }
 
-    this.accountsPromise = this.loadAccounts();
-    return this.accountsPromise;
+    const accountsPromise = this.loadAccounts();
+    this.accountsPromise = accountsPromise;
+
+    try {
+      return await accountsPromise;
+    } finally {
+      if (this.accountsPromise === accountsPromise) {
+        this.accountsPromise = null;
+      }
+    }
   }
 
   async loadAccounts() {
     if (this.fixedAccounts) {
-      return this.fixedAccounts.map((client, index) => ({
-        index,
-        client
-      }));
+      if (!this.loadedAccounts) {
+        this.loadedAccounts = this.fixedAccounts.map((client, index) => ({
+          index,
+          client
+        }));
+        this.trackAccounts(this.loadedAccounts);
+      }
+      return this.loadedAccounts;
     }
 
-    const rawText = this.config.grokCookiesText ?? "";
-    let content = "";
-    if (rawText.trim()) {
-      content = rawText;
-    } else if (this.config.grokCookieFile) {
-      try {
-        content = await fs.readFile(this.config.grokCookieFile, "utf8");
-      } catch (e) {
-        content = "";
+    let content;
+    try {
+      content = await this.readConfiguredCookieText();
+    } catch (error) {
+      if (!this.loadedAccounts) {
+        throw error;
       }
+
+      this.warnReloadFailure(
+        `Failed to reload Grok cookies; continuing with the last known-good account pool: ${error.message}`
+      );
+      return this.loadedAccounts;
     }
 
     if (this.lastLoadedContent === content && this.loadedAccounts) {
+      this.lastReloadWarning = null;
       return this.loadedAccounts;
     }
 
-    // Clean up old clients if config/content changed
-    if (this.loadedAccounts) {
-      await Promise.all(this.loadedAccounts.map((acc) => acc.client.close?.()));
-    }
+    let cookieSets;
+    try {
+      cookieSets = parseCookieSets(content);
+    } catch (error) {
+      if (!this.loadedAccounts) {
+        throw error;
+      }
 
-    const cookieSets = await readCookieSetsFromSource({
-      filePath: this.config.grokCookieFile,
-      rawText: this.config.grokCookiesText
-    });
-
-    if (!cookieSets.length) {
-      this.lastLoadedContent = content;
-      this.loadedAccounts = [
-        {
-          index: 0,
-          client: this.clientFactory(this.config)
-        }
-      ];
+      this.warnReloadFailure(
+        `Ignoring invalid Grok cookie update; continuing with the last known-good account pool: ${error.message}`
+      );
       return this.loadedAccounts;
     }
+
+    let nextAccounts;
+    try {
+      nextAccounts = await this.createAccounts(cookieSets);
+    } catch (error) {
+      if (!this.loadedAccounts) {
+        throw error;
+      }
+
+      this.warnReloadFailure(
+        `Failed to build the updated Grok account pool; continuing with the last known-good pool: ${error.message}`
+      );
+      return this.loadedAccounts;
+    }
+    const previousAccounts = this.loadedAccounts;
 
     this.lastLoadedContent = content;
-    this.loadedAccounts = cookieSets.map((cookies, index) => {
-      const accountConfig = {
-        ...this.config,
-        grokCookieFile: "",
-        grokCookiesText: "",
-        grokCookies: cookies,
-        browserProfileDir: buildAccountProfileDir(
-          this.config.browserProfileDir,
+    this.lastReloadWarning = null;
+    this.loadedAccounts = nextAccounts;
+    this.activeFallbackAccountIndex = null;
+    this.unavailableAccountIndexes.clear();
+    this.unavailableAccountTimestamps.clear();
+    this.trackAccounts(nextAccounts);
+
+    if (previousAccounts) {
+      void this.closeAccountsWhenIdle(previousAccounts);
+    }
+
+    return nextAccounts;
+  }
+
+  warnReloadFailure(message) {
+    if (this.lastReloadWarning === message) {
+      return;
+    }
+
+    this.lastReloadWarning = message;
+    console.warn(message);
+  }
+
+  async readConfiguredCookieText() {
+    const rawText = this.config.grokCookiesText ?? "";
+    if (rawText.trim()) {
+      return rawText;
+    }
+
+    if (!this.config.grokCookieFile) {
+      return "";
+    }
+
+    try {
+      return await fs.readFile(this.config.grokCookieFile, "utf8");
+    } catch (error) {
+      if (
+        error?.code === "ENOENT" &&
+        (!this.loadedAccounts || this.lastLoadedContent === "")
+      ) {
+        return "";
+      }
+      throw error;
+    }
+  }
+
+  async createAccounts(cookieSets) {
+    const accounts = [];
+
+    try {
+      if (!cookieSets.length) {
+        accounts.push({
+          index: 0,
+          client: this.clientFactory(this.config)
+        });
+        return accounts;
+      }
+
+      for (const [index, cookies] of cookieSets.entries()) {
+        const accountConfig = {
+          ...this.config,
+          grokCookieFile: "",
+          grokCookiesText: "",
+          grokCookies: cookies,
+          browserProfileDir: buildAccountProfileDir(
+            this.config.browserProfileDir,
+            index,
+            cookieSets.length
+          )
+        };
+
+        accounts.push({
           index,
-          cookieSets.length
-        )
-      };
+          client: this.clientFactory(accountConfig)
+        });
+      }
 
-      return {
-        index,
-        client: this.clientFactory(accountConfig)
-      };
-    });
+      return accounts;
+    } catch (error) {
+      await Promise.allSettled(
+        accounts.map((account) => account.client.close?.())
+      );
+      throw error;
+    }
+  }
 
-    return this.loadedAccounts;
+  trackAccounts(accounts) {
+    for (const account of accounts) {
+      this.knownClients.add(account.client);
+    }
+  }
+
+  async runAccountOperation(account, operation) {
+    if (this.closed) {
+      throw new Error("Grok account pool is closed");
+    }
+
+    const client = account.client;
+    const closePromise = this.clientClosePromises.get(client);
+    if (closePromise) {
+      await closePromise;
+    } else if (
+      this.pendingClientCloses.has(client) &&
+      !this.activeClientOperations.get(client)
+    ) {
+      await this.closeClientWhenIdle(client);
+    }
+
+    this.activeClientOperations.set(
+      client,
+      (this.activeClientOperations.get(client) ?? 0) + 1
+    );
+
+    try {
+      return await operation(client, account.index);
+    } finally {
+      const remaining = (this.activeClientOperations.get(client) ?? 1) - 1;
+      if (remaining > 0) {
+        this.activeClientOperations.set(client, remaining);
+      } else {
+        this.activeClientOperations.delete(client);
+        if (this.pendingClientCloses.has(client)) {
+          await this.closeClientWhenIdle(client);
+        }
+      }
+    }
+  }
+
+  async closeClientWhenIdle(client) {
+    this.pendingClientCloses.add(client);
+    if ((this.activeClientOperations.get(client) ?? 0) > 0) {
+      return;
+    }
+
+    const existingPromise = this.clientClosePromises.get(client);
+    if (existingPromise) {
+      return existingPromise;
+    }
+
+    const closePromise = Promise.resolve()
+      .then(() => client.close?.())
+      .catch((error) => {
+        console.warn(`Failed to close a Grok account client: ${error.message}`);
+      })
+      .finally(() => {
+        this.pendingClientCloses.delete(client);
+        this.clientClosePromises.delete(client);
+      });
+
+    this.clientClosePromises.set(client, closePromise);
+    return closePromise;
+  }
+
+  async closeAccountsWhenIdle(accounts) {
+    await Promise.all(
+      accounts.map((account) => this.closeClientWhenIdle(account.client))
+    );
   }
 
   async withAccount(accountIndex, operation) {
@@ -166,7 +333,7 @@ export class GrokAccountPool {
     try {
       const result = {
         accountIndex: account.index,
-        value: await operation(account.client, account.index)
+        value: await this.runAccountOperation(account, operation)
       };
 
       await this.activateFallbackAccount(account, accounts);
@@ -206,7 +373,7 @@ export class GrokAccountPool {
         try {
           return {
             accountIndex: primaryAccount.index,
-            value: await operation(primaryAccount.client, primaryAccount.index)
+            value: await this.runAccountOperation(primaryAccount, operation)
           };
         } catch (error) {
           lastError = error;
@@ -226,7 +393,7 @@ export class GrokAccountPool {
         try {
           return {
             accountIndex: primaryAccount.index,
-            value: await operation(primaryAccount.client, primaryAccount.index)
+            value: await this.runAccountOperation(primaryAccount, operation)
           };
         } catch (error) {
           lastError = error;
@@ -244,7 +411,7 @@ export class GrokAccountPool {
       try {
         return {
           accountIndex: fallbackAccount.index,
-          value: await operation(fallbackAccount.client, fallbackAccount.index)
+          value: await this.runAccountOperation(fallbackAccount, operation)
         };
       } catch (error) {
         lastError = error;
@@ -272,9 +439,26 @@ export class GrokAccountPool {
     return result.value;
   }
 
-  async close() {
-    const accounts = await this.getAccounts();
-    await Promise.all(accounts.map((account) => account.client.close?.()));
+  async close({ force = false } = {}) {
+    this.closed = true;
+    await this.accountsPromise?.catch(() => {});
+
+    if (force) {
+      await Promise.allSettled(
+        Array.from(this.knownClients, (client) => {
+          const existingPromise = this.clientClosePromises.get(client);
+          return existingPromise ?? client.close?.();
+        })
+      );
+      this.pendingClientCloses.clear();
+      this.clientClosePromises.clear();
+      return;
+    }
+
+    await Promise.all(
+      Array.from(this.knownClients, (client) => this.closeClientWhenIdle(client))
+    );
+    await Promise.all(this.clientClosePromises.values());
   }
 
   getFallbackAccounts(accounts) {
@@ -329,7 +513,7 @@ export class GrokAccountPool {
       previousActiveAccount &&
       previousActiveAccount.index !== account.index
     ) {
-      await previousActiveAccount.client.close?.();
+      await this.closeClientWhenIdle(previousActiveAccount.client);
     }
   }
 
@@ -337,7 +521,7 @@ export class GrokAccountPool {
     if (this.isSessionUnavailableError(error)) {
       this.unavailableAccountIndexes.add(account.index);
       this.unavailableAccountTimestamps.set(account.index, Date.now());
-      await account.client.close?.();
+      await this.closeClientWhenIdle(account.client);
 
       if (account.index === this.activeFallbackAccountIndex) {
         const fallbackAccounts = this.getFallbackAccounts(accounts);
@@ -352,7 +536,7 @@ export class GrokAccountPool {
       return { wrapped: false };
     }
 
-    await account.client.close?.();
+    await this.closeClientWhenIdle(account.client);
 
     const fallbackAccounts = this.getFallbackAccounts(accounts);
     if (!fallbackAccounts.length) {

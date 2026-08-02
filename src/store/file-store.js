@@ -99,7 +99,12 @@ export class FileStore {
       filePath
     });
 
-    await this.saveRecord(record);
+    try {
+      await this.saveRecord(record);
+    } catch (error) {
+      await fs.rm(filePath, { force: true }).catch(() => {});
+      throw error;
+    }
     this.index.files[id] = record;
 
     return this.toOpenAIFile(record);
@@ -140,7 +145,12 @@ export class FileStore {
       filePath
     });
 
-    await this.saveRecord(record);
+    try {
+      await this.saveRecord(record);
+    } catch (error) {
+      await fs.rm(filePath, { force: true }).catch(() => {});
+      throw error;
+    }
     this.index.files[id] = record;
 
     return this.toOpenAIFile(record);

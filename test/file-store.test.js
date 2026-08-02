@@ -123,3 +123,32 @@ test("FileStore does not rewrite a legacy global index when new files are added"
     await fs.rm(dataDir, { recursive: true, force: true });
   }
 });
+
+test("FileStore removes stored bytes when metadata persistence fails", async (t) => {
+  const dataDir = await fs.mkdtemp(
+    path.join(os.tmpdir(), "grok-to-openai-file-store-")
+  );
+  const sourcePath = path.join(dataDir, "incoming.bin");
+  t.after(async () => {
+    await fs.rm(dataDir, { recursive: true, force: true });
+  });
+
+  await fs.writeFile(sourcePath, "temporary upload");
+  const store = new FileStore(dataDir);
+  await store.init();
+  store.saveRecord = async () => {
+    throw new Error("metadata unavailable");
+  };
+
+  await assert.rejects(
+    store.createFromPath({
+      filename: "upload.txt",
+      sourcePath,
+      purpose: "user_data",
+      mimeType: "text/plain"
+    }),
+    /metadata unavailable/
+  );
+
+  assert.deepEqual(await fs.readdir(path.join(dataDir, "files")), []);
+});

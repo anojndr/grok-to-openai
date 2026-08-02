@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  parseCookieSets,
   parseNetscapeCookieText,
   parseNetscapeCookieTextGroups
 } from "../src/lib/cookies.js";
@@ -129,3 +130,22 @@ grok.com\tFALSE\t/\tFALSE\t1806613002\ti18nextLng\ten
   assert.equal(groups[2][0].value, "account-3");
 });
 
+test("parseCookieSets rejects malformed non-empty cookie sources", () => {
+  assert.throws(
+    () => parseCookieSets('[{"name":"sso"'),
+    /valid JSON or Netscape cookies/
+  );
+  assert.throws(
+    () => parseCookieSets(JSON.stringify([{ unexpected: true }])),
+    /valid JSON or Netscape cookies/
+  );
+  assert.throws(
+    () =>
+      parseCookieSets(
+        `${JSON.stringify([
+          { name: "sso", value: "valid", domain: ".grok.com", path: "/" }
+        ])}\n[{"name":"partial"`
+      ),
+    /valid JSON or Netscape cookies/
+  );
+});
