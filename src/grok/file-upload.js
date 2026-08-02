@@ -1,4 +1,5 @@
 import path from "node:path";
+import { HttpError } from "../lib/errors.js";
 
 const TEXT_EXTENSION_MIME_TYPES = new Map([
   [".csv", "text/csv"],
@@ -232,4 +233,62 @@ export function normalizeFileForGrokUpload({ filename, mimeType, bytes }) {
     mimeType: textMimeType,
     bytes: Buffer.from(decodedText, "utf8")
   };
+}
+
+function normalizeUploadConcurrency(concurrency, fileCount) {
+  const requested = Number(concurrency);
+  const normalized =
+    Number.isFinite(requested) && requested > 0 ? Math.floor(requested) : 4;
+
+  return Math.min(normalized, Math.max(fileCount, 1));
+}
+
+export async function uploadFilesToGrok(
+  accountClient,
+  files = [],
+  { concurrency = 4 } = {}
+) {
+  if (!Array.isArray(files) || files.length === 0) {
+    return [];
+  }
+
+  const uploadedIds = new Array(files.length);
+  const workerCount = normalizeUploadConcurrency(concurrency, files.length);
+  let nextIndex = 0;
+  let firstError = null;
+
+  const worker = async () => {
+    while (!firstError) {
+      const fileIndex = nextIndex;
+      if (fileIndex >= files.length) {
+        return;
+      }
+      nextIndex += 1;
+
+      const file = files[fileIndex];
+      try {
+        const upload = await accountClient.uploadFile({
+          filename: file.filename,
+          mimeType: file.mimeType,
+          bytes: file.bytes
+        });
+
+        if (!upload?.fileMetadataId) {
+          throw new HttpError(502, "Grok upload did not return a fileMetadataId");
+        }
+
+        uploadedIds[fileIndex] = upload.fileMetadataId;
+      } catch (error) {
+        firstError ??= error;
+      }
+    }
+  };
+
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+  if (firstError) {
+    throw firstError;
+  }
+
+  return uploadedIds;
 }

@@ -385,10 +385,23 @@ test("page bridge batches fast response chunks and installs idempotently", async
   const metadataPayloads = [];
   const donePayloads = [];
   const errorPayloads = [];
+  const documentSelectors = [];
+  const initialScanSelectors = [];
   let observerCount = 0;
+  const documentElement = {
+    nodeType: 1,
+    matches() {
+      return false;
+    },
+    querySelectorAll(selector) {
+      initialScanSelectors.push(selector);
+      return [];
+    }
+  };
   const document = {
-    documentElement: {},
-    querySelectorAll() {
+    documentElement,
+    querySelectorAll(selector) {
+      documentSelectors.push(selector);
       return [];
     },
     querySelector() {
@@ -471,6 +484,8 @@ test("page bridge batches fast response chunks and installs idempotently", async
 
     assert.equal(observerCount, 1);
     assert.equal(document.querySelectorAll, installedQuerySelectorAll);
+    assert.deepEqual(initialScanSelectors, ["path[d]"]);
+    assert.equal(documentSelectors.includes("*"), false);
 
     await window.__grokBridgeFetch({
       requestId: "req-batched-stream",
@@ -942,4 +957,3 @@ test("recreatePage falls back to recreateContext on context error", async () => 
   assert.equal(recreateContextCalled, true);
   assert.equal(page.isMockPage, true);
 });
-

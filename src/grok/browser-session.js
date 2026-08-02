@@ -62,41 +62,107 @@ export function installGrokBridgePageHelpers() {
 
   // Element caching to survive anti-bot DOM removal
   const savedElements = [];
+  const cachedElements = new WeakSet();
+  const oversizedElements = new WeakSet();
+  const savedElementBuckets = new Map();
+  const selectorMatchCache = new Map();
+  const classMatchCache = new Map();
+  const maxCachedElementDescendants = 128;
+  const maxCachedPathAncestorDepth = 12;
+  let savedElementsVersion = 0;
+
+  const readElementClassName = (element) => {
+    if (typeof element.className === "string") {
+      return element.className;
+    }
+
+    try {
+      return element.getAttribute?.("class") || "";
+    } catch {
+      return "";
+    }
+  };
+
+  const getElementBucketKey = (element) =>
+    [
+      element.tagName || "",
+      element.id || "",
+      readElementClassName(element),
+      element.childElementCount ?? ""
+    ].join("\u0000");
+
+  const cacheElement = (element) => {
+    if (!element || element.nodeType !== 1) {
+      return false;
+    }
+    if (oversizedElements.has(element)) {
+      return false;
+    }
+    if (cachedElements.has(element)) {
+      return true;
+    }
+
+    try {
+      if (
+        element.querySelectorAll("*").length > maxCachedElementDescendants
+      ) {
+        oversizedElements.add(element);
+        return false;
+      }
+      cachedElements.add(element);
+
+      const bucketKey = getElementBucketKey(element);
+      const bucket = savedElementBuckets.get(bucketKey) ?? [];
+      if (bucket.some((savedElement) => savedElement.isEqualNode(element))) {
+        return true;
+      }
+
+      const clone = element.cloneNode(true);
+      bucket.push(clone);
+      savedElementBuckets.set(bucketKey, bucket);
+      savedElements.push(clone);
+      savedElementsVersion += 1;
+      return true;
+    } catch {
+      return false;
+    }
+  };
 
   const handleNode = (node) => {
-    if (node.nodeType !== 1) return;
-    try {
-      if (node.querySelector('path[d]')) {
-        if (!savedElements.some(el => el.isEqualNode(node))) {
-          savedElements.push(node.cloneNode(true));
-        }
-      }
-    } catch (e) {}
+    if (!node || node.nodeType !== 1) {
+      return;
+    }
 
-    // Check descendants
+    const paths = [];
     try {
-      const descendants = node.querySelectorAll('*');
-      for (const desc of descendants) {
-        if (desc.querySelector('path[d]')) {
-          if (!savedElements.some(el => el.isEqualNode(desc))) {
-            savedElements.push(desc.cloneNode(true));
-          }
-        }
+      if (node.matches?.("path[d]")) {
+        paths.push(node);
       }
-    } catch (e) {}
+      paths.push(...node.querySelectorAll("path[d]"));
+    } catch {
+      return;
+    }
+
+    for (const pathElement of paths) {
+      let element = pathElement.parentElement;
+      let ancestorDepth = 0;
+      while (element && ancestorDepth < maxCachedPathAncestorDepth) {
+        if (!cacheElement(element)) {
+          break;
+        }
+        if (element === node) {
+          break;
+        }
+        element = element.parentElement;
+        ancestorDepth += 1;
+      }
+    }
   };
 
   // Initial scan in case document is already partially parsed
   try {
-    const all = document.querySelectorAll('*');
-    for (const node of all) {
-      if (node.querySelector('path[d]')) {
-        if (!savedElements.some(el => el.isEqualNode(node))) {
-          savedElements.push(node.cloneNode(true));
-        }
-      }
-    }
-  } catch (e) {}
+    handleNode(document.documentElement);
+  } catch {}
 
   // Observe DOM additions dynamically
   try {
@@ -116,11 +182,55 @@ export function installGrokBridgePageHelpers() {
     if (window.__grokVerbose) {
       console.log("__grokBridge: MutationObserver started.");
     }
-  } catch (e) {
+  } catch (error) {
     if (window.__grokVerbose) {
-      console.error("__grokBridge: Failed to start MutationObserver:", e);
+      console.error("__grokBridge: Failed to start MutationObserver:", error);
     }
   }
+
+  const getCachedSelectorMatches = (selector) => {
+    const cached = selectorMatchCache.get(selector);
+    if (cached?.version === savedElementsVersion) {
+      return cached.matches;
+    }
+
+    const matches = [];
+    for (const element of savedElements) {
+      try {
+        if (element.matches(selector)) {
+          matches.push(element);
+        }
+      } catch {}
+    }
+
+    selectorMatchCache.set(selector, {
+      version: savedElementsVersion,
+      matches
+    });
+    return matches;
+  };
+
+  const getCachedClassMatches = (className) => {
+    const cached = classMatchCache.get(className);
+    if (cached?.version === savedElementsVersion) {
+      return cached.matches;
+    }
+
+    const matches = [];
+    for (const element of savedElements) {
+      try {
+        if (element.classList?.contains(className)) {
+          matches.push(element);
+        }
+      } catch {}
+    }
+
+    classMatchCache.set(className, {
+      version: savedElementsVersion,
+      matches
+    });
+    return matches;
+  };
 
   // Hook query selectors to return cached elements when they are queried but missing from DOM
   try {
@@ -128,14 +238,7 @@ export function installGrokBridgePageHelpers() {
     document.querySelectorAll = function(selector) {
       const result = originalQuerySelectorAll.apply(this, arguments);
       if (result.length === 0 && savedElements.length) {
-        const matched = [];
-        for (const el of savedElements) {
-          try {
-            if (el.matches(selector)) {
-              matched.push(el);
-            }
-          } catch (e) {}
-        }
+        const matched = getCachedSelectorMatches(selector);
         if (matched.length) {
           return matched;
         }
@@ -147,13 +250,7 @@ export function installGrokBridgePageHelpers() {
     document.querySelector = function(selector) {
       const result = originalQuerySelector.apply(this, arguments);
       if (!result && savedElements.length) {
-        for (const el of savedElements) {
-          try {
-            if (el.matches(selector)) {
-              return el;
-            }
-          } catch (e) {}
-        }
+        return getCachedSelectorMatches(selector)[0] ?? result;
       }
       return result;
     };
@@ -162,21 +259,14 @@ export function installGrokBridgePageHelpers() {
     document.getElementsByClassName = function(className) {
       const result = originalGetElementsByClassName.apply(this, arguments);
       if (result.length === 0 && savedElements.length) {
-        const matched = [];
-        for (const el of savedElements) {
-          try {
-            if (el.classList && el.classList.contains(className)) {
-              matched.push(el);
-            }
-          } catch (e) {}
-        }
+        const matched = getCachedClassMatches(className);
         if (matched.length) {
           return matched;
         }
       }
       return result;
     };
-  } catch (e) {}
+  } catch {}
 
   const getBinding = (name) => {
     if (typeof window[name] === "function") {

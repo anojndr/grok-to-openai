@@ -209,6 +209,7 @@ IMPORT_COOKIES_ON_BOOT=true
 BROWSER_PROFILE_DIR=.browser-profile
 BROWSER_STREAM_BATCH_MAX_CHARS=16384
 BROWSER_STREAM_BATCH_DELAY_MS=2
+FILE_UPLOAD_CONCURRENCY=4
 DATA_DIR=.data
 DATABASE_URL=postgresql://user:pass@db.example.com:5432/groktoopenai?sslmode=disable
 DEFAULT_MODEL=grok-4.5-auto
@@ -238,6 +239,9 @@ Supported configuration:
   Tune browser-to-Node stream batching. Defaults to `16384` characters and
   `2` milliseconds to reduce Playwright round-trips without noticeably delaying
   live token delivery.
+- `FILE_UPLOAD_CONCURRENCY`
+  Maximum number of attachments uploaded to Grok concurrently per request.
+  Defaults to `4`; set it to `1` to restore sequential uploads.
 - `DATABASE_URL`, `POSTGRES_URL`
   When set to a `postgres://` or `postgresql://` URL, uploaded files and stored
   Responses move from `.data/` into PostgreSQL.

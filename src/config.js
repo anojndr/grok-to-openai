@@ -50,6 +50,7 @@ export const config = {
   browserPageLoadDelayMs: Number(process.env.BROWSER_PAGE_LOAD_DELAY_MS ?? "1000"),
   browserStreamBatchMaxChars: Number(process.env.BROWSER_STREAM_BATCH_MAX_CHARS ?? "16384"),
   browserStreamBatchDelayMs: Number(process.env.BROWSER_STREAM_BATCH_DELAY_MS ?? "2"),
+  fileUploadConcurrency: Number(process.env.FILE_UPLOAD_CONCURRENCY ?? "4"),
   responseHydrationDelaysMs: process.env.RESPONSE_HYDRATION_DELAYS_MS
     ? process.env.RESPONSE_HYDRATION_DELAYS_MS.split(",").map(Number).filter(Number.isFinite)
     : null,

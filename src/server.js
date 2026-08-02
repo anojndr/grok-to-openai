@@ -41,6 +41,7 @@ import { ImgbbClient, rehostGeneratedImages } from "./imgbb/client.js";
 import { listModels, resolveModel } from "./grok/model-map.js";
 import { buildStoredGrokState } from "./grok/response-state.js";
 import { GrokAccountPool } from "./grok/account-pool.js";
+import { uploadFilesToGrok as uploadFilesToGrokConcurrently } from "./grok/file-upload.js";
 import {
   buildJsonBodyTooLargeMessage,
   buildUploadedFileTooLargeMessage,
@@ -247,23 +248,9 @@ app.get("/v1/responses/:responseId", async (req, res, next) => {
 });
 
 async function uploadFilesToGrok(accountClient, files) {
-  const uploaded = [];
-
-  for (const file of files) {
-    const upload = await accountClient.uploadFile({
-      filename: file.filename,
-      mimeType: file.mimeType,
-      bytes: file.bytes
-    });
-
-    if (!upload?.fileMetadataId) {
-      throw new HttpError(502, "Grok upload did not return a fileMetadataId");
-    }
-
-    uploaded.push(upload.fileMetadataId);
-  }
-
-  return uploaded;
+  return uploadFilesToGrokConcurrently(accountClient, files, {
+    concurrency: config.fileUploadConcurrency
+  });
 }
 
 async function executeConversationRequest({
