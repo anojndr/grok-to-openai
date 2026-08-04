@@ -8,189 +8,93 @@ Playwright browser profile. It does not use the official xAI API.
 
 - `GET /healthz`
 - `GET /v1/models`
-- `POST /v1/responses`
-- `GET /v1/responses/:response_id`
+- `POST /v1/responses`, `GET /v1/responses/:response_id`
 - `POST /v1/chat/completions`
-- `POST /v1/files`
-- `GET /v1/files/:file_id`
-- `GET /v1/files/:file_id/content`
+- `POST /v1/files`, `GET /v1/files/:file_id`, `GET /v1/files/:file_id/content`
 
-## Supported behavior
+## Features
 
-- `/v1/responses` accepts a string, one message object, or a message array.
-- `system` and `developer` messages are folded into Grok custom instructions.
-- `input_file` supports `file_id`, `file_url`, and inline `file_data`.
-- Image inputs support Responses `input_image` and Chat Completions
-  `image_url`, including remote URLs, Base64 data URLs, and uploaded
-  `file_id` references.
-- Multi-turn Responses uses `previous_response_id`.
-- If the original Grok conversation no longer exists, the bridge can replay the
-  locally stored conversation history and attachments to continue the thread.
-- A single `GROK_COOKIE_FILE` or `GROK_COOKIES_TEXT` value can define one or
-  many Grok accounts by concatenating multiple Netscape cookie-file blocks or
-  providing JSON arrays/objects of cookies. The bridge automatically hot-reloads
-  these configuration files and updates the active clients when contents change.
-- New requests and replay fallbacks always try the primary account first, then
-  the current active fallback account. Failed fallback accounts are temporarily quarantined (placed on a 15-minute cooldown), closed,
-  and fallback selection advances in deterministic top-to-bottom order, wraps back
-  to the secondary account after the last fallback, and raises after two full
-  fallback passes fail.
-- Account rotation and quarantining are triggered by upstream rate-limit errors
-  (HTTP `429`, "too many requests", "heavy usage"), authentication issues (HTTP `401`/`403`, "session expired", or redirect to login pages), and standard session blocks.
-- During browser initialization, the bridge automatically dismisses standard Terms
-  of Service, Acceptable Use Policies, cookie consents, and privacy update modals
-  by dynamically clicking consent buttons on the page.
-- If `grok-4.5-auto`, `grok-4.5-expert`, `grok-4.5-heavy`, or `grok-4.5-beta`
-  exhaust every configured account or hit an upstream beta stream failure, the
-  bridge retries once in `grok-4.5-fast`.
-- If an account hits a "Model is not found" upstream error for a premium model, the
-  bridge dynamically caches that model as unsupported for that specific account. Subsequent
-  requests for the model on that account bypass the upstream check entirely and fall
-  back directly to `grok-4.5-fast` (if model fallback is enabled).
-- Follow-up requests first try the account that owns the stored Grok thread. If
-  that follow-up fails, the bridge rebuilds the full conversation history,
-  including attachments, as one replay message and retries across the account
-  list.
-- Completed text preserves Grok inline citations as shortened Markdown links by
-  default.
-- Optional `source_attribution` can append source lists and search queries.
-- Grok image generation and image edits are exposed instead of being dropped.
-- Grok searched image cards are exposed as assistant images with direct source
-  URLs instead of being stripped from the reply.
-- Uploaded files and Responses state are persisted under `.data/` by default
-  or in PostgreSQL when `DATABASE_URL` is set.
+- **Inputs**: Responses accepts a string, one message, or a message array.
+  `system`/`developer` messages become Grok custom instructions.
+  `input_file` supports `file_id`, `file_url`, and inline `file_data`.
+  Images accept `input_image`/`image_url`, remote URLs, Base64 data URLs, and
+  uploaded `file_id` references.
+- **Multi-turn**: Responses uses `previous_response_id`. Follow-ups first try
+  the account that owns the stored Grok thread; on failure the bridge replays
+  the stored conversation history (including attachments) across the pool.
+- **Images**: Grok image generation, edits, and searched image cards are
+  exposed instead of dropped. Generated assets are rehosted as public Imgbb
+  URLs. Responses returns `image_generation_call` items with `result_url`;
+  Chat Completions keeps Markdown text plus a bridge-specific
+  `message.image_urls` field.
+- **Citations**: Completed text preserves Grok inline citations as shortened
+  Markdown links by default. Optional `source_attribution` appends source
+  lists and search queries (also streamed in the closing `response.completed`
+  event).
+- **Accounts**: `GROK_COOKIE_FILE` / `GROK_COOKIES_TEXT` may define one or many
+  accounts (concatenated Netscape cookie blocks, or JSON arrays/objects).
+  Config files hot-reload on change; the pool keeps the last known-good set on
+  malformed updates. Per-account browser profiles are isolated under
+  `BROWSER_PROFILE_DIR`.
+- **Failover**: Requests start on the primary account and advance through
+  fallbacks in deterministic order. Rate limits (`429`, "too many requests"),
+  auth failures (`401`/`403`, "session expired", login redirects), and session
+  blocks quarantine an account on a 15-minute cooldown. After two full
+  fallback passes fail, the request errors.
+- **Resilience**: Transient browser context/protocol errors recreate the
+  session and retry; modal/ToS popups are auto-dismissed; storage-exhausted
+  accounts are pruned; timed-out page fetches return `504`.
+- **Model fallback**: If a premium model ("Model is not found", timeouts) or
+  the full account pool is exhausted, the bridge retries once in
+  `grok-4.5-fast`, and caches unsupported premium models per account to skip
+  future upstream attempts.
+- **Streaming**: Lifecycle events are sent as soon as Grok starts responding,
+  but provisional Grok text is buffered — only the canonical final answer is
+  emitted, so planning preambles and superseded drafts never leak into the
+  OpenAI stream. Streaming text strips inline citation tags; Responses
+  streaming emits completed image items only after final asset URLs are known.
+- **Storage**: Uploaded files and Responses state persist under `.data/`
+  (files, incremental metadata, per-Response JSON) or in PostgreSQL
+  (`bridge_files`, `bridge_responses`) when `DATABASE_URL` is set. Legacy
+  monolithic records are migrated on access.
 
-## Model routing
+## Models
 
-`GET /v1/models` returns:
+`GET /v1/models` returns `grok-4.5-auto`, `grok-4.5-fast`, `grok-4.5-expert`,
+`grok-4.5-heavy`, `grok-4.5-beta`. Aliases are broad:
 
-- `grok-4.5-auto`
-- `grok-4.5-fast`
-- `grok-4.5-expert`
-- `grok-4.5-heavy`
-- `grok-4.5-beta`
-
-Accepted aliases are intentionally broad:
-
-- `grok`, `grok-latest`, `grok-4.5`, `gpt-4o`, `gpt-4.1`, and `gpt-5`
-  all route to auto mode.
-- `grok-4.5-beta`, `grok-4.5`, `grok 4.5 (beta)`, and the exact upstream
-  `grok-420-computer-use-sa` all route to Grok 4.5 beta mode.
-- Names containing `fast`, `expert`, `heavy`, or `auto` route to that Grok
-  mode even if the exact string is not listed above.
-- If `model` is omitted, `DEFAULT_MODEL` is used.
-- If no explicit mode is present, `reasoning.effort=high` on Responses or
-  `reasoning_effort=high` on Chat Completions routes to expert mode.
-- If a premium/expert model request returns a "Model is not found" error, the
-  bridge caches this unsupported model internally for the active account to skip future
-  upstream attempts, routing immediately to `grok-4.5-fast` instead.
-
-## Response shapes
-
-Responses image output follows the OpenAI-style `image_generation_call` item
-pattern and includes a bridge-specific `result_url`. Generated Grok images are
-fetched through the authenticated browser session that created them, uploaded to
-Imgbb, and returned as public Imgbb URLs instead of protected
-`assets.grok.com` links. Fresh `/v1/responses` creates return `result_url` by
-default and avoid embedding inline Base64 image bytes:
-
-```json
-{
-  "output": [
-    {
-      "id": "ig_...",
-      "type": "image_generation_call",
-      "status": "completed",
-      "result_url": "https://i.ibb.co/...jpg",
-      "mime_type": "image/jpeg",
-      "action": "generate"
-    }
-  ]
-}
-```
-
-Chat Completions keeps the assistant text usable for Markdown clients and adds
-structured image metadata in a bridge-specific `message.image_urls` field. This
-is used for both generated images and searched/public image cards:
-
-```json
-{
-  "choices": [
-    {
-      "message": {
-        "role": "assistant",
-        "content": "![Generated Image](https://i.ibb.co/...jpg)",
-        "image_urls": [
-          {
-            "url": "https://i.ibb.co/...jpg",
-            "mime_type": "image/jpeg",
-            "action": "generate"
-          }
-        ]
-      }
-    }
-  ]
-}
-```
+- `grok`, `grok-latest`, `grok-4.5`, `gpt-4o`, `gpt-4.1`, `gpt-5` → auto
+- `grok-4.5-beta`, `grok 4.5 (beta)`, `grok-420-computer-use-sa` → beta mode
+- Any name containing `fast`, `expert`, `heavy`, or `auto` routes to that mode
+- `reasoning.effort=high` (Responses) or `reasoning_effort=high`
+  (Chat Completions) routes to expert mode; omitted `model` uses
+  `DEFAULT_MODEL`.
 
 ## Compatibility notes
 
-- `/v1/responses` does not implement `conversation`; use
-  `previous_response_id`.
-- Tool or function calling is not implemented.
-- Chat Completions ignores `tool` messages.
-- Chat Completions only supports `n=1`.
-- Several OpenAI fields are accepted for compatibility but are not translated
-  into equivalent Grok behavior. This includes `tools`, `tool_choice`,
-  `response_format`, `stop`, `max_tokens`, `max_completion_tokens`, and
-  `stream_options.include_usage`.
-- If you front the bridge with Cloudflare or another reverse proxy, prefer
-  uploading images to `/v1/files` and sending `input_image.file_id` or
-  `image_url.file_id`. Inline Base64 image JSON can be challenged before the
-  request reaches the bridge.
-- If you send multi-message history without `previous_response_id`, prior turns
-  are flattened into a transcript prompt. The final message must be a user
-  message, and only the final user turn's attachments are uploaded.
-- `store: false` is reflected in the Responses object, but Responses are still
-  stored locally so `GET /v1/responses/:response_id` and continuation replay
-  keep working.
-- Responses usage is `null`. Non-streaming Chat Completions returns placeholder
-  zero usage.
-- Streaming sends lifecycle events as soon as Grok starts responding, but
-  buffers provisional Grok text until the final assistant payload is hydrated.
-- The bridge then emits only the canonical final answer, preventing planning
-  preambles, superseded drafts, and thinking-phase text from leaking into the
-  append-only OpenAI stream when Grok's raw tokens diverge from its final message.
-- Streaming and non-streaming responses now expose the same normalized answer.
-- Streaming text strips inline citation tags instead of rewriting them on the
-  fly.
-- Streaming `/v1/responses` still returns final source attribution metadata in
-  the closing `response.completed` event when available.
-- Streaming `/v1/chat/completions` does not currently emit a parallel citation
-  metadata chunk.
-- Responses streaming emits completed image items only after the final asset
-  URL is known. Partial image preview events are not proxied.
-- `GET /v1/responses/:response_id` reconstructs image `result` lazily from the
-  stored assistant attachment when available, so retrieval stays compatible
-  without persisting duplicate inline image bytes.
-- Automated login with `GROK_EMAIL` or `GROK_PASSWORD` is not implemented.
-- Older monolithic filesystem `responses.json` records created before history
-  snapshots were added may not be replayable if a continuation has to rebuild
-  missing attachments.
-
-## Requirements
-
-- Node.js `>=20`
-- Chrome or Chromium available to `playwright-core`
-- An authenticated Grok web session
-
-`playwright-core` does not download a browser. Set
-`CHROME_EXECUTABLE_PATH` or `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` to an
-installed browser binary.
+- `conversation` is not implemented; use `previous_response_id`.
+- Tool/function calling is not implemented; Chat Completions ignores `tool`
+  messages and supports `n=1` only.
+- `tools`, `tool_choice`, `response_format`, `stop`, `max_tokens`,
+  `max_completion_tokens`, and `stream_options.include_usage` are accepted
+  but not translated into Grok behavior.
+- `store: false` is reflected in the Response object, but Responses are still
+  stored so `GET /v1/responses/:response_id` and continuation replay work.
+- Responses `usage` is `null`; non-streaming Chat Completions returns
+  placeholder zero usage. Streaming Chat Completions has no parallel citation
+  chunk and streams only the normalized final answer.
+- `GET /v1/responses/:response_id` reconstructs image `result` lazily from
+  the stored assistant attachment when available.
+- Prefer uploading images to `/v1/files` and sending `file_id` references if
+  you front the bridge with a reverse proxy — inline Base64 image JSON can be
+  challenged before reaching the bridge.
+- Automated login (`GROK_EMAIL`/`GROK_PASSWORD`) is not implemented.
 
 ## Setup
 
-Install dependencies:
+Requirements: Node.js `>=20`, Chrome/Chromium available to `playwright-core`
+(it does not download a browser — set `CHROME_EXECUTABLE_PATH` or
+`PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH`), and an authenticated Grok web session.
 
 ```bash
 npm install
@@ -220,103 +124,43 @@ IMGBB_EXPIRATION=
 ALLOW_ORIGINS=*
 ```
 
-Supported configuration:
+Configuration notes:
 
-- `HOST`, `PORT`
-- `BRIDGE_API_KEY`
-  Leave empty to disable bearer auth.
-- `CHROME_EXECUTABLE_PATH`, `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH`
-- `GROK_COOKIE_FILE`
-  Cookie file path. Supports standard Netscape format or JSON format.
-  - Netscape format: multiple accounts can be defined by concatenating multiple cookie blocks.
-  - JSON format: can be a single array of cookie objects, an array of arrays (one per account), concatenated JSON arrays, or an array of account objects containing a `cookies` field.
-  The bridge watches this file and hot-reloads it when changed.
-- `GROK_COOKIES_TEXT`
-  Inline cookie text in Netscape format or JSON format (same parsing rules as `GROK_COOKIE_FILE`).
-- `GROK_BASE_URL`
-  Defaults to `https://grok.com`.
-- `HEADLESS`, `IMPORT_COOKIES_ON_BOOT`
-- `BROWSER_PROFILE_DIR`, `DATA_DIR`
-- `BROWSER_STREAM_BATCH_MAX_CHARS`, `BROWSER_STREAM_BATCH_DELAY_MS`
-  Tune browser-to-Node stream batching. Defaults to `16384` characters and
-  `2` milliseconds to reduce Playwright round-trips without noticeably delaying
-  live token delivery.
-- `BROWSER_REQUEST_TIMEOUT_MS`
-  Maximum lifetime of one Grok browser request. Defaults to `600000` (10
-  minutes); timed-out page fetches are aborted and returned as HTTP `504`.
-- `SHUTDOWN_TIMEOUT_MS`
-  Time allowed for active HTTP requests to drain before remaining connections
-  are closed. Defaults to `30000` (30 seconds).
-- `FILE_UPLOAD_CONCURRENCY`
-  Maximum number of attachments uploaded to Grok concurrently per request.
-  Defaults to `4`; set it to `1` to restore sequential uploads.
-- `DATABASE_URL`, `POSTGRES_URL`
-  When set to a `postgres://` or `postgresql://` URL, uploaded files and stored
-  Responses move from `.data/` into PostgreSQL.
-- `DEFAULT_MODEL`
-- `IMGBB_API_KEY`
-  Required when you want generated Grok images rehosted as public Imgbb URLs.
-- `IMGBB_API_URL`
-  Defaults to `https://api.imgbb.com/1/upload`.
-- `IMGBB_EXPIRATION`
-  Optional auto-delete TTL in seconds. Must be between `60` and `15552000`.
-- `ALLOW_ORIGINS`
+- `BRIDGE_API_KEY` — leave empty to disable bearer auth.
+- `GROK_COOKIE_FILE` / `GROK_COOKIES_TEXT` — Netscape or JSON cookie format;
+  multiple accounts by concatenating blocks/arrays. Hot-reloaded on change.
+- `GROK_BASE_URL` — defaults to `https://grok.com`.
+- `BROWSER_STREAM_BATCH_MAX_CHARS` / `BROWSER_STREAM_BATCH_DELAY_MS` —
+  browser-to-Node stream batching; defaults `16384` / `2`.
+- `BROWSER_REQUEST_TIMEOUT_MS` — max lifetime of one Grok browser request;
+  defaults to `600000` (10 min), timed-out fetches return `504`.
+- `SHUTDOWN_TIMEOUT_MS` — drain time for active requests on shutdown;
+  defaults to `30000`.
+- `FILE_UPLOAD_CONCURRENCY` — parallel attachment uploads per request;
+  defaults to `4`, set `1` for sequential.
+- `DATABASE_URL` / `POSTGRES_URL` — move files and Responses into PostgreSQL.
+- `IMGBB_API_KEY` — required to rehost generated images as public URLs.
+  `IMGBB_API_URL` defaults to `https://api.imgbb.com/1/upload`;
+  `IMGBB_EXPIRATION` sets an auto-delete TTL (60–15552000 seconds).
+- `ALLOW_ORIGINS` — CORS origin (default `*`).
 
-Currently parsed but unused:
+Parsed but unused: `GROK_EMAIL`, `GROK_PASSWORD`, `DEFAULT_MODE`.
 
-- `GROK_EMAIL`
-- `GROK_PASSWORD`
-- `DEFAULT_MODE`
+If cookie import is rejected by Grok's anti-bot layer, warm the browser
+profile once with a visible browser (`HEADLESS=false`, `npm start`), then
+restart headless.
 
-If cookie import alone is rejected by Grok's anti-bot layer, warm the browser
-profile once with a visible browser:
-
-```bash
-export HEADLESS=false
-npm start
-```
-
-Imgbb notes:
-
-- Set `IMGBB_API_KEY` if you want generated-image responses to return public
-  image URLs.
-- The bridge uploads generated images directly to Imgbb with multipart `POST`
-  requests and verifies the returned public URL before exposing it.
-- The bridge now sets Imgbb's optional upload `name` field from the filename
-  and rejects images above Imgbb's documented `32 MB` maximum before upload.
-
-### Multi-account and Failover Routing
-
-The bridge supports running a pool of multiple Grok accounts for load-balancing, rate-limit resilience, and automatic failover:
-
-- **Configuring Multiple Accounts**: 
-  - **Netscape format**: Concatenate multiple Netscape cookie blocks (with `# Netscape HTTP Cookie File` headers or separated by duplicate key occurrences) into a single file or env variable.
-  - **JSON format**: Supply a JSON array containing arrays of cookie objects, or an array of account objects with a `cookies` property, or multiple concatenated JSON arrays.
-- **Isolated Browser Profiles**: When multiple accounts are configured, `BROWSER_PROFILE_DIR` is automatically split into per-account subdirectories (e.g. `account-001`, `account-002`, etc.) to keep browser state and local storage fully isolated.
-- **Failover & Rotation**: The bridge automatically starts with the primary account (index 0). If a request fails due to rate limits (HTTP `429` / "too many requests" / "heavy usage") or authentication/session issues (HTTP `401`/`403`, "session expired", or redirect to login pages), that account is temporarily quarantined. The bridge then rotates to the next active fallback account.
-- **Quarantine & Dynamic Cooldown**: When an account is quarantined, it is placed on a 15-minute cooldown. If all configured accounts are exhausted, the bridge will reset the unavailable status to retry the pool.
-- **Hot-Reloading**: The bridge checks `GROK_COOKIE_FILE` and `GROK_COOKIES_TEXT` before account selection. Valid changes are loaded in place, active requests are allowed to finish before their old sessions close, and unreadable or malformed updates retain the last known-good pool.
-- **Automatic ToS Modal Dismissal**: During browser startup, the bridge evaluates the page context and automatically dismisses standard Terms of Service, Acceptable Use Policies, cookie consents, or privacy update modals by simulating button clicks (e.g. "Got it", "I agree", "Close") to prevent automation blocks.
-
-Log in manually (by running with `HEADLESS=false` temporarily) if cookies need to be refreshed, then restart with `HEADLESS=true` for headless server execution.
-
-Start the server:
+Start the server and run tests:
 
 ```bash
 npm start
-```
-
-Run tests:
-
-```bash
 npm test
 ```
 
 ## Examples
 
-Basic Responses request:
-
 ```bash
+# Basic Responses request
 curl http://127.0.0.1:8787/v1/responses \
   -H "Authorization: Bearer sk-local-test" \
   -H "Content-Type: application/json" \
@@ -324,11 +168,8 @@ curl http://127.0.0.1:8787/v1/responses \
     "model": "grok-4.5-auto",
     "input": "Reply with the single word PONG."
   }'
-```
 
-Streaming Responses request:
-
-```bash
+# Streaming Responses request
 curl -N http://127.0.0.1:8787/v1/responses \
   -H "Authorization: Bearer sk-local-test" \
   -H "Content-Type: application/json" \
@@ -337,11 +178,8 @@ curl -N http://127.0.0.1:8787/v1/responses \
     "input": "Write one short paragraph.",
     "stream": true
   }'
-```
 
-Chat Completions request with an image:
-
-```bash
+# Chat Completions with an image
 curl http://127.0.0.1:8787/v1/chat/completions \
   -H "Authorization: Bearer sk-local-test" \
   -H "Content-Type: application/json" \
@@ -362,20 +200,13 @@ curl http://127.0.0.1:8787/v1/chat/completions \
       }
     ]
   }'
-```
 
-Upload a file:
-
-```bash
+# Upload a file, then reference it by file_id
 curl http://127.0.0.1:8787/v1/files \
   -H "Authorization: Bearer sk-local-test" \
   -F purpose=user_data \
   -F file=@fixtures/sample-note.txt
-```
 
-Use the returned `file_id` in a Responses request:
-
-```bash
 curl http://127.0.0.1:8787/v1/responses \
   -H "Authorization: Bearer sk-local-test" \
   -H "Content-Type: application/json" \
@@ -391,31 +222,8 @@ curl http://127.0.0.1:8787/v1/responses \
       }
     ]
   }'
-```
 
-Use the returned `file_id` in an image input to avoid inline Base64 image JSON:
-
-```bash
-curl http://127.0.0.1:8787/v1/responses \
-  -H "Authorization: Bearer sk-local-test" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "grok-4.5-auto",
-    "input": [
-      {
-        "role": "user",
-        "content": [
-          { "type": "input_text", "text": "What is in this image?" },
-          { "type": "input_image", "file_id": "file_..." }
-        ]
-      }
-    ]
-  }'
-```
-
-Continue a prior Responses thread:
-
-```bash
+# Continue a prior Responses thread
 FIRST=$(curl -s http://127.0.0.1:8787/v1/responses \
   -H "Authorization: Bearer sk-local-test" \
   -H "Content-Type: application/json" \
@@ -431,11 +239,8 @@ curl http://127.0.0.1:8787/v1/responses \
     \"previous_response_id\": \"$RESP_ID\",
     \"input\": [{\"role\":\"user\",\"content\":\"Tell me another.\"}]
   }"
-```
 
-Request sources and query provenance:
-
-```bash
+# Request sources and query provenance
 curl http://127.0.0.1:8787/v1/responses \
   -H "Authorization: Bearer sk-local-test" \
   -H "Content-Type: application/json" \
@@ -453,18 +258,11 @@ curl http://127.0.0.1:8787/v1/responses \
 
 By default the bridge writes:
 
-- `.browser-profile/`
-  Persistent Playwright profile used for Grok web auth.
-- `.data/files/`
-  Uploaded file contents.
-- `.data/file-metadata/`
-  One JSON metadata record per uploaded file returned by `/v1/files`. Older
-  `.data/files-index.json` snapshots are still read for compatibility.
-- `.data/responses/`
-  One compact JSON file per stored Response, containing the OpenAI payload plus
-  Grok conversation state and replay history. Older monolithic
-  `.data/responses.json` records are still read and migrated on first access.
+- `.browser-profile/` — persistent Playwright profile for Grok web auth.
+- `.data/files/` and `.data/file-metadata/` — uploaded file contents and one
+  JSON metadata record per file.
+- `.data/responses/` — one compact JSON file per Response (OpenAI payload plus
+  Grok conversation state and replay history).
 
-When `DATABASE_URL` or `POSTGRES_URL` is set, uploaded files and stored
-Responses are kept in PostgreSQL tables `bridge_files` and `bridge_responses`
-instead, and only the Playwright browser profile remains on disk.
+With `DATABASE_URL` set, files and Responses live in PostgreSQL tables
+`bridge_files` and `bridge_responses`; only the browser profile stays on disk.
