@@ -762,11 +762,27 @@ export class BrowserSession {
 
   async discoverStatsigChunkSource(cacheKey) {
     const page = await this.ensurePage();
-    const urls = await page.evaluate(() =>
-      Array.from(document.querySelectorAll("script"))
-        .map((s) => s.src)
-        .filter((src) => src.includes("/_next/static/chunks/"))
-    );
+
+    // Grok's page bootstraps its /_next/static/chunks/ scripts asynchronously,
+    // so a freshly-opened page may not have them in the DOM yet. Re-scan a few
+    // times with a short delay instead of failing the very first request.
+    const maxAttempts = 5;
+    const attemptDelayMs = 1000;
+    let urls = [];
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      urls = await page.evaluate(() =>
+        Array.from(document.querySelectorAll("script"))
+          .map((s) => s.src)
+          .filter((src) => src.includes("/_next/static/chunks/"))
+      );
+
+      if (urls.length) {
+        break;
+      }
+      if (attempt < maxAttempts - 1) {
+        await page.waitForTimeout(attemptDelayMs);
+      }
+    }
 
     if (!urls.length) {
       throw new Error("No Next.js static chunks found on Grok page");

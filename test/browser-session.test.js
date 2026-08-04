@@ -1011,3 +1011,76 @@ test("recreatePage falls back to recreateContext on context error", async () => 
   assert.equal(recreateContextCalled, true);
   assert.equal(page.isMockPage, true);
 });
+
+test("discoverStatsigChunkSource re-scans a page whose chunk scripts load late", async () => {
+  const session = new BrowserSession({ grokBaseUrl: "https://grok.com" });
+  let scans = 0;
+  let waitTimeouts = 0;
+  session.ensurePage = async () => ({
+    async evaluate() {
+      scans += 1;
+      if (scans === 1) {
+        return [];
+      }
+      return [
+        "https://grok.com/_next/static/chunks/middleware.js",
+        "https://grok.com/_next/static/chunks/entry.js"
+      ];
+    },
+    async waitForTimeout() {
+      waitTimeouts += 1;
+    }
+  });
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    if (url.includes("middleware.js")) {
+      return {
+        ok: true,
+        async text() {
+          return `let un=(a=async()=>(await e.A(4629918)).default(),async function(e,t){let i=await n;return await i(e,t)}),ui=async e=>{e.init.headers.set("x-statsig-id",t);return e};`;
+        }
+      };
+    }
+    if (url.includes("entry.js")) {
+      return {
+        ok: true,
+        async text() {
+          return `4629918,s=>{s.v(t=>Promise.all(["static/chunks/generator.js"].map(t=>s.l(t))).then(()=>t(1645e3)))}`;
+        }
+      };
+    }
+    return { ok: false };
+  };
+
+  try {
+    const result = await session.discoverStatsigChunkSource("https://grok.com");
+
+    assert.equal(result.url, "https://grok.com/_next/static/chunks/generator.js");
+    assert.equal(result.moduleId, 1645000);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.ok(scans >= 2, "expected the page to be re-scanned after the first empty scan");
+  assert.ok(waitTimeouts >= 1, "expected a delay between scans");
+});
+
+test("discoverStatsigChunkSource fails when no chunk scripts ever appear", async () => {
+  const session = new BrowserSession({ grokBaseUrl: "https://grok.com" });
+  let scans = 0;
+  session.ensurePage = async () => ({
+    async evaluate() {
+      scans += 1;
+      return [];
+    },
+    async waitForTimeout() {}
+  });
+
+  await assert.rejects(
+    session.discoverStatsigChunkSource("https://grok.com"),
+    /No Next\.js static chunks found on Grok page/
+  );
+
+  assert.equal(scans, 5);
+});
