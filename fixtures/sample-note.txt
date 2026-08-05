@@ -1,2 +1,0 @@
-This is a sample note for Grok upload testing.
-It has two lines.

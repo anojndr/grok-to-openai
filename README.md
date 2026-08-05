@@ -48,11 +48,15 @@ Playwright browser profile. It does not use the official xAI API.
   the full account pool is exhausted, the bridge retries once in
   `grok-4.5-fast`, and caches unsupported premium models per account to skip
   future upstream attempts.
-- **Streaming**: Lifecycle events are sent as soon as Grok starts responding,
-  but provisional Grok text is buffered — only the canonical final answer is
-  emitted, so planning preambles and superseded drafts never leak into the
-  OpenAI stream. Streaming text strips inline citation tags; Responses
-  streaming emits completed image items only after final asset URLs are known.
+- **Streaming**: Grok answer tokens stream to the OpenAI client in real time as
+  they arrive. Grok's `final`-tagged deltas are forwarded while thinking-phase
+  tokens (`header`/`thinking_start`/`response_start`) are suppressed, so planning
+  preambles never leak into the stream. If Grok's normalized final message
+  diverges from the live stream (rewritten drafts, markdown normalization), the
+  corrected tail is emitted when the canonical answer is known and the closing
+  `response.output_text.done` event always carries the canonical text. Streaming
+  text strips inline citation tags; Responses streaming emits completed image
+  items only after final asset URLs are known.
 - **Storage**: Uploaded files and Responses state persist under `.data/`
   (files, incremental metadata, per-Response JSON) or in PostgreSQL
   (`bridge_files`, `bridge_responses`) when `DATABASE_URL` is set. Legacy
@@ -82,7 +86,8 @@ Playwright browser profile. It does not use the official xAI API.
   stored so `GET /v1/responses/:response_id` and continuation replay work.
 - Responses `usage` is `null`; non-streaming Chat Completions returns
   placeholder zero usage. Streaming Chat Completions has no parallel citation
-  chunk and streams only the normalized final answer.
+  chunk; text is streamed live and the canonical final answer is emitted in
+  the closing chunks.
 - `GET /v1/responses/:response_id` reconstructs image `result` lazily from
   the stored assistant attachment when available.
 - Prefer uploading images to `/v1/files` and sending `file_id` references if
@@ -205,7 +210,7 @@ curl http://127.0.0.1:8787/v1/chat/completions \
 curl http://127.0.0.1:8787/v1/files \
   -H "Authorization: Bearer sk-local-test" \
   -F purpose=user_data \
-  -F file=@fixtures/sample-note.txt
+  -F file=@README.md
 
 curl http://127.0.0.1:8787/v1/responses \
   -H "Authorization: Bearer sk-local-test" \

@@ -155,10 +155,19 @@ export function applyGrokEvent(state, payload) {
       return null;
     }
 
-    state[ASSISTANT_TEXT].append(response.token);
-    if (response.isThinking === true) {
+    const messageTag = response.messageTag ?? null;
+    const isThinking = response.isThinking === true;
+    // Only `final`-tagged deltas belong to the rendered answer. Thinking-phase
+    // and `response_start` deltas would otherwise leak planning text and
+    // marker whitespace into the accumulated text.
+    const isFinalText = messageTag === "final" && response.token.length > 0;
+
+    if (isFinalText) {
+      state[ASSISTANT_TEXT].append(response.token);
+    }
+    if (isThinking) {
       state.sawThinkingToken = true;
-    } else {
+    } else if (isFinalText) {
       state.sawVisibleToken = true;
       state[ASSISTANT_VISIBLE_TEXT].append(response.token);
     }
@@ -166,8 +175,8 @@ export function applyGrokEvent(state, payload) {
     return {
       type: "token",
       token: response.token,
-      isThinking: response.isThinking === true,
-      messageTag: response.messageTag ?? null,
+      isThinking,
+      messageTag,
       messageStepId: response.messageStepId ?? null,
       responseId: response.responseId ?? null,
       rolloutId: response.rolloutId ?? null
