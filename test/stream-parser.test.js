@@ -14,6 +14,7 @@ test("applyGrokEvent handles nested conversation-new streaming payloads", () => 
       response: {
         userResponse: { responseId: "user_123" },
         token: "Hello",
+        messageTag: "final",
         llmInfo: { modelHash: "abc" }
       }
     }
@@ -23,7 +24,7 @@ test("applyGrokEvent handles nested conversation-new streaming payloads", () => 
     type: "token",
     token: "Hello",
     isThinking: false,
-    messageTag: null,
+    messageTag: "final",
     messageStepId: null,
     responseId: null,
     rolloutId: null
@@ -40,6 +41,7 @@ test("applyGrokEvent handles flat follow-up streaming payloads", () => {
   const tokenDelta = applyGrokEvent(state, {
     result: {
       token: "Your",
+      messageTag: "final",
       responseId: "resp_123"
     }
   });
@@ -65,7 +67,7 @@ test("applyGrokEvent handles flat follow-up streaming payloads", () => {
     type: "token",
     token: "Your",
     isThinking: false,
-    messageTag: null,
+    messageTag: "final",
     messageStepId: null,
     responseId: "resp_123",
     rolloutId: null
@@ -100,7 +102,55 @@ test("applyGrokEvent preserves thinking metadata for streamed expert tokens", ()
     responseId: "resp_123",
     rolloutId: "Grok"
   });
-  assert.equal(state.assistantText, "Identifying popularity metrics");
+  // Thinking deltas never enter the accumulated text stream.
+  assert.equal(state.assistantText, "");
+  assert.equal(state.assistantVisibleText, "");
+});
+
+test("applyGrokEvent only accumulates final-tagged deltas into the text stream", () => {
+  const state = collectGrokStreamingState();
+
+  applyGrokEvent(state, {
+    result: {
+      response: {
+        token: "Planning preamble",
+        isThinking: true,
+        messageTag: "header"
+      }
+    }
+  });
+  applyGrokEvent(state, {
+    result: {
+      response: {
+        token: "",
+        isThinking: false,
+        messageTag: "response_start"
+      }
+    }
+  });
+  applyGrokEvent(state, {
+    result: {
+      response: {
+        token: "The",
+        isThinking: false,
+        messageTag: "final"
+      }
+    }
+  });
+  applyGrokEvent(state, {
+    result: {
+      response: {
+        token: " answer.",
+        isThinking: false,
+        messageTag: "final"
+      }
+    }
+  });
+
+  assert.equal(state.sawThinkingToken, true);
+  assert.equal(state.sawVisibleToken, true);
+  assert.equal(state.assistantText, "The answer.");
+  assert.equal(state.assistantVisibleText, "The answer.");
 });
 
 test("applyGrokEvent captures direct assistant response payloads", () => {

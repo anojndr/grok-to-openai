@@ -32,11 +32,11 @@ import {
   createChatCompletionChunk,
   renderChatCompletionContent
 } from "./openai/chat-completions.js";
-import { createCanonicalTextStream } from "./openai/canonical-text-stream.js";
+import { createProgressiveTextStream } from "./openai/progressive-text-stream.js";
 import { initSse, writeSseEvent } from "./openai/sse.js";
 import { createId, unixTimestampSeconds } from "./lib/ids.js";
 import { withFastModelFallback } from "./grok/model-fallback.js";
-import { buildAssistantOutput } from "./grok/output.js";
+import { buildAssistantOutput, getFinalTextSuffix } from "./grok/output.js";
 import { ImgbbClient, rehostGeneratedImages } from "./imgbb/client.js";
 import { listModels, resolveModel } from "./grok/model-map.js";
 import { buildStoredGrokState } from "./grok/response-state.js";
@@ -625,7 +625,7 @@ app.post("/v1/responses", async (req, res, next) => {
           delta
         });
       };
-      const canonicalTextStream = createCanonicalTextStream({
+      const progressiveTextStream = createProgressiveTextStream({
         onActivity: emitResponsePrelude,
         onText: emitTextDelta
       });
@@ -639,8 +639,11 @@ app.post("/v1/responses", async (req, res, next) => {
               return record?.history ?? null;
             }
           : null,
-        onToken(token) {
-          canonicalTextStream.observe(token);
+        onToken(token, meta) {
+          if (meta?.isThinking) {
+            return;
+          }
+          progressiveTextStream.observe(token);
         }
       });
       const assistantOutput = await buildHostedAssistantOutput(
@@ -649,7 +652,10 @@ app.post("/v1/responses", async (req, res, next) => {
         result.accountIndex
       );
       const images = assistantOutput.images;
-      const text = canonicalTextStream.finish(assistantOutput.text);
+      const text = assistantOutput.text;
+      progressiveTextStream.finish(
+        getFinalTextSuffix(text, result.state.assistantVisibleText)
+      );
       const hasMessage = Boolean(text);
 
       if (hasMessage) {
@@ -887,13 +893,16 @@ app.post("/v1/chat/completions", async (req, res, next) => {
           )}\n\n`
         );
       };
-      const canonicalTextStream = createCanonicalTextStream({
+      const progressiveTextStream = createProgressiveTextStream({
         onActivity: ensureAssistantRoleEmitted,
         onText: emitTextDelta
       });
       const result = await runChatCompletionRequest(prepared, {
-        onToken(token) {
-          canonicalTextStream.observe(token);
+        onToken(token, meta) {
+          if (meta?.isThinking) {
+            return;
+          }
+          progressiveTextStream.observe(token);
         }
       });
       const assistantOutput = await buildHostedAssistantOutput(
@@ -905,7 +914,9 @@ app.post("/v1/chat/completions", async (req, res, next) => {
         text: assistantOutput.text,
         images: assistantOutput.images
       });
-      canonicalTextStream.finish(content);
+      progressiveTextStream.finish(
+        getFinalTextSuffix(content, result.state.assistantVisibleText)
+      );
 
       ensureAssistantRoleEmitted();
       if (assistantOutput.images.length) {

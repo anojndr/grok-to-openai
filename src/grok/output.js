@@ -84,6 +84,30 @@ function resolveCanonicalText(state) {
   return streamedVisibleText;
 }
 
+export function getFinalTextSuffix(fullText, streamedText) {
+  if (!fullText || !streamedText) {
+    return fullText || "";
+  }
+
+  if (fullText === streamedText) {
+    return "";
+  }
+
+  if (fullText.startsWith(streamedText)) {
+    return fullText.slice(streamedText.length);
+  }
+
+  if (streamedText.startsWith(fullText)) {
+    return fullText;
+  }
+
+  if (fullText.endsWith(streamedText)) {
+    return fullText.slice(0, fullText.length - streamedText.length);
+  }
+
+  return fullText;
+}
+
 export function buildAssistantOutput(
   state,
   sourceAttributionRequest,
