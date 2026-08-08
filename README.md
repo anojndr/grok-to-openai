@@ -109,7 +109,7 @@ The project loads `.env` automatically. Example:
 
 ```bash
 HOST=127.0.0.1
-PORT=8787
+PORT=62774
 BRIDGE_API_KEY=sk-local-test
 CHROME_EXECUTABLE_PATH=/path/to/chrome
 GROK_COOKIE_FILE=.grok.cookies.txt
@@ -166,7 +166,7 @@ npm test
 
 ```bash
 # Basic Responses request
-curl http://127.0.0.1:8787/v1/responses \
+curl http://127.0.0.1:62774/v1/responses \
   -H "Authorization: Bearer sk-local-test" \
   -H "Content-Type: application/json" \
   -d '{
@@ -175,7 +175,7 @@ curl http://127.0.0.1:8787/v1/responses \
   }'
 
 # Streaming Responses request
-curl -N http://127.0.0.1:8787/v1/responses \
+curl -N http://127.0.0.1:62774/v1/responses \
   -H "Authorization: Bearer sk-local-test" \
   -H "Content-Type: application/json" \
   -d '{
@@ -185,7 +185,7 @@ curl -N http://127.0.0.1:8787/v1/responses \
   }'
 
 # Chat Completions with an image
-curl http://127.0.0.1:8787/v1/chat/completions \
+curl http://127.0.0.1:62774/v1/chat/completions \
   -H "Authorization: Bearer sk-local-test" \
   -H "Content-Type: application/json" \
   -d '{
@@ -207,12 +207,12 @@ curl http://127.0.0.1:8787/v1/chat/completions \
   }'
 
 # Upload a file, then reference it by file_id
-curl http://127.0.0.1:8787/v1/files \
+curl http://127.0.0.1:62774/v1/files \
   -H "Authorization: Bearer sk-local-test" \
   -F purpose=user_data \
   -F file=@README.md
 
-curl http://127.0.0.1:8787/v1/responses \
+curl http://127.0.0.1:62774/v1/responses \
   -H "Authorization: Bearer sk-local-test" \
   -H "Content-Type: application/json" \
   -d '{
@@ -229,14 +229,14 @@ curl http://127.0.0.1:8787/v1/responses \
   }'
 
 # Continue a prior Responses thread
-FIRST=$(curl -s http://127.0.0.1:8787/v1/responses \
+FIRST=$(curl -s http://127.0.0.1:62774/v1/responses \
   -H "Authorization: Bearer sk-local-test" \
   -H "Content-Type: application/json" \
   -d '{"model":"grok-4.5-auto","input":"Tell me a joke."}')
 
 RESP_ID=$(printf '%s' "$FIRST" | node -e 'process.stdin.once("data", d => console.log(JSON.parse(d).id))')
 
-curl http://127.0.0.1:8787/v1/responses \
+curl http://127.0.0.1:62774/v1/responses \
   -H "Authorization: Bearer sk-local-test" \
   -H "Content-Type: application/json" \
   -d "{
@@ -246,7 +246,7 @@ curl http://127.0.0.1:8787/v1/responses \
   }"
 
 # Request sources and query provenance
-curl http://127.0.0.1:8787/v1/responses \
+curl http://127.0.0.1:62774/v1/responses \
   -H "Authorization: Bearer sk-local-test" \
   -H "Content-Type: application/json" \
   -d '{

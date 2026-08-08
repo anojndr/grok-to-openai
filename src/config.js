@@ -36,7 +36,7 @@ function resolveOptionalPath(value) {
 
 export const config = {
   host: process.env.HOST ?? "127.0.0.1",
-  port: envInteger("PORT", 8787, { min: 1, max: 65535 }),
+  port: envInteger("PORT", 62774, { min: 1, max: 65535 }),
   apiKey: process.env.BRIDGE_API_KEY ?? "",
   chromeExecutablePath: resolveOptionalPath(
     process.env.CHROME_EXECUTABLE_PATH ??
