@@ -7,6 +7,15 @@ export const ERROR_RESPONSE_TEXT_LIMIT = 128 * 1024;
 export const GROK_SESSION_BLOCKED_ERROR_CODE = "grok_session_blocked";
 export const GROK_REQUEST_TIMEOUT_ERROR_CODE = "grok_request_timeout";
 
+// Error markers produced by the in-page bridge when statsig id generation
+// fails. The chunk-stale marker means the cached middleware chunk/module is
+// outdated and must be rediscovered; the generic marker means the page never
+// became ready to generate an id. The bridge MUST NOT send requests with a
+// placeholder statsig id: xAI rejects them with
+// "Request rejected by anti-bot rules." (HTTP 403 / in-stream error).
+export const STATSIG_CHUNK_STALE_MARKER = "__grokBridgeStatsigChunkStale";
+export const STATSIG_GENERATION_FAILED_MARKER = "__grokBridgeStatsigFailed";
+
 function clearTextBuffer(buffer) {
   buffer.chunks.length = 0;
   buffer.length = 0;
@@ -417,7 +426,7 @@ export function installGrokBridgePageHelpers() {
 
     try {
       const url = new URL(request.url, location.origin);
-      let statsigId;
+      let statsigId = null;
       try {
         if (window.__grokVerbose) {
           console.log("__grokBridgeFetch: statsig generator cache size:", savedElements.length);
@@ -426,15 +435,57 @@ export function installGrokBridgePageHelpers() {
           request.statsigChunkUrl,
           request.statsigModuleId
         );
-        statsigId = await generator(url.pathname, request.method);
+        if (typeof generator !== "function") {
+          throw new Error("Grok statsig generator is not a function");
+        }
+
+        // The statsig middleware reads the app's DOM, so on a freshly opened
+        // page it can fail before the Grok app has mounted. Retry with a
+        // short delay instead of sending a placeholder id: xAI rejects
+        // placeholder ids with "Request rejected by anti-bot rules.".
+        const maxStatsigAttempts = Number(request.statsigMaxAttempts) || 25;
+        const statsigRetryDelayMs = Number(request.statsigRetryDelayMs) || 1000;
+        let lastError = null;
+        for (let attempt = 0; attempt < maxStatsigAttempts; attempt += 1) {
+          try {
+            statsigId = await generator(url.pathname, request.method);
+            break;
+          } catch (error) {
+            lastError = error;
+            if (window.__grokVerbose) {
+              console.error(
+                `__grokBridgeFetch: statsig id attempt ${attempt + 1}/${maxStatsigAttempts} failed:`,
+                error
+              );
+            }
+            if (attempt < maxStatsigAttempts - 1) {
+              await new Promise((resolve) => setTimeout(resolve, statsigRetryDelayMs));
+            }
+          }
+        }
+
+        if (!statsigId) {
+          throw new Error(
+            `Grok statsig id generation failed: ${
+              lastError instanceof Error ? lastError.message : String(lastError)
+            }`
+          );
+        }
         if (window.__grokVerbose) {
           console.log("__grokBridgeFetch: Generated statsigId successfully:", statsigId);
         }
       } catch (error) {
-        statsigId = btoa(`e:${String(error)}`);
-        if (window.__grokVerbose) {
-          console.error("__grokBridgeFetch: Failed to generate statsigId:", error);
-        }
+        const rawMessage = error instanceof Error ? error.message : String(error);
+        const normalizedMessage = rawMessage.toLowerCase();
+        // Inlined literals: this helper is injected into the page via
+        // toString(), so module-scope constants are not reachable here.
+        const staleChunk =
+          normalizedMessage.includes("not intercepted") ||
+          normalizedMessage.includes("failed to load script") ||
+          normalizedMessage.includes("unable to load grok statsig middleware");
+        throw new Error(
+          `${staleChunk ? "__grokBridgeStatsigChunkStale" : "__grokBridgeStatsigFailed"}: ${rawMessage}`
+        );
       }
       const headers = new Headers(request.headers || {});
       headers.set("x-xai-request-id", crypto.randomUUID());
@@ -561,7 +612,12 @@ export function installGrokBridgePageHelpers() {
         const errorMsg = error instanceof Error ? `${error.name}: ${error.message}\nStack: ${error.stack}` : String(error);
         await window.__grokBridgeCallBinding("__grokBridgeError", {
           requestId: request.requestId,
-          message: errorMsg
+          message: errorMsg,
+          status:
+            error && typeof error === "object" && Number.isInteger(error.status)
+              ? error.status
+              : undefined,
+          details: error?.details ?? undefined
         });
       } catch {
         throw error;
@@ -974,7 +1030,13 @@ export class BrowserSession {
       }
 
       this.pending.delete(payload.requestId);
-      pending.reject(new Error(payload.message));
+      pending.reject(
+        new HttpError(
+          payload.status ?? 502,
+          payload.message || "Grok request failed",
+          payload.details ?? {}
+        )
+      );
     });
 
     await this.context.addInitScript(`
@@ -1253,7 +1315,7 @@ export class BrowserSession {
     onMeta = null
   }) {
     await this.init();
-    const { url: statsigChunkUrl, moduleId: statsigModuleId } = await this.loadStatsigChunkSource();
+    await this.loadStatsigChunkSource();
 
     let meta = null;
     const textBuffer = {
@@ -1261,17 +1323,19 @@ export class BrowserSession {
       length: 0,
       limit: onChunk ? 0 : Number.POSITIVE_INFINITY
     };
-    const payload = {
+    const buildPayload = () => ({
       requestId,
       url,
       method,
       body,
       headers,
-      statsigChunkUrl,
-      statsigModuleId,
+      statsigChunkUrl: this.statsigChunkUrl,
+      statsigModuleId: this.statsigModuleId,
       streamBatchMaxChars: this.config.browserStreamBatchMaxChars,
       streamBatchDelayMs: this.config.browserStreamBatchDelayMs
-    };
+    });
+    let payload = buildPayload();
+    let statsigChunkRetried = false;
 
     const run = async (page) => {
       await new Promise((resolve, reject) => {
@@ -1363,6 +1427,34 @@ export class BrowserSession {
             throw recreateErr;
           }
         }
+        await run(page);
+      } else if (
+        message.includes(STATSIG_CHUNK_STALE_MARKER) &&
+        !statsigChunkRetried
+      ) {
+        // The cached statsig middleware chunk/module is stale (Grok shipped a
+        // new build). Drop the cache, rediscover from the live page and retry
+        // the request once; the old source would only produce placeholder
+        // statsig ids that xAI rejects as anti-bot.
+        statsigChunkRetried = true;
+        this.statsigChunkUrl = null;
+        this.statsigModuleId = null;
+        globalStatsigCache.delete(this.config.grokBaseUrl);
+        try {
+          await this.loadStatsigChunkSource();
+        } catch (rediscoverError) {
+          throw new HttpError(
+            502,
+            `Grok request failed: could not load statsig middleware: ${
+              rediscoverError instanceof Error
+                ? rediscoverError.message
+                : String(rediscoverError)
+            }`,
+            { code: "statsig_unavailable" }
+          );
+        }
+        payload = buildPayload();
+        const page = await this.ensurePage();
         await run(page);
       } else {
         if (message.toLowerCase().includes("failed to fetch")) {

@@ -6,9 +6,12 @@ import {
   GROK_SESSION_BLOCKED_ERROR_CODE,
   GROK_REQUEST_TIMEOUT_ERROR_CODE,
   ERROR_RESPONSE_TEXT_LIMIT,
+  STATSIG_CHUNK_STALE_MARKER,
+  STATSIG_GENERATION_FAILED_MARKER,
   installGrokBridgePageHelpers,
   isRecoverableContextError
 } from "../src/grok/browser-session.js";
+import { HttpError } from "../src/lib/errors.js";
 
 function createSession(evaluateRequest) {
   const session = new BrowserSession({
@@ -328,6 +331,152 @@ test("request relaunches the browser context when Chromium cannot create a new t
   assert.equal(response.text, "recovered");
 });
 
+test("request rediscovers the statsig chunk source when the cached source goes stale", async () => {
+  let loadCalls = 0;
+  const session = createSession((instance, payload) => {
+    instance.attempts = (instance.attempts || 0) + 1;
+
+    if (instance.attempts === 1) {
+      throw new Error(
+        `Error: ${STATSIG_CHUNK_STALE_MARKER}: Failed to load script: https://grok.com/_next/static/chunks/old.js\nStack: at window.__grokBridgeFetch`
+      );
+    }
+
+    assert.equal(
+      payload.statsigChunkUrl,
+      "https://grok.com/_next/static/chunks/new.js"
+    );
+    assert.equal(payload.statsigModuleId, 222);
+
+    const pending = instance.pending.get(payload.requestId);
+    pending.onMeta({
+      requestId: payload.requestId,
+      status: 200,
+      headers: {}
+    });
+    pending.onChunk("recovered");
+    pending.resolve();
+  });
+
+  session.loadStatsigChunkSource = async () => {
+    loadCalls += 1;
+    if (loadCalls === 1) {
+      session.statsigChunkUrl = "https://grok.com/_next/static/chunks/old.js";
+      session.statsigModuleId = 111;
+    } else {
+      session.statsigChunkUrl = "https://grok.com/_next/static/chunks/new.js";
+      session.statsigModuleId = 222;
+    }
+    return { url: session.statsigChunkUrl, moduleId: session.statsigModuleId };
+  };
+
+  const response = await session.request({
+    requestId: "req-stale-statsig",
+    url: "https://grok.com/rest/test"
+  });
+
+  assert.equal(loadCalls, 2);
+  assert.equal(response.meta?.status, 200);
+  assert.equal(response.text, "recovered");
+});
+
+test("request gives up on stale statsig chunks after one rediscovery", async () => {
+  const session = createSession(() => {
+    throw new Error(
+      `Error: ${STATSIG_CHUNK_STALE_MARKER}: Failed to load script: https://grok.com/_next/static/chunks/old.js\nStack: at window.__grokBridgeFetch`
+    );
+  });
+
+  let loadCalls = 0;
+  session.loadStatsigChunkSource = async () => {
+    loadCalls += 1;
+    session.statsigChunkUrl = `https://grok.com/_next/static/chunks/${loadCalls}.js`;
+    session.statsigModuleId = loadCalls;
+    return { url: session.statsigChunkUrl, moduleId: session.statsigModuleId };
+  };
+
+  await assert.rejects(
+    session.request({
+      requestId: "req-stale-statsig-2",
+      url: "https://grok.com/rest/test"
+    }),
+    (error) => error.message.includes(STATSIG_CHUNK_STALE_MARKER)
+  );
+
+  assert.equal(loadCalls, 2);
+});
+
+test("error binding preserves HttpError status and details", async () => {
+  const session = new BrowserSession({
+    grokBaseUrl: "https://grok.com"
+  });
+  const bindings = new Map();
+  session.context = {
+    async exposeBinding(name, handler) {
+      bindings.set(name, handler);
+    },
+    async addInitScript() {}
+  };
+
+  await session.installBindings();
+
+  let rejectedError = null;
+  session.pending.set("req-error-binding", {
+    onMeta() {},
+    onChunk() {},
+    resolve() {},
+    reject(error) {
+      rejectedError = error;
+    }
+  });
+
+  await bindings.get("__grokBridgeError")(null, {
+    requestId: "req-error-binding",
+    status: 429,
+    message: "Grok is under heavy usage",
+    details: { code: "rate_limit_exceeded" }
+  });
+
+  assert.ok(rejectedError instanceof HttpError);
+  assert.equal(rejectedError.status, 429);
+  assert.equal(rejectedError.details.code, "rate_limit_exceeded");
+  assert.equal(session.pending.has("req-error-binding"), false);
+});
+
+test("error binding defaults to 502 without an upstream status", async () => {
+  const session = new BrowserSession({
+    grokBaseUrl: "https://grok.com"
+  });
+  const bindings = new Map();
+  session.context = {
+    async exposeBinding(name, handler) {
+      bindings.set(name, handler);
+    },
+    async addInitScript() {}
+  };
+
+  await session.installBindings();
+
+  let rejectedError = null;
+  session.pending.set("req-error-binding-2", {
+    onMeta() {},
+    onChunk() {},
+    resolve() {},
+    reject(error) {
+      rejectedError = error;
+    }
+  });
+
+  await bindings.get("grokBridgeError")(null, {
+    requestId: "req-error-binding-2",
+    message: "Something failed"
+  });
+
+  assert.ok(rejectedError instanceof HttpError);
+  assert.equal(rejectedError.status, 502);
+  assert.deepEqual(rejectedError.details, {});
+});
+
 test("ensurePage rejects a Grok session redirected to a Cloudflare block page", async () => {
   const session = new BrowserSession({
     grokBaseUrl: "https://grok.com"
@@ -563,6 +712,189 @@ test("page bridge batches fast response chunks and installs idempotently", async
   assert.match(errorPayloads[0].message, /AbortError/);
   assert.equal(chunkPayloads.length, 8);
   assert.equal(chunkPayloads.map((payload) => payload.chunk).join(""), "x".repeat(1024));
+});
+
+function installBridgeTestGlobals({ statsigGen, fetchImpl }) {
+  const originalGlobals = new Map();
+  const globalNames = [
+    "window",
+    "document",
+    "location",
+    "MutationObserver",
+    "fetch"
+  ];
+  for (const name of globalNames) {
+    originalGlobals.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
+  }
+
+  const errorPayloads = [];
+  const fetched = [];
+  const documentElement = {
+    nodeType: 1,
+    matches() {
+      return false;
+    },
+    querySelectorAll() {
+      return [];
+    }
+  };
+  const document = {
+    documentElement,
+    querySelectorAll() {
+      return [];
+    },
+    querySelector() {
+      return null;
+    },
+    getElementsByClassName() {
+      return [];
+    }
+  };
+  const window = {
+    __grokStatsigGen: statsigGen,
+    async __grokBridgeMeta() {},
+    async __grokBridgeChunk() {},
+    async __grokBridgeDone() {},
+    async __grokBridgeError(payload) {
+      errorPayloads.push(payload);
+    }
+  };
+
+  Object.defineProperties(globalThis, {
+    window: { configurable: true, writable: true, value: window },
+    document: { configurable: true, writable: true, value: document },
+    location: {
+      configurable: true,
+      writable: true,
+      value: { origin: "https://grok.com" }
+    },
+    MutationObserver: {
+      configurable: true,
+      writable: true,
+      value: class {
+        observe() {}
+      }
+    },
+    fetch: {
+      configurable: true,
+      writable: true,
+      value: async (url, options) => {
+        fetched.push({ url, statsigId: options.headers.get("x-statsig-id") });
+        return {
+          status: 200,
+          headers: {
+            forEach(callback) {
+              callback("application/x-ndjson", "content-type");
+            }
+          },
+          body: {
+            getReader() {
+              return {
+                async read() {
+                  return { done: true, value: undefined };
+                }
+              };
+            }
+          }
+        };
+      }
+    }
+  });
+
+  return {
+    window,
+    errorPayloads,
+    fetched,
+    restore() {
+      for (const [name, descriptor] of originalGlobals) {
+        if (descriptor) {
+          Object.defineProperty(globalThis, name, descriptor);
+        } else {
+          delete globalThis[name];
+        }
+      }
+    }
+  };
+}
+
+const STATSIG_FETCH_PAYLOAD = {
+  requestId: "req-statsig",
+  url: "https://grok.com/rest/app-chat/conversations/new",
+  method: "POST",
+  headers: {},
+  statsigChunkUrl: "https://grok.com/statsig.js",
+  statsigModuleId: 1,
+  statsigMaxAttempts: 10,
+  statsigRetryDelayMs: 5
+};
+
+test("page bridge retries statsig generation until the Grok app is ready", async () => {
+  let statsigCalls = 0;
+  const env = installBridgeTestGlobals({
+    statsigGen: async () => {
+      statsigCalls += 1;
+      if (statsigCalls < 3) {
+        throw new TypeError(
+          "Cannot read properties of undefined (reading 'childNodes')"
+        );
+      }
+      return "retried-statsig-id";
+    }
+  });
+
+  try {
+    installGrokBridgePageHelpers();
+    await env.window.__grokBridgeFetch(STATSIG_FETCH_PAYLOAD);
+  } finally {
+    env.restore();
+  }
+
+  assert.equal(statsigCalls, 3);
+  assert.equal(env.fetched.length, 1);
+  assert.equal(env.fetched[0].statsigId, "retried-statsig-id");
+  assert.equal(env.errorPayloads.length, 0);
+});
+
+test("page bridge never sends requests without a valid statsig id", async () => {
+  const env = installBridgeTestGlobals({
+    statsigGen: async () => {
+      throw new TypeError(
+        "Cannot read properties of undefined (reading 'childNodes')"
+      );
+    }
+  });
+
+  try {
+    installGrokBridgePageHelpers();
+    await env.window.__grokBridgeFetch(STATSIG_FETCH_PAYLOAD);
+  } finally {
+    env.restore();
+  }
+
+  assert.equal(env.fetched.length, 0);
+  assert.equal(env.errorPayloads.length, 1);
+  assert.match(env.errorPayloads[0].message, new RegExp(STATSIG_GENERATION_FAILED_MARKER));
+});
+
+test("page bridge marks stale statsig chunk sources for rediscovery", async () => {
+  const env = installBridgeTestGlobals({
+    statsigGen: async () => {
+      throw new Error(
+        "Script loaded but module 1645000 was not intercepted"
+      );
+    }
+  });
+
+  try {
+    installGrokBridgePageHelpers();
+    await env.window.__grokBridgeFetch(STATSIG_FETCH_PAYLOAD);
+  } finally {
+    env.restore();
+  }
+
+  assert.equal(env.fetched.length, 0);
+  assert.equal(env.errorPayloads.length, 1);
+  assert.match(env.errorPayloads[0].message, new RegExp(STATSIG_CHUNK_STALE_MARKER));
 });
 
 function createMockResponse({

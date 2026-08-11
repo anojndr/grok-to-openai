@@ -155,6 +155,12 @@ If cookie import is rejected by Grok's anti-bot layer, warm the browser
 profile once with a visible browser (`HEADLESS=false`, `npm start`), then
 restart headless.
 
+Requests never go out without a valid `x-statsig-id`: if Grok's statsig
+middleware cannot produce one yet (fresh page whose app is still mounting),
+the bridge retries for a few seconds until the page is ready, and if the
+cached statsig chunk goes stale after a Grok redeploy it rediscovers the
+chunk automatically and retries the request once.
+
 Start the server and run tests:
 
 ```bash
