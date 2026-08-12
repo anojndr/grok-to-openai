@@ -1,10 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  ImgbbClient,
-  isImgbbUrl,
+  PixelVaultClient,
+  isPixelVaultUrl,
   rehostGeneratedImages
-} from "../src/imgbb/client.js";
+} from "../src/pixelvault/client.js";
 
 function createDeferred() {
   let resolve;
@@ -25,7 +25,7 @@ function flushAsyncOperations() {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
-test("ImgbbClient uploads image bytes with multipart form data", async () => {
+test("PixelVaultClient uploads image bytes with multipart form data", async () => {
   const originalFetch = globalThis.fetch;
   let request = null;
 
@@ -34,10 +34,9 @@ test("ImgbbClient uploads image bytes with multipart form data", async () => {
     return new Response(
       JSON.stringify({
         data: {
-          url: "https://i.ibb.co/demo/generated-cat.png"
-        },
-        success: true,
-        status: 200
+          id: "img_abc123",
+          url: "https://img.pixelvault.dev/proj_xyz789/generated-cat.png"
+        }
       }),
       {
         status: 200,
@@ -49,9 +48,9 @@ test("ImgbbClient uploads image bytes with multipart form data", async () => {
   };
 
   try {
-    const client = new ImgbbClient({
-      imgbbApiUrl: "https://api.imgbb.com/1/upload",
-      imgbbApiKey: "api-key-123"
+    const client = new PixelVaultClient({
+      pixelvaultApiUrl: "https://api.pixelvault.dev/v1/images",
+      pixelvaultApiKey: "api-key-123"
     });
     const hostedUrl = await client.uploadFile({
       filename: "Generated Cat.png",
@@ -59,25 +58,24 @@ test("ImgbbClient uploads image bytes with multipart form data", async () => {
       bytes: Buffer.from("png-bytes")
     });
 
-    assert.equal(hostedUrl, "https://i.ibb.co/demo/generated-cat.png");
+    assert.equal(hostedUrl, "https://img.pixelvault.dev/proj_xyz789/generated-cat.png");
 
     const requestUrl = new URL(request.url);
-    assert.equal(`${requestUrl.origin}${requestUrl.pathname}`, "https://api.imgbb.com/1/upload");
-    assert.equal(requestUrl.searchParams.get("key"), "api-key-123");
+    assert.equal(`${requestUrl.origin}${requestUrl.pathname}`, "https://api.pixelvault.dev/v1/images");
+    assert.equal(request.options.headers.Authorization, "Bearer api-key-123");
     assert.equal(request.options.method, "POST");
 
     const form = request.options.body;
-    const file = form.get("image");
+    const file = form.get("file");
     assert.equal(file.name, "Generated_Cat.png");
     assert.equal(file.type, "image/png");
-    assert.equal(form.get("name"), "Generated_Cat");
     assert.equal(Buffer.from(await file.arrayBuffer()).toString("utf8"), "png-bytes");
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test("ImgbbClient includes expiration when configured", async () => {
+test("PixelVaultClient includes expiration when configured", async () => {
   const originalFetch = globalThis.fetch;
   let request = null;
 
@@ -86,10 +84,8 @@ test("ImgbbClient includes expiration when configured", async () => {
     return new Response(
       JSON.stringify({
         data: {
-          url: "https://i.ibb.co/demo/with-expiration.png"
-        },
-        success: true,
-        status: 200
+          url: "https://img.pixelvault.dev/proj_xyz789/with-expiration.png"
+        }
       }),
       {
         status: 200,
@@ -101,9 +97,9 @@ test("ImgbbClient includes expiration when configured", async () => {
   };
 
   try {
-    const client = new ImgbbClient({
-      imgbbApiKey: "api-key-123",
-      imgbbExpiration: "600"
+    const client = new PixelVaultClient({
+      pixelvaultApiKey: "api-key-123",
+      pixelvaultExpiration: "600"
     });
     const hostedUrl = await client.uploadFile({
       filename: "expiring.png",
@@ -111,18 +107,17 @@ test("ImgbbClient includes expiration when configured", async () => {
       bytes: Buffer.from("png-bytes")
     });
 
-    assert.equal(hostedUrl, "https://i.ibb.co/demo/with-expiration.png");
+    assert.equal(hostedUrl, "https://img.pixelvault.dev/proj_xyz789/with-expiration.png");
 
-    const requestUrl = new URL(request.url);
-    assert.equal(requestUrl.searchParams.get("key"), "api-key-123");
-    assert.equal(requestUrl.searchParams.get("expiration"), "600");
+    assert.equal(request.options.headers.Authorization, "Bearer api-key-123");
+    assert.equal(request.options.body.get("expires_in"), "600");
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test("ImgbbClient requires an API key", async () => {
-  const client = new ImgbbClient();
+test("PixelVaultClient requires an API key", async () => {
+  const client = new PixelVaultClient();
 
   await assert.rejects(
     client.uploadFile({
@@ -130,23 +125,23 @@ test("ImgbbClient requires an API key", async () => {
       mimeType: "image/png",
       bytes: Buffer.from("png-bytes")
     }),
-    /Imgbb upload is not configured: IMGBB_API_KEY is missing/
+    /PixelVault upload is not configured: PIXELVAULT_API_KEY is missing/
   );
 });
 
-test("ImgbbClient surfaces API errors", async () => {
+test("PixelVaultClient surfaces API errors", async () => {
   const originalFetch = globalThis.fetch;
 
   globalThis.fetch = async () =>
     new Response(
       JSON.stringify({
-        success: false,
         error: {
+          code: "invalid_api_key",
           message: "Invalid API key"
         }
       }),
       {
-        status: 400,
+        status: 401,
         headers: {
           "content-type": "application/json"
         }
@@ -154,8 +149,8 @@ test("ImgbbClient surfaces API errors", async () => {
     );
 
   try {
-    const client = new ImgbbClient({
-      imgbbApiKey: "bad-key"
+    const client = new PixelVaultClient({
+      pixelvaultApiKey: "bad-key"
     });
     await assert.rejects(
       client.uploadFile({
@@ -163,14 +158,14 @@ test("ImgbbClient surfaces API errors", async () => {
         mimeType: "image/png",
         bytes: Buffer.from("png-bytes")
       }),
-      /Imgbb upload failed: Invalid API key/
+      /PixelVault upload failed: Invalid API key/
     );
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test("ImgbbClient verifyFile accepts non-empty ranged responses", async () => {
+test("PixelVaultClient verifyFile accepts non-empty ranged responses", async () => {
   const originalFetch = globalThis.fetch;
 
   globalThis.fetch = async (_url, options = {}) => {
@@ -185,15 +180,15 @@ test("ImgbbClient verifyFile accepts non-empty ranged responses", async () => {
   };
 
   try {
-    const client = new ImgbbClient();
-    const result = await client.verifyFile("https://i.ibb.co/demo/test.jpg");
-    assert.equal(result, "https://i.ibb.co/demo/test.jpg");
+    const client = new PixelVaultClient();
+    const result = await client.verifyFile("https://img.pixelvault.dev/proj_xyz789/test.jpg");
+    assert.equal(result, "https://img.pixelvault.dev/proj_xyz789/test.jpg");
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test("ImgbbClient verifyFile rejects empty uploads", async () => {
+test("PixelVaultClient verifyFile rejects empty uploads", async () => {
   const originalFetch = globalThis.fetch;
 
   globalThis.fetch = async () =>
@@ -205,17 +200,17 @@ test("ImgbbClient verifyFile rejects empty uploads", async () => {
     });
 
   try {
-    const client = new ImgbbClient();
+    const client = new PixelVaultClient();
     await assert.rejects(
-      client.verifyFile("https://i.ibb.co/demo/test.jpg"),
-      /Imgbb upload verification failed: uploaded file is empty/
+      client.verifyFile("https://img.pixelvault.dev/proj_xyz789/test.jpg"),
+      /PixelVault upload verification failed: uploaded file is empty/
     );
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test("ImgbbClient verifyFile bypasses fetch network failure", async () => {
+test("PixelVaultClient verifyFile bypasses fetch network failure", async () => {
   const originalFetch = globalThis.fetch;
 
   globalThis.fetch = async () => {
@@ -223,15 +218,15 @@ test("ImgbbClient verifyFile bypasses fetch network failure", async () => {
   };
 
   try {
-    const client = new ImgbbClient();
-    const result = await client.verifyFile("https://i.ibb.co/demo/test.jpg");
-    assert.equal(result, "https://i.ibb.co/demo/test.jpg");
+    const client = new PixelVaultClient();
+    const result = await client.verifyFile("https://img.pixelvault.dev/proj_xyz789/test.jpg");
+    assert.equal(result, "https://img.pixelvault.dev/proj_xyz789/test.jpg");
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test("ImgbbClient verifyFile bypasses non-ok HTTP status response", async () => {
+test("PixelVaultClient verifyFile bypasses non-ok HTTP status response", async () => {
   const originalFetch = globalThis.fetch;
 
   globalThis.fetch = async () =>
@@ -241,15 +236,15 @@ test("ImgbbClient verifyFile bypasses non-ok HTTP status response", async () => 
     });
 
   try {
-    const client = new ImgbbClient();
-    const result = await client.verifyFile("https://i.ibb.co/demo/test.jpg");
-    assert.equal(result, "https://i.ibb.co/demo/test.jpg");
+    const client = new PixelVaultClient();
+    const result = await client.verifyFile("https://img.pixelvault.dev/proj_xyz789/test.jpg");
+    assert.equal(result, "https://img.pixelvault.dev/proj_xyz789/test.jpg");
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test("ImgbbClient retries empty responses from Imgbb", async () => {
+test("PixelVaultClient retries empty responses from PixelVault", async () => {
   const originalFetch = globalThis.fetch;
   let attempts = 0;
 
@@ -261,10 +256,8 @@ test("ImgbbClient retries empty responses from Imgbb", async () => {
         ? ""
         : JSON.stringify({
             data: {
-              url: "https://i.ibb.co/demo/retried-image.jpg"
-            },
-            success: true,
-            status: 200
+              url: "https://img.pixelvault.dev/proj_xyz789/retried-image.jpg"
+            }
           }),
       {
         status: 200,
@@ -276,8 +269,8 @@ test("ImgbbClient retries empty responses from Imgbb", async () => {
   };
 
   try {
-    const client = new ImgbbClient({
-      imgbbApiKey: "api-key-123"
+    const client = new PixelVaultClient({
+      pixelvaultApiKey: "api-key-123"
     });
     const hostedUrl = await client.uploadFile({
       filename: "retry.jpg",
@@ -286,15 +279,15 @@ test("ImgbbClient retries empty responses from Imgbb", async () => {
     });
 
     assert.equal(attempts, 2);
-    assert.equal(hostedUrl, "https://i.ibb.co/demo/retried-image.jpg");
+    assert.equal(hostedUrl, "https://img.pixelvault.dev/proj_xyz789/retried-image.jpg");
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test("ImgbbClient rejects uploads larger than 32 MB", async () => {
-  const client = new ImgbbClient({
-    imgbbApiKey: "api-key-123"
+test("PixelVaultClient rejects uploads larger than 32 MB", async () => {
+  const client = new PixelVaultClient({
+    pixelvaultApiKey: "api-key-123"
   });
 
   await assert.rejects(
@@ -303,22 +296,22 @@ test("ImgbbClient rejects uploads larger than 32 MB", async () => {
       mimeType: "image/png",
       bytes: Buffer.alloc((32 * 1024 * 1024) + 1)
     }),
-    /Imgbb upload failed: image exceeds 32 MB limit/
+    /PixelVault upload failed: image exceeds 32 MB limit/
   );
 });
 
-test("ImgbbClient rejects invalid expiration config", async () => {
+test("PixelVaultClient rejects invalid expiration config", async () => {
   assert.throws(
     () =>
-      new ImgbbClient({
-        imgbbApiKey: "api-key-123",
-        imgbbExpiration: "30"
+      new PixelVaultClient({
+        pixelvaultApiKey: "api-key-123",
+        pixelvaultExpiration: "30"
       }),
-    /Imgbb upload is not configured: IMGBB_EXPIRATION must be between 60 and 15552000 seconds/
+    /PixelVault upload is not configured: PIXELVAULT_EXPIRATION must be between 60 and 2592000 seconds/
   );
 });
 
-test("rehostGeneratedImages uploads protected Grok assets to Imgbb in parallel while preserving order", async () => {
+test("rehostGeneratedImages uploads protected Grok assets to PixelVault in parallel while preserving order", async () => {
   const firstAsset = createDeferred();
   const secondAsset = createDeferred();
   const loadCalls = [];
@@ -346,7 +339,7 @@ test("rehostGeneratedImages uploads protected Grok assets to Imgbb in parallel w
     uploadClient: {
       async uploadFile({ filename, bytes }) {
         uploadCalls.push(filename);
-        return `https://i.ibb.co/demo/${bytes.toString("utf8")}.png`;
+        return `https://img.pixelvault.dev/proj_xyz789/${bytes.toString("utf8")}.png`;
       }
     }
   });
@@ -368,8 +361,8 @@ test("rehostGeneratedImages uploads protected Grok assets to Imgbb in parallel w
   assert.deepEqual(
     hostedImages.map((image) => image.url),
     [
-      "https://i.ibb.co/demo/first-image.png",
-      "https://i.ibb.co/demo/second-image.png"
+      "https://img.pixelvault.dev/proj_xyz789/first-image.png",
+      "https://img.pixelvault.dev/proj_xyz789/second-image.png"
     ]
   );
   assert.deepEqual(
@@ -385,13 +378,13 @@ test("rehostGeneratedImages uploads protected Grok assets to Imgbb in parallel w
   );
 });
 
-test("rehostGeneratedImages skips Imgbb URLs", async () => {
+test("rehostGeneratedImages skips PixelVault URLs", async () => {
   let loadCount = 0;
   const images = [
     {
       title: "already hosted",
       mimeType: "image/png",
-      url: "https://i.ibb.co/demo/already-hosted.png"
+      url: "https://img.pixelvault.dev/proj_xyz789/already-hosted.png"
     }
   ];
 
@@ -410,7 +403,7 @@ test("rehostGeneratedImages skips Imgbb URLs", async () => {
 
   assert.equal(loadCount, 0);
   assert.deepEqual(hostedImages, images);
-  assert.equal(isImgbbUrl(hostedImages[0].url), true);
+  assert.equal(isPixelVaultUrl(hostedImages[0].url), true);
 });
 
 test("rehostGeneratedImages skips public non-Grok image URLs", async () => {

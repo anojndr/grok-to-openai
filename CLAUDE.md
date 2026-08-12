@@ -61,7 +61,7 @@ If the stream ended without a complete `modelResponse` (e.g. thinking-only strea
 
 ### Storage and images
 
-`src/store/` has filesystem (`.data/`) and PostgreSQL (`DATABASE_URL`) backends behind the same `fileStore`/`responseStore` interface. Generated images are rehosted to ImgBB (`src/imgbb/client.js`) so Responses can return `image_generation_call` items with public `result_url`s; Chat Completions returns Markdown plus `message.image_urls`. Streaming emits image items only after final URLs are known.
+`src/store/` has filesystem (`.data/`) and PostgreSQL (`DATABASE_URL`) backends behind the same `fileStore`/`responseStore` interface. Generated images are rehosted to PixelVault (`src/pixelvault/client.js`) so Responses can return `image_generation_call` items with public `result_url`s; Chat Completions returns Markdown plus `message.image_urls`. Streaming emits image items only after final URLs are known.
 
 ## Gotchas
 

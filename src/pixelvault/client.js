@@ -3,13 +3,13 @@ import { HttpError } from "../lib/errors.js";
 import { sanitizeFilename } from "../lib/fs.js";
 import { config } from "../config.js";
 
-const DEFAULT_IMGBB_API_URL = "https://api.imgbb.com/1/upload";
-const IMGBB_UPLOAD_ATTEMPTS = 3;
-const IMGBB_RETRY_DELAY_MS = 750;
-const IMGBB_HOSTS = ["ibb.co", "i.ibb.co", "imgbb.com"];
-const IMGBB_MAX_UPLOAD_BYTES = 32 * 1024 * 1024;
-const IMGBB_MIN_EXPIRATION_SECONDS = 60;
-const IMGBB_MAX_EXPIRATION_SECONDS = 15552000;
+const DEFAULT_PIXELVAULT_API_URL = "https://api.pixelvault.dev/v1/images";
+const PIXELVAULT_UPLOAD_ATTEMPTS = 3;
+const PIXELVAULT_RETRY_DELAY_MS = 750;
+const PIXELVAULT_HOSTS = ["img.pixelvault.dev", "pixelvault.dev"];
+const PIXELVAULT_MAX_UPLOAD_BYTES = 32 * 1024 * 1024;
+const PIXELVAULT_MIN_EXPIRATION_SECONDS = 60;
+const PIXELVAULT_MAX_EXPIRATION_SECONDS = 2592000;
 
 function matchesHostname(hostname, domain) {
   const normalized = String(hostname || "").toLowerCase();
@@ -91,36 +91,30 @@ function normalizeExpiration(expiration) {
   const value = Number.parseInt(String(expiration), 10);
   if (!Number.isFinite(value)) {
     throw toConfigurationError(
-      "Imgbb upload is not configured",
-      "IMGBB_EXPIRATION must be an integer number of seconds"
+      "PixelVault upload is not configured",
+      "PIXELVAULT_EXPIRATION must be an integer number of seconds"
     );
   }
 
   if (
-    value < IMGBB_MIN_EXPIRATION_SECONDS ||
-    value > IMGBB_MAX_EXPIRATION_SECONDS
+    value < PIXELVAULT_MIN_EXPIRATION_SECONDS ||
+    value > PIXELVAULT_MAX_EXPIRATION_SECONDS
   ) {
     throw toConfigurationError(
-      "Imgbb upload is not configured",
-      `IMGBB_EXPIRATION must be between ${IMGBB_MIN_EXPIRATION_SECONDS} and ${IMGBB_MAX_EXPIRATION_SECONDS} seconds`
+      "PixelVault upload is not configured",
+      `PIXELVAULT_EXPIRATION must be between ${PIXELVAULT_MIN_EXPIRATION_SECONDS} and ${PIXELVAULT_MAX_EXPIRATION_SECONDS} seconds`
     );
   }
 
   return String(value);
 }
 
-function buildUploadUrl(apiUrl, apiKey, expiration) {
-  const url = new URL(apiUrl || DEFAULT_IMGBB_API_URL);
-  url.searchParams.set("key", apiKey);
-  if (expiration) {
-    url.searchParams.set("expiration", expiration);
-  }
-  return url.toString();
-}
-
-async function submitImgbbRequest(apiUrl, apiKey, expiration, form) {
-  return fetch(buildUploadUrl(apiUrl, apiKey, expiration), {
+async function submitPixelVaultRequest(apiUrl, apiKey, form) {
+  return fetch(apiUrl || DEFAULT_PIXELVAULT_API_URL, {
     method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`
+    },
     body: form
   });
 }
@@ -130,20 +124,21 @@ function extractErrorDetails(payload, fallback) {
     return fallback;
   }
 
-  const message =
-    payload.error?.message ||
-    payload.error?.context ||
-    payload.status_txt ||
-    payload.message;
+  const message = payload.error?.message || payload.message;
 
   if (typeof message === "string" && message.trim()) {
     return message.trim();
   }
 
+  const code = payload.error?.code;
+  if (typeof code === "string" && code.trim()) {
+    return code.trim();
+  }
+
   return fallback;
 }
 
-async function parseImgbbResponse(response) {
+async function parsePixelVaultResponse(response) {
   const responseText = (await response.text()).trim();
 
   let payload = null;
@@ -157,7 +152,7 @@ async function parseImgbbResponse(response) {
 
   if (!response.ok) {
     throw toHttpError(
-      "Imgbb upload failed",
+      "PixelVault upload failed",
       extractErrorDetails(payload, responseText || `HTTP ${response.status}`)
     );
   }
@@ -169,18 +164,17 @@ async function parseImgbbResponse(response) {
     };
   }
 
-  if (!payload || payload.success !== true) {
+  if (!payload || payload.data == null) {
     throw toHttpError(
-      "Imgbb upload failed",
+      "PixelVault upload failed",
       extractErrorDetails(payload, responseText || "invalid JSON response")
     );
   }
 
-  const hostedUrl =
-    payload.data?.url || payload.data?.image?.url || payload.data?.display_url;
+  const hostedUrl = payload.data.url;
 
   if (!hostedUrl) {
-    throw toHttpError("Imgbb upload failed", "missing hosted image URL");
+    throw toHttpError("PixelVault upload failed", "missing hosted image URL");
   }
 
   try {
@@ -189,7 +183,7 @@ async function parseImgbbResponse(response) {
       url: new URL(hostedUrl).toString()
     };
   } catch {
-    throw toHttpError("Imgbb upload failed", hostedUrl);
+    throw toHttpError("PixelVault upload failed", hostedUrl);
   }
 }
 
@@ -219,10 +213,10 @@ function resolveHostedImageMimeType(image, asset) {
   return image?.mimeType || assetMimeType || "application/octet-stream";
 }
 
-export function isImgbbUrl(urlString) {
+export function isPixelVaultUrl(urlString) {
   try {
     const url = new URL(urlString);
-    return IMGBB_HOSTS.some((domain) => matchesHostname(url.hostname, domain));
+    return PIXELVAULT_HOSTS.some((domain) => matchesHostname(url.hostname, domain));
   } catch {
     return false;
   }
@@ -238,7 +232,7 @@ function isGrokAssetUrl(urlString) {
 }
 
 function shouldRehostImage(image) {
-  if (!image?.url || isImgbbUrl(image.url)) {
+  if (!image?.url || isPixelVaultUrl(image.url)) {
     return false;
   }
 
@@ -254,74 +248,72 @@ function shouldRehostImage(image) {
   return isGrokAssetUrl(image.url);
 }
 
-export class ImgbbClient {
+export class PixelVaultClient {
   constructor(config = {}) {
-    this.apiUrl = config.imgbbApiUrl || DEFAULT_IMGBB_API_URL;
-    this.apiKey = config.imgbbApiKey || "";
-    this.expiration = normalizeExpiration(config.imgbbExpiration);
+    this.apiUrl = config.pixelvaultApiUrl || DEFAULT_PIXELVAULT_API_URL;
+    this.apiKey = config.pixelvaultApiKey || "";
+    this.expiration = normalizeExpiration(config.pixelvaultExpiration);
   }
 
   async uploadFile({ filename, mimeType, bytes }) {
     if (!this.apiKey) {
       throw toConfigurationError(
-        "Imgbb upload is not configured",
-        "IMGBB_API_KEY is missing"
+        "PixelVault upload is not configured",
+        "PIXELVAULT_API_KEY is missing"
       );
     }
 
     const normalizedBytes = toBuffer(bytes);
     if (!normalizedBytes.length) {
-      throw toHttpError("Imgbb upload failed", "empty file payload");
+      throw toHttpError("PixelVault upload failed", "empty file payload");
     }
-    if (normalizedBytes.length > IMGBB_MAX_UPLOAD_BYTES) {
+    if (normalizedBytes.length > PIXELVAULT_MAX_UPLOAD_BYTES) {
       throw toValidationError(
-        "Imgbb upload failed",
+        "PixelVault upload failed",
         "image exceeds 32 MB limit"
       );
     }
 
     let lastRetriableError = null;
 
-    for (let attempt = 0; attempt < IMGBB_UPLOAD_ATTEMPTS; attempt += 1) {
+    for (let attempt = 0; attempt < PIXELVAULT_UPLOAD_ATTEMPTS; attempt += 1) {
       const form = new FormData();
       const sanitizedFilename = sanitizeFilename(filename || "upload.bin");
       form.set(
-        "image",
+        "file",
         new File([normalizedBytes], sanitizedFilename, {
           type: mimeType || "application/octet-stream"
         })
       );
-      const uploadName = sanitizeFilename(path.parse(sanitizedFilename).name);
-      if (uploadName) {
-        form.set("name", uploadName);
+      if (this.expiration) {
+        form.set("expires_in", this.expiration);
       }
 
       let response;
       try {
-        response = await submitImgbbRequest(
+        response = await submitPixelVaultRequest(
           this.apiUrl,
           this.apiKey,
-          this.expiration,
           form
         );
       } catch (error) {
         lastRetriableError = toHttpError(
-          "Imgbb upload failed",
+          "PixelVault upload failed",
           error instanceof Error ? error.message : String(error)
         );
-        if (attempt + 1 < IMGBB_UPLOAD_ATTEMPTS) {
-          await sleep(IMGBB_RETRY_DELAY_MS);
+        if (attempt + 1 < PIXELVAULT_UPLOAD_ATTEMPTS) {
+          await sleep(PIXELVAULT_RETRY_DELAY_MS);
           continue;
         }
 
         throw lastRetriableError;
       }
 
-      const parsed = await parseImgbbResponse(response);
+      const parsed = await parsePixelVaultResponse(response);
       if (parsed.empty) {
-        lastRetriableError = toHttpError("Imgbb upload failed", "empty response");
-        if (attempt + 1 < IMGBB_UPLOAD_ATTEMPTS) {
-          await sleep(IMGBB_RETRY_DELAY_MS);
+        lastRetriableError = toHttpError("PixelVault upload failed", "empty response");
+        if (attempt + 1 < PIXELVAULT_UPLOAD_ATTEMPTS) {
+          await sleep(PIXELVAULT_RETRY_DELAY_MS);
           continue;
         }
 
@@ -331,7 +323,7 @@ export class ImgbbClient {
       return parsed.url;
     }
 
-    throw lastRetriableError ?? toHttpError("Imgbb upload failed");
+    throw lastRetriableError ?? toHttpError("PixelVault upload failed");
   }
 
   async verifyFile(url) {
@@ -346,7 +338,7 @@ export class ImgbbClient {
     } catch (error) {
       if (config.verbose) {
         console.warn(
-          `Imgbb upload verification fetch failed: ${
+          `PixelVault upload verification fetch failed: ${
             error instanceof Error ? error.message : String(error)
           }. Bypassing verification.`
         );
@@ -357,7 +349,7 @@ export class ImgbbClient {
     if (!response.ok) {
       if (config.verbose) {
         console.warn(
-          `Imgbb upload verification returned HTTP status ${response.status}. Bypassing verification.`
+          `PixelVault upload verification returned HTTP status ${response.status}. Bypassing verification.`
         );
       }
       return url;
@@ -367,7 +359,7 @@ export class ImgbbClient {
       const bytes = Buffer.from(await response.arrayBuffer());
       if (bytes.length === 0) {
         throw toHttpError(
-          "Imgbb upload verification failed",
+          "PixelVault upload verification failed",
           "uploaded file is empty"
         );
       }
@@ -377,7 +369,7 @@ export class ImgbbClient {
       }
       if (config.verbose) {
         console.warn(
-          `Imgbb upload verification failed to read response array buffer: ${
+          `PixelVault upload verification failed to read response array buffer: ${
             error instanceof Error ? error.message : String(error)
           }. Bypassing verification.`
         );
@@ -424,7 +416,7 @@ export async function rehostGeneratedImages({
             asset = await loadSourceImage(image, index);
           } catch (error) {
             throw toHttpError(
-              "Unable to fetch Grok-generated image for Imgbb upload",
+              "Unable to fetch Grok-generated image for PixelVault upload",
               error instanceof Error ? error.message : String(error)
             );
           }
@@ -432,7 +424,7 @@ export async function rehostGeneratedImages({
           const bytes = toBuffer(asset?.bytes);
           if (!bytes.length) {
             throw toHttpError(
-              "Unable to fetch Grok-generated image for Imgbb upload",
+              "Unable to fetch Grok-generated image for PixelVault upload",
               sourceUrl
             );
           }

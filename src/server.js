@@ -37,7 +37,7 @@ import { initSse, writeSseEvent } from "./openai/sse.js";
 import { createId, unixTimestampSeconds } from "./lib/ids.js";
 import { withFastModelFallback } from "./grok/model-fallback.js";
 import { buildAssistantOutput, getFinalTextSuffix } from "./grok/output.js";
-import { ImgbbClient, rehostGeneratedImages } from "./imgbb/client.js";
+import { PixelVaultClient, rehostGeneratedImages } from "./pixelvault/client.js";
 import { listModels, resolveModel } from "./grok/model-map.js";
 import { buildStoredGrokState } from "./grok/response-state.js";
 import { GrokAccountPool } from "./grok/account-pool.js";
@@ -76,7 +76,7 @@ const {
 } = await createStores(config);
 
 const grokAccounts = new GrokAccountPool(config);
-const imgbb = new ImgbbClient(config);
+const pixelVault = new PixelVaultClient(config);
 
 let server;
 let shutdownPromise = null;
@@ -476,18 +476,18 @@ function createStreamingSourceAttributionRequest(sourceAttribution) {
   };
 }
 
-async function uploadImageToImgbb({
+async function uploadImageToPixelVault({
   filename,
   mimeType,
   bytes
 }) {
-  const hostedUrl = await imgbb.uploadFile({
+  const hostedUrl = await pixelVault.uploadFile({
     filename,
     mimeType,
     bytes
   });
 
-  return imgbb.verifyFile(hostedUrl);
+  return pixelVault.verifyFile(hostedUrl);
 }
 
 async function buildHostedAssistantOutput(
@@ -513,7 +513,7 @@ async function buildHostedAssistantOutput(
         }),
       uploadClient: {
         async uploadFile({ filename, mimeType, bytes }) {
-          return uploadImageToImgbb({
+          return uploadImageToPixelVault({
             filename,
             mimeType,
             bytes

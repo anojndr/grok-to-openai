@@ -23,7 +23,7 @@ Playwright browser profile. It does not use the official xAI API.
   the account that owns the stored Grok thread; on failure the bridge replays
   the stored conversation history (including attachments) across the pool.
 - **Images**: Grok image generation, edits, and searched image cards are
-  exposed instead of dropped. Generated assets are rehosted as public Imgbb
+  exposed instead of dropped. Generated assets are rehosted as public PixelVault
   URLs. Responses returns `image_generation_call` items with `result_url`;
   Chat Completions keeps Markdown text plus a bridge-specific
   `message.image_urls` field.
@@ -91,14 +91,14 @@ Playwright browser profile. It does not use the official xAI API.
 - `GET /v1/responses/:response_id` reconstructs image `result` lazily from
   the stored assistant attachment when available.
 - Prefer uploading images to `/v1/files` and sending `file_id` references if
-  you front the bridge with a reverse proxy — inline Base64 image JSON can be
+  you front the bridge with a reverse proxy: inline Base64 image JSON can be
   challenged before reaching the bridge.
 - Automated login (`GROK_EMAIL`/`GROK_PASSWORD`) is not implemented.
 
 ## Setup
 
 Requirements: Node.js `>=20`, Chrome/Chromium available to `playwright-core`
-(it does not download a browser — set `CHROME_EXECUTABLE_PATH` or
+(it does not download a browser; set `CHROME_EXECUTABLE_PATH` or
 `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH`), and an authenticated Grok web session.
 
 ```bash
@@ -124,30 +124,30 @@ FILE_UPLOAD_CONCURRENCY=4
 DATA_DIR=.data
 DATABASE_URL=postgresql://user:pass@db.example.com:5432/groktoopenai?sslmode=disable
 DEFAULT_MODEL=grok-4.5-auto
-IMGBB_API_KEY=your-imgbb-api-key
-IMGBB_EXPIRATION=
+PIXELVAULT_API_KEY=your-pixelvault-api-key
+PIXELVAULT_EXPIRATION=
 ALLOW_ORIGINS=*
 ```
 
 Configuration notes:
 
-- `BRIDGE_API_KEY` — leave empty to disable bearer auth.
-- `GROK_COOKIE_FILE` / `GROK_COOKIES_TEXT` — Netscape or JSON cookie format;
+- `BRIDGE_API_KEY`: leave empty to disable bearer auth.
+- `GROK_COOKIE_FILE` / `GROK_COOKIES_TEXT`: Netscape or JSON cookie format;
   multiple accounts by concatenating blocks/arrays. Hot-reloaded on change.
-- `GROK_BASE_URL` — defaults to `https://grok.com`.
-- `BROWSER_STREAM_BATCH_MAX_CHARS` / `BROWSER_STREAM_BATCH_DELAY_MS` —
+- `GROK_BASE_URL`: defaults to `https://grok.com`.
+- `BROWSER_STREAM_BATCH_MAX_CHARS` / `BROWSER_STREAM_BATCH_DELAY_MS`:
   browser-to-Node stream batching; defaults `16384` / `2`.
-- `BROWSER_REQUEST_TIMEOUT_MS` — max lifetime of one Grok browser request;
+- `BROWSER_REQUEST_TIMEOUT_MS`: max lifetime of one Grok browser request;
   defaults to `600000` (10 min), timed-out fetches return `504`.
-- `SHUTDOWN_TIMEOUT_MS` — drain time for active requests on shutdown;
+- `SHUTDOWN_TIMEOUT_MS`: drain time for active requests on shutdown;
   defaults to `30000`.
-- `FILE_UPLOAD_CONCURRENCY` — parallel attachment uploads per request;
+- `FILE_UPLOAD_CONCURRENCY`: parallel attachment uploads per request;
   defaults to `4`, set `1` for sequential.
-- `DATABASE_URL` / `POSTGRES_URL` — move files and Responses into PostgreSQL.
-- `IMGBB_API_KEY` — required to rehost generated images as public URLs.
-  `IMGBB_API_URL` defaults to `https://api.imgbb.com/1/upload`;
-  `IMGBB_EXPIRATION` sets an auto-delete TTL (60–15552000 seconds).
-- `ALLOW_ORIGINS` — CORS origin (default `*`).
+- `DATABASE_URL` / `POSTGRES_URL`: move files and Responses into PostgreSQL.
+- `PIXELVAULT_API_KEY`: required to rehost generated images as public URLs.
+  `PIXELVAULT_API_URL` defaults to `https://api.pixelvault.dev/v1/images`;
+  `PIXELVAULT_EXPIRATION` sets an auto-delete TTL (60–2592000 seconds).
+- `ALLOW_ORIGINS`: CORS origin (default `*`).
 
 Parsed but unused: `GROK_EMAIL`, `GROK_PASSWORD`, `DEFAULT_MODE`.
 
@@ -269,10 +269,10 @@ curl http://127.0.0.1:62774/v1/responses \
 
 By default the bridge writes:
 
-- `.browser-profile/` — persistent Playwright profile for Grok web auth.
-- `.data/files/` and `.data/file-metadata/` — uploaded file contents and one
+- `.browser-profile/`: persistent Playwright profile for Grok web auth.
+- `.data/files/` and `.data/file-metadata/`: uploaded file contents and one
   JSON metadata record per file.
-- `.data/responses/` — one compact JSON file per Response (OpenAI payload plus
+- `.data/responses/`: one compact JSON file per Response (OpenAI payload plus
   Grok conversation state and replay history).
 
 With `DATABASE_URL` set, files and Responses live in PostgreSQL tables
