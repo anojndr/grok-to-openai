@@ -46,7 +46,7 @@ Playwright browser profile. It does not use the official xAI API.
   accounts are pruned; timed-out page fetches return `504`.
 - **Model fallback**: If a premium model ("Model is not found", timeouts) or
   the full account pool is exhausted, the bridge retries once in
-  `grok-4.5-fast`, and caches unsupported premium models per account to skip
+  `grok-4.6-fast`, and caches unsupported premium models per account to skip
   future upstream attempts.
 - **Streaming**: Grok answer tokens stream to the OpenAI client in real time as
   they arrive. Grok's `final`-tagged deltas are forwarded while thinking-phase
@@ -64,11 +64,11 @@ Playwright browser profile. It does not use the official xAI API.
 
 ## Models
 
-`GET /v1/models` returns `grok-4.5-auto`, `grok-4.5-fast`, `grok-4.5-expert`,
-`grok-4.5-heavy`, `grok-4.5-beta`. Aliases are broad:
+`GET /v1/models` returns `grok-4.6-auto`, `grok-4.6-fast`, `grok-4.6-expert`,
+`grok-4.6-heavy`, `grok-4.6-beta`. Aliases are broad:
 
-- `grok`, `grok-latest`, `grok-4.5`, `gpt-4o`, `gpt-4.1`, `gpt-5` → auto
-- `grok-4.5-beta`, `grok 4.5 (beta)`, `grok-420-computer-use-sa` → beta mode
+- `grok`, `grok-latest`, `grok-4.6`, `gpt-4o`, `gpt-4.1`, `gpt-5` → auto
+- `grok-4.6-beta`, `grok 4.6 (beta)`, `grok-420-computer-use-sa` → beta mode
 - Any name containing `fast`, `expert`, `heavy`, or `auto` routes to that mode
 - `reasoning.effort=high` (Responses) or `reasoning_effort=high`
   (Chat Completions) routes to expert mode; omitted `model` uses
@@ -123,7 +123,7 @@ SHUTDOWN_TIMEOUT_MS=30000
 FILE_UPLOAD_CONCURRENCY=4
 DATA_DIR=.data
 DATABASE_URL=postgresql://user:pass@db.example.com:5432/groktoopenai?sslmode=disable
-DEFAULT_MODEL=grok-4.5-auto
+DEFAULT_MODEL=grok-4.6-auto
 PIXELVAULT_API_KEY=your-pixelvault-api-key
 PIXELVAULT_EXPIRATION=
 ALLOW_ORIGINS=*
@@ -176,7 +176,7 @@ curl http://127.0.0.1:62774/v1/responses \
   -H "Authorization: Bearer sk-local-test" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "grok-4.5-auto",
+    "model": "grok-4.6-auto",
     "input": "Reply with the single word PONG."
   }'
 
@@ -185,7 +185,7 @@ curl -N http://127.0.0.1:62774/v1/responses \
   -H "Authorization: Bearer sk-local-test" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "grok-4.5-fast",
+    "model": "grok-4.6-fast",
     "input": "Write one short paragraph.",
     "stream": true
   }'
@@ -195,7 +195,7 @@ curl http://127.0.0.1:62774/v1/chat/completions \
   -H "Authorization: Bearer sk-local-test" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "grok-4.5-auto",
+    "model": "grok-4.6-auto",
     "messages": [
       {
         "role": "user",
@@ -222,7 +222,7 @@ curl http://127.0.0.1:62774/v1/responses \
   -H "Authorization: Bearer sk-local-test" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "grok-4.5-auto",
+    "model": "grok-4.6-auto",
     "input": [
       {
         "role": "user",
@@ -238,7 +238,7 @@ curl http://127.0.0.1:62774/v1/responses \
 FIRST=$(curl -s http://127.0.0.1:62774/v1/responses \
   -H "Authorization: Bearer sk-local-test" \
   -H "Content-Type: application/json" \
-  -d '{"model":"grok-4.5-auto","input":"Tell me a joke."}')
+  -d '{"model":"grok-4.6-auto","input":"Tell me a joke."}')
 
 RESP_ID=$(printf '%s' "$FIRST" | node -e 'process.stdin.once("data", d => console.log(JSON.parse(d).id))')
 
@@ -246,7 +246,7 @@ curl http://127.0.0.1:62774/v1/responses \
   -H "Authorization: Bearer sk-local-test" \
   -H "Content-Type: application/json" \
   -d "{
-    \"model\": \"grok-4.5-auto\",
+    \"model\": \"grok-4.6-auto\",
     \"previous_response_id\": \"$RESP_ID\",
     \"input\": [{\"role\":\"user\",\"content\":\"Tell me another.\"}]
   }"
@@ -256,7 +256,7 @@ curl http://127.0.0.1:62774/v1/responses \
   -H "Authorization: Bearer sk-local-test" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "grok-4.5-auto",
+    "model": "grok-4.6-auto",
     "input": "Summarize the latest AI news in one paragraph.",
     "source_attribution": {
       "include_sources": true,

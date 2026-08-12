@@ -53,7 +53,7 @@ If the stream ended without a complete `modelResponse` (e.g. thinking-only strea
 
 - `GrokAccountPool` builds one `GrokClient` per cookie set (concatenated Netscape blocks in `GROK_COOKIE_FILE` / `GROK_COOKIES_TEXT`), each with an isolated profile dir `account-NNN`. Cookie file hot-reloads on change; malformed updates keep the last known-good pool. Clients are closed when idle so reloads don't leak browsers.
 - `withFallback` runs the operation on the primary account, then rotates through fallbacks deterministically. Session-unavailable errors (`grok_session_blocked`, 401/403/429/503, rate-limit/auth message heuristics in `isSessionUnavailableError`) quarantine an account for a 15-minute cooldown; after two wrapped fallback passes the request fails.
-- `withFastModelFallback` (model-fallback.js): "Model is not found" or timeouts on premium modes retry once in `grok-4.5-fast`; unsupported premium modes are cached per account (`client.unsupportedModes`).
+- `withFastModelFallback` (model-fallback.js): "Model is not found" or timeouts on premium modes retry once in `grok-4.6-fast`; unsupported premium modes are cached per account (`client.unsupportedModes`).
 
 ### Continuation and history
 

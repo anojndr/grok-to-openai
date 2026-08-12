@@ -74,7 +74,7 @@ export const config = {
   responseHydrationThinkingDelaysMs: process.env.RESPONSE_HYDRATION_THINKING_DELAYS_MS
     ? process.env.RESPONSE_HYDRATION_THINKING_DELAYS_MS.split(",").map(Number).filter(Number.isFinite)
     : null,
-  defaultModel: process.env.DEFAULT_MODEL ?? "grok-4.5-auto",
+  defaultModel: process.env.DEFAULT_MODEL ?? "grok-4.6-auto",
   defaultMode: process.env.DEFAULT_MODE ?? "auto",
   allowOrigins: process.env.ALLOW_ORIGINS ?? "*",
   verbose: envBool("VERBOSE", false)

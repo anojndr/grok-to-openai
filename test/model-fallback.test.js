@@ -4,7 +4,7 @@ import { withFastModelFallback } from "../src/grok/model-fallback.js";
 import { HttpError } from "../src/lib/errors.js";
 import { GROK_SESSION_BLOCKED_ERROR_CODE } from "../src/grok/browser-session.js";
 
-test("withFastModelFallback retries expert requests with grok-4.5-fast after the first attempt fails", async () => {
+test("withFastModelFallback retries expert requests with grok-4.6-fast after the first attempt fails", async () => {
   const attempts = [];
 
   const result = await withFastModelFallback({
@@ -22,13 +22,13 @@ test("withFastModelFallback retries expert requests with grok-4.5-fast after the
     }
   });
 
-  assert.deepEqual(attempts, ["grok expert", "grok-4.5-fast"]);
+  assert.deepEqual(attempts, ["grok expert", "grok-4.6-fast"]);
   assert.deepEqual(result, {
-    model: "grok-4.5-fast"
+    model: "grok-4.6-fast"
   });
 });
 
-test("withFastModelFallback retries auto requests with grok-4.5-fast after the first attempt fails", async () => {
+test("withFastModelFallback retries auto requests with grok-4.6-fast after the first attempt fails", async () => {
   const attempts = [];
 
   const result = await withFastModelFallback({
@@ -46,13 +46,13 @@ test("withFastModelFallback retries auto requests with grok-4.5-fast after the f
     }
   });
 
-  assert.deepEqual(attempts, ["grok auto", "grok-4.5-fast"]);
+  assert.deepEqual(attempts, ["grok auto", "grok-4.6-fast"]);
   assert.deepEqual(result, {
-    model: "grok-4.5-fast"
+    model: "grok-4.6-fast"
   });
 });
 
-test("withFastModelFallback retries heavy requests with grok-4.5-fast after the first attempt fails", async () => {
+test("withFastModelFallback retries heavy requests with grok-4.6-fast after the first attempt fails", async () => {
   const attempts = [];
 
   const result = await withFastModelFallback({
@@ -70,17 +70,17 @@ test("withFastModelFallback retries heavy requests with grok-4.5-fast after the 
     }
   });
 
-  assert.deepEqual(attempts, ["grok heavy", "grok-4.5-fast"]);
+  assert.deepEqual(attempts, ["grok heavy", "grok-4.6-fast"]);
   assert.deepEqual(result, {
-    model: "grok-4.5-fast"
+    model: "grok-4.6-fast"
   });
 });
 
-test("withFastModelFallback retries Grok 4.5 beta requests with grok-4.5-fast after the first attempt fails", async () => {
+test("withFastModelFallback retries Grok 4.6 beta requests with grok-4.6-fast after the first attempt fails", async () => {
   const attempts = [];
 
   const result = await withFastModelFallback({
-    publicModel: "grok-4.5-beta",
+    publicModel: "grok-4.6-beta",
     async operation(model) {
       attempts.push(model);
 
@@ -96,9 +96,9 @@ test("withFastModelFallback retries Grok 4.5 beta requests with grok-4.5-fast af
     }
   });
 
-  assert.deepEqual(attempts, ["grok-4.5-beta", "grok-4.5-fast"]);
+  assert.deepEqual(attempts, ["grok-4.6-beta", "grok-4.6-fast"]);
   assert.deepEqual(result, {
-    model: "grok-4.5-fast"
+    model: "grok-4.6-fast"
   });
 });
 
@@ -124,7 +124,7 @@ test("withFastModelFallback does not hide blocked Grok sessions with a model ret
 
   await assert.rejects(
     withFastModelFallback({
-      publicModel: "grok-4.5-auto",
+      publicModel: "grok-4.6-auto",
       async operation(model) {
         attempts.push(model);
         throw new HttpError(502, "blocked", {
@@ -135,7 +135,7 @@ test("withFastModelFallback does not hide blocked Grok sessions with a model ret
     (error) => error?.details?.code === GROK_SESSION_BLOCKED_ERROR_CODE
   );
 
-  assert.deepEqual(attempts, ["grok-4.5-auto"]);
+  assert.deepEqual(attempts, ["grok-4.6-auto"]);
 });
 
 test("withFastModelFallback retries expert requests on model timeout when no tokens are emitted", async () => {
@@ -220,11 +220,11 @@ test("withFastModelFallback retries both primary and fast model if both experien
     assert.deepEqual(attempts, [
       "grok expert",
       "grok expert",
-      "grok-4.5-fast",
-      "grok-4.5-fast"
+      "grok-4.6-fast",
+      "grok-4.6-fast"
     ]);
     assert.deepEqual(result, {
-      model: "grok-4.5-fast"
+      model: "grok-4.6-fast"
     });
   } finally {
     delete process.env.MODEL_TIMEOUT_RETRY_DELAY_MS;
@@ -248,9 +248,9 @@ test("withFastModelFallback bypasses premium model requests immediately on subse
     }
   });
 
-  assert.deepEqual(attempts, ["grok-4.5-fast"]);
+  assert.deepEqual(attempts, ["grok-4.6-fast"]);
   assert.deepEqual(result, {
-    model: "grok-4.5-fast"
+    model: "grok-4.6-fast"
   });
 });
 
@@ -276,9 +276,9 @@ test("withFastModelFallback adds mode to accountClient.unsupportedModes when a M
     }
   });
 
-  assert.deepEqual(attempts, ["grok expert", "grok-4.5-fast"]);
+  assert.deepEqual(attempts, ["grok expert", "grok-4.6-fast"]);
   assert.deepEqual(result, {
-    model: "grok-4.5-fast"
+    model: "grok-4.6-fast"
   });
   assert.ok(accountClient.unsupportedModes.has("expert"));
 });

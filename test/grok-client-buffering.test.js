@@ -6,7 +6,7 @@ function createClient() {
   const requests = [];
   const client = new GrokClient({
     grokBaseUrl: "https://grok.com",
-    defaultModel: "grok-4.5-auto"
+    defaultModel: "grok-4.6-auto"
   });
 
   client.browser = {
