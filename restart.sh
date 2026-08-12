@@ -125,7 +125,7 @@ if [[ "$MODE" == "background" ]]; then
   mkdir -p .data
   nohup "$NPM_BIN" start >>.data/server.log 2>&1 &
   bg_pid=$!
-  echo "Started grok-to-openai (pid $bg_pid), log: .data/server.log"
+  echo "Started grok-to-openai (pid $bg_pid). Follow logs with: tail -f .data/server.log"
 
   for _ in $(seq 1 "$START_TIMEOUT_SECONDS"); do
     if ! alive "$bg_pid"; then
