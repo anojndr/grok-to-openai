@@ -443,8 +443,8 @@ export function installGrokBridgePageHelpers() {
         // page it can fail before the Grok app has mounted. Retry with a
         // short delay instead of sending a placeholder id: xAI rejects
         // placeholder ids with "Request rejected by anti-bot rules.".
-        const maxStatsigAttempts = Number(request.statsigMaxAttempts) || 25;
-        const statsigRetryDelayMs = Number(request.statsigRetryDelayMs) || 1000;
+        const maxStatsigAttempts = Number(request.statsigMaxAttempts) || 50;
+        const statsigRetryDelayMs = Number(request.statsigRetryDelayMs) || 50;
         let lastError = null;
         for (let attempt = 0; attempt < maxStatsigAttempts; attempt += 1) {
           try {
@@ -1120,13 +1120,14 @@ export class BrowserSession {
           waitUntil: "domcontentloaded"
         });
         try {
-          const networkIdleTimeout = this.config.browserNetworkIdleTimeoutMs ?? 1000;
-          await page.waitForLoadState("networkidle", { timeout: networkIdleTimeout });
+          const readinessTimeout = this.config.browserNetworkIdleTimeoutMs ?? 1000;
+          await page.waitForSelector("path[d], textarea, button, [role=button]", { timeout: readinessTimeout });
         } catch (e) {}
-        try {
-          const pageLoadDelay = this.config.browserPageLoadDelayMs ?? 1000;
-          await page.waitForTimeout(pageLoadDelay);
-        } catch (e) {}
+        if (this.config.browserPageLoadDelayMs > 0) {
+          try {
+            await page.waitForTimeout(this.config.browserPageLoadDelayMs);
+          } catch (e) {}
+        }
         await this.validatePage(page, response);
         this.validatedPage = page;
         this.validatedPageUrl = typeof page.url === "function" ? page.url() : "";
@@ -1331,6 +1332,8 @@ export class BrowserSession {
       headers,
       statsigChunkUrl: this.statsigChunkUrl,
       statsigModuleId: this.statsigModuleId,
+      statsigMaxAttempts: this.config.browserStatsigMaxAttempts ?? 50,
+      statsigRetryDelayMs: this.config.browserStatsigRetryDelayMs ?? 50,
       streamBatchMaxChars: this.config.browserStreamBatchMaxChars,
       streamBatchDelayMs: this.config.browserStreamBatchDelayMs
     });
