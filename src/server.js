@@ -36,7 +36,7 @@ import { createProgressiveTextStream } from "./openai/progressive-text-stream.js
 import { initSse, writeSseEvent } from "./openai/sse.js";
 import { createId, unixTimestampSeconds } from "./lib/ids.js";
 import { withFastModelFallback } from "./grok/model-fallback.js";
-import { buildAssistantOutput, getFinalTextSuffix } from "./grok/output.js";
+import { buildAssistantOutput } from "./grok/output.js";
 import { PixelVaultClient, rehostGeneratedImages } from "./pixelvault/client.js";
 import { listModels, resolveModel } from "./grok/model-map.js";
 import { buildStoredGrokState } from "./grok/response-state.js";
@@ -653,9 +653,7 @@ app.post("/v1/responses", async (req, res, next) => {
       );
       const images = assistantOutput.images;
       const text = assistantOutput.text;
-      progressiveTextStream.finish(
-        getFinalTextSuffix(text, result.state.assistantVisibleText)
-      );
+      progressiveTextStream.finish(text);
       const hasMessage = Boolean(text);
 
       if (hasMessage) {
@@ -914,9 +912,7 @@ app.post("/v1/chat/completions", async (req, res, next) => {
         text: assistantOutput.text,
         images: assistantOutput.images
       });
-      progressiveTextStream.finish(
-        getFinalTextSuffix(content, result.state.assistantVisibleText)
-      );
+      progressiveTextStream.finish(content);
 
       ensureAssistantRoleEmitted();
       if (assistantOutput.images.length) {

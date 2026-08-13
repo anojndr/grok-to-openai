@@ -51,12 +51,11 @@ Playwright browser profile. It does not use the official xAI API.
 - **Streaming**: Grok answer tokens stream to the OpenAI client in real time as
   they arrive. Grok's `final`-tagged deltas are forwarded while thinking-phase
   tokens (`header`/`thinking_start`/`response_start`) are suppressed, so planning
-  preambles never leak into the stream. If Grok's normalized final message
-  diverges from the live stream (rewritten drafts, markdown normalization), the
-  corrected tail is emitted when the canonical answer is known and the closing
-  `response.output_text.done` event always carries the canonical text. Streaming
-  text strips inline citation tags; Responses streaming emits completed image
-  items only after final asset URLs are known.
+  preambles never leak into the stream. The canonical answer is included in the
+  closing Responses state events, but is never replayed as a second text delta
+  when it diverges from the live stream (for example, because citations or
+  markup were normalized). Streaming text strips inline citation tags; Responses
+  streaming emits completed image items only after final asset URLs are known.
 - **Storage**: Uploaded files and Responses state persist under `.data/`
   (files, incremental metadata, per-Response JSON) or in PostgreSQL
   (`bridge_files`, `bridge_responses`) when `DATABASE_URL` is set. Legacy

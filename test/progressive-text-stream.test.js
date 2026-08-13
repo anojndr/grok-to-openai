@@ -52,7 +52,7 @@ test("progressive text stream sanitizes markup spans that span token boundaries"
   ]);
 });
 
-test("progressive text stream emits the canonical text when the live stream diverges", () => {
+test("progressive text stream does not replay canonical text when it diverges", () => {
   const events = [];
   const stream = createProgressiveTextStream({
     onActivity() {
@@ -73,7 +73,32 @@ No public statements or data exist on Ado specifically. This is an educated esti
   assert.deepEqual(events, [
     { type: "activity" },
     { type: "text", text: "Roughly 2–3 times per week." },
-    { type: "text", text: canonicalText }
+    {
+      type: "text",
+      text: "\n\nNo public statements or data exist on Ado specifically. This is an educated estimate based on typical frequencies reported for women in their early 20s across multiple surveys."
+    }
+  ]);
+});
+
+test("progressive text stream does not replay canonical text when citations differ", () => {
+  const events = [];
+  const stream = createProgressiveTextStream({
+    onActivity() {
+      events.push({ type: "activity" });
+    },
+    onText(text) {
+      events.push({ type: "text", text });
+    }
+  });
+
+  const streamedText = "First paragraph.\n\nSecond paragraph.";
+  const canonicalText =
+    "First paragraph. ([source](https://example.com))\n\nSecond paragraph. ([other](https://example.org))";
+  stream.observe(streamedText);
+  assert.equal(stream.finish(canonicalText), canonicalText);
+  assert.deepEqual(events, [
+    { type: "activity" },
+    { type: "text", text: streamedText }
   ]);
 });
 

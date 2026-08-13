@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildAssistantOutput, getFinalTextSuffix } from "../src/grok/output.js";
+import { buildAssistantOutput } from "../src/grok/output.js";
 
 test("buildAssistantOutput prefers Grok's final model message", () => {
   const output = buildAssistantOutput(
@@ -384,36 +384,4 @@ Intel's latest Core Ultra chips trail in gaming even if they offer solid value i
     output.thoughtText,
     ""
   );
-});
-
-test("getFinalTextSuffix returns the suffix when the canonical extends the stream", () => {
-  assert.equal(
-    getFinalTextSuffix("The canonical answer.", "The canonical"),
-    " answer."
-  );
-});
-
-test("getFinalTextSuffix returns the canonical when the stream is a superset draft", () => {
-  assert.equal(
-    getFinalTextSuffix("Canonical.", "Canonical. but longer draft"),
-    "Canonical."
-  );
-});
-
-test("getFinalTextSuffix returns the divergent tail when the stream rewrites mid-answer", () => {
-  assert.equal(
-    getFinalTextSuffix(
-      "The canonical response keeps going.",
-      "The streamed response keeps going."
-    ),
-    "The canonical response keeps going."
-  );
-});
-
-test("getFinalTextSuffix returns nothing when the canonical equals the stream", () => {
-  assert.equal(getFinalTextSuffix("Identical.", "Identical."), "");
-});
-
-test("getFinalTextSuffix falls back to the canonical text when nothing streamed", () => {
-  assert.equal(getFinalTextSuffix("Canonical only.", ""), "Canonical only.");
 });

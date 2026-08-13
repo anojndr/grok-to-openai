@@ -8,7 +8,6 @@ export function createProgressiveTextStream({
   let finished = false;
   const sanitizer = createGrokMarkupStreamSanitizer();
   let buffer = "";
-  let bufferLength = 0;
 
   return {
     observe(token) {
@@ -26,7 +25,6 @@ export function createProgressiveTextStream({
           .replace(/[ \t]+\n/g, "\n")
           .replace(/\n{3,}/g, "\n\n");
         buffer += normalized;
-        bufferLength += normalized.length;
         onText?.(normalized);
       }
     },
@@ -37,17 +35,34 @@ export function createProgressiveTextStream({
 
       finished = true;
       const canonicalText = typeof fullText === "string" ? fullText : "";
-      const exactLength = bufferLength === canonicalText.length;
+      if (!canonicalText) {
+        return "";
+      }
 
-      if (
-        canonicalText &&
-        (!exactLength || !canonicalText.startsWith(buffer))
-      ) {
+      if (!buffer) {
         if (!activityEmitted) {
           activityEmitted = true;
           onActivity?.();
         }
         onText?.(canonicalText);
+        return canonicalText;
+      }
+
+      if (canonicalText === buffer) {
+        return canonicalText;
+      }
+
+      // Final SSE events carry the complete canonical message separately. Never
+      // replay that message as a new delta: a citation or markup difference in
+      // the canonical form must not duplicate the answer already delivered.
+      // Only append an unambiguous suffix when the live stream is a prefix.
+      if (!canonicalText.startsWith(buffer)) {
+        return canonicalText;
+      }
+
+      const suffix = canonicalText.slice(buffer.length);
+      if (suffix) {
+        onText?.(suffix);
       }
 
       return canonicalText;
