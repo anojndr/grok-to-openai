@@ -671,7 +671,9 @@ test("page bridge batches fast response chunks and installs idempotently", async
 
     assert.equal(observerCount, 1);
     assert.equal(document.querySelectorAll, installedQuerySelectorAll);
-    assert.deepEqual(initialScanSelectors, ["path[d]"]);
+    assert.deepEqual(initialScanSelectors, [
+      'path, svg, meta[name^=gr], [class*="r-6k"], [id^="loading-x-anim-"]'
+    ]);
     assert.equal(documentSelectors.includes("*"), false);
 
     await window.__grokBridgeFetch({
@@ -729,25 +731,101 @@ function installBridgeTestGlobals({ statsigGen, fetchImpl }) {
 
   const errorPayloads = [];
   const fetched = [];
-  const documentElement = {
-    nodeType: 1,
-    matches() {
-      return false;
-    },
-    querySelectorAll() {
-      return [];
-    }
-  };
+  function createMockElement(tag = "div") {
+    const children = [];
+    const attributes = new Map();
+    const element = {
+      nodeType: 1,
+      tagName: tag.toUpperCase(),
+      childNodes: children,
+      className: "",
+      id: "",
+      style: {},
+      setAttribute(name, val) {
+        attributes.set(name, String(val));
+        if (name === "class") element.className = String(val);
+        if (name === "id") element.id = String(val);
+      },
+      getAttribute(name) {
+        return attributes.get(name) || null;
+      },
+      hasAttribute(name) {
+        return attributes.has(name);
+      },
+      appendChild(child) {
+        children.push(child);
+        child.parentElement = element;
+        return child;
+      },
+      matches(selector) {
+        if (!selector) return false;
+        if (selector.startsWith("#") && element.id === selector.slice(1)) return true;
+        if (selector.startsWith(".") && element.className.includes(selector.slice(1))) return true;
+        if (selector.startsWith('[id="') && element.id === selector.slice(5, -2)) return true;
+        if (selector.toLowerCase() === tag.toLowerCase()) return true;
+        return false;
+      },
+      querySelectorAll(selector) {
+        const matches = [];
+        for (const child of children) {
+          if (child.matches && child.matches(selector)) matches.push(child);
+          if (child.querySelectorAll) matches.push(...child.querySelectorAll(selector));
+        }
+        return matches;
+      },
+      cloneNode(deep = true) {
+        const clone = createMockElement(tag);
+        clone.className = element.className;
+        clone.id = element.id;
+        for (const [k, v] of attributes.entries()) {
+          clone.setAttribute(k, v);
+        }
+        if (deep) {
+          for (const child of children) {
+            clone.appendChild(child.cloneNode(true));
+          }
+        }
+        return clone;
+      },
+      isEqualNode(other) {
+        if (
+          !other ||
+          other.tagName !== element.tagName ||
+          other.id !== element.id ||
+          other.className !== element.className
+        ) {
+          return false;
+        }
+        return true;
+      }
+    };
+    return element;
+  }
+
+  const documentElement = createMockElement("html");
+  const body = createMockElement("body");
+  documentElement.appendChild(body);
+
   const document = {
     documentElement,
-    querySelectorAll() {
-      return [];
+    body,
+    createElement(tag) {
+      return createMockElement(tag);
     },
-    querySelector() {
-      return null;
+    createElementNS(_ns, tag) {
+      return createMockElement(tag);
     },
-    getElementsByClassName() {
-      return [];
+    getElementById(id) {
+      return documentElement.querySelectorAll(`[id="${id}"]`)[0] || null;
+    },
+    querySelectorAll(selector) {
+      return documentElement.querySelectorAll(selector);
+    },
+    querySelector(selector) {
+      return documentElement.querySelectorAll(selector)[0] || null;
+    },
+    getElementsByClassName(className) {
+      return documentElement.querySelectorAll("." + className);
     }
   };
   const window = {
@@ -895,6 +973,72 @@ test("page bridge marks stale statsig chunk sources for rediscovery", async () =
   assert.equal(env.fetched.length, 0);
   assert.equal(env.errorPayloads.length, 1);
   assert.match(env.errorPayloads[0].message, new RegExp(STATSIG_CHUNK_STALE_MARKER));
+});
+
+test("request recreates the page when statsig generation fails on the first attempt", async () => {
+  const session = createSession((instance, payload) => {
+    instance.attempts = (instance.attempts || 0) + 1;
+
+    if (instance.attempts === 1) {
+      throw new Error(
+        `page.evaluate: Error: ${STATSIG_GENERATION_FAILED_MARKER}: Grok statsig id generation failed: Cannot read properties of undefined (reading 'childNodes')`
+      );
+    }
+
+    const pending = instance.pending.get(payload.requestId);
+    pending.onMeta({
+      requestId: payload.requestId,
+      status: 200,
+      headers: {}
+    });
+    pending.onChunk("recovered-after-statsig-failure");
+    pending.resolve();
+  });
+
+  let recreateCount = 0;
+  session.recreatePage = async () => {
+    recreateCount += 1;
+    return {};
+  };
+
+  const response = await session.request({
+    requestId: "req-statsig-failed-retry",
+    url: "https://grok.com/rest/test"
+  });
+
+  assert.equal(recreateCount, 1);
+  assert.equal(response.meta?.status, 200);
+  assert.equal(response.text, "recovered-after-statsig-failure");
+});
+
+test("page bridge self-heals botox elements from window.__next_f when DOM is empty", async () => {
+  const env = installBridgeTestGlobals({
+    statsigGen: async () => {
+      const els = globalThis.document.querySelectorAll(".r-6k45k0");
+      if (!els || els.length < 4) {
+        throw new TypeError("Cannot read properties of undefined (reading 'childNodes')");
+      }
+      return "botox-healed-statsig-id";
+    }
+  });
+
+  env.window.__next_f = [
+    [
+      1,
+      '{"curves":[[{"color":[1,2,3,4,5,6],"deg":90,"bezier":[10,20,30,40]}],[{"color":[1,2,3,4,5,6],"deg":90,"bezier":[10,20,30,40]}],[{"color":[1,2,3,4,5,6],"deg":90,"bezier":[10,20,30,40]}],[{"color":[1,2,3,4,5,6],"deg":90,"bezier":[10,20,30,40]}]],"css_class":"r-6k45k0"}'
+    ]
+  ];
+
+  try {
+    installGrokBridgePageHelpers();
+    await env.window.__grokBridgeFetch(STATSIG_FETCH_PAYLOAD);
+  } finally {
+    env.restore();
+  }
+
+  assert.equal(env.fetched.length, 1);
+  assert.equal(env.fetched[0].statsigId, "botox-healed-statsig-id");
+  assert.equal(env.errorPayloads.length, 0);
 });
 
 function createMockResponse({

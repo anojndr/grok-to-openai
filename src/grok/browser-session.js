@@ -151,23 +151,46 @@ export function installGrokBridgePageHelpers() {
     }
   };
 
+  const isStatsigCandidate = (el) => {
+    if (!el || el.nodeType !== 1) return false;
+    const tag = el.tagName;
+    const className = readElementClassName(el);
+    const name = el.getAttribute?.("name") || "";
+    const id = el.id || "";
+    return (
+      tag === "PATH" ||
+      tag === "SVG" ||
+      tag === "META" ||
+      className.includes("r-6k") ||
+      id.startsWith("loading-x-anim-") ||
+      name.startsWith("gr")
+    );
+  };
+
   const handleNode = (node) => {
     if (!node || node.nodeType !== 1) {
       return;
     }
 
-    const paths = [];
+    if (isStatsigCandidate(node)) {
+      cacheElement(node);
+    }
+
+    const candidates = [];
     try {
-      if (node.matches?.("path[d]")) {
-        paths.push(node);
+      if (node.matches?.("path, svg, meta[name^=gr], [class*=\"r-6k\"], [id^=\"loading-x-anim-\"]")) {
+        candidates.push(node);
       }
-      paths.push(...node.querySelectorAll("path[d]"));
+      candidates.push(
+        ...node.querySelectorAll("path, svg, meta[name^=gr], [class*=\"r-6k\"], [id^=\"loading-x-anim-\"]")
+      );
     } catch {
       return;
     }
 
-    for (const pathElement of paths) {
-      let element = pathElement.parentElement;
+    for (const targetElement of candidates) {
+      cacheElement(targetElement);
+      let element = targetElement.parentElement;
       let ancestorDepth = 0;
       while (element && ancestorDepth < maxCachedPathAncestorDepth) {
         if (!cacheElement(element)) {
@@ -184,10 +207,12 @@ export function installGrokBridgePageHelpers() {
 
   // Initial scan in case document is already partially parsed
   try {
-    handleNode(document.documentElement);
+    if (document.documentElement) {
+      handleNode(document.documentElement);
+    }
   } catch {}
 
-  // Observe DOM additions dynamically
+  // Observe DOM additions dynamically (including attributes)
   try {
     const observer = new MutationObserver((mutations) => {
       for (const mutation of mutations) {
@@ -196,11 +221,16 @@ export function installGrokBridgePageHelpers() {
             handleNode(node);
           }
         }
+        if (mutation.type === "attributes" && mutation.target) {
+          handleNode(mutation.target);
+        }
       }
     });
     observer.observe(document.documentElement || document, {
       childList: true,
-      subtree: true
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["class", "d", "name", "content", "id"]
     });
     if (window.__grokVerbose) {
       console.log("__grokBridge: MutationObserver started.");
@@ -255,15 +285,131 @@ export function installGrokBridgePageHelpers() {
     return matches;
   };
 
+  let isEnsuringBotox = false;
+  let originalQuerySelectorAll = null;
+  try {
+    originalQuerySelectorAll = document.querySelectorAll;
+  } catch {}
+
+  const ensureBotoxElements = () => {
+    if (isEnsuringBotox) return;
+    isEnsuringBotox = true;
+    try {
+      const queryFn = originalQuerySelectorAll || document.querySelectorAll;
+      const existing = Array.from(
+        queryFn.call(document, "[class*=\"r-6k\"], .r-6k45k0")
+      );
+      if (existing.length >= 4 && existing.every((el) => el.childNodes?.length > 0)) {
+        for (const el of existing) {
+          cacheElement(el);
+        }
+        return;
+      }
+
+      const cached = getCachedSelectorMatches("[class*=\"r-6k\"], .r-6k45k0");
+      if (cached.length >= 4 && cached.every((el) => el.childNodes?.length > 0)) {
+        return;
+      }
+
+      let curves = null;
+      let cssClass = "r-6k45k0";
+      if (Array.isArray(window.__next_f)) {
+        for (const item of window.__next_f) {
+          const text =
+            typeof item === "string"
+              ? item
+              : typeof item?.[1] === "string"
+              ? item[1]
+              : JSON.stringify(item);
+          const idx = text.indexOf("\"css_class\"");
+          if (idx !== -1) {
+            try {
+              const startIdx = text.lastIndexOf("{\"curves\":", idx);
+              if (startIdx !== -1) {
+                const endIdx = text.indexOf("}", idx);
+                const jsonStr = text.slice(startIdx, endIdx + 1);
+                const parsed = JSON.parse(jsonStr);
+                if (Array.isArray(parsed.curves)) {
+                  curves = parsed.curves;
+                  cssClass = parsed.css_class || cssClass;
+                }
+              }
+            } catch {}
+          }
+        }
+      }
+
+      if (Array.isArray(curves) && curves.length > 0) {
+        let container = document.getElementById("__grok_botox_container");
+        if (!container) {
+          container = document.createElement("div");
+          container.id = "__grok_botox_container";
+          container.style.cssText =
+            "position:absolute;visibility:hidden;top:0;left:0;pointer-events:none;";
+          (document.body || document.documentElement || document).appendChild(container);
+        }
+        container.innerHTML = "";
+        curves.forEach((curve, index) => {
+          const dAttr = `M 10,30 C${curve
+            .map(
+              (e) =>
+                ` ${e.color[0]},${e.color[1]} ${e.color[2]},${e.color[3]} ${e.color[4]},${e.color[5]} h ${e.deg} s ${e.bezier[0]},${e.bezier[1]} ${e.bezier[2]},${e.bezier[3]}`
+            )
+            .join(" C")}`;
+          const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+          svg.setAttribute("viewBox", "0 0 24 24");
+          svg.setAttribute("id", `loading-x-anim-${index}`);
+          svg.setAttribute(
+            "class",
+            `r-1p0dtai r-13gxpu9 r-4qtqp9 r-yyyyoo r-wy61xf r-1d2f490 ${cssClass} r-ywje51`
+          );
+          const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+          const path1 = document.createElementNS("http://www.w3.org/2000/svg", "path");
+          path1.setAttribute(
+            "d",
+            "M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"
+          );
+          const path2 = document.createElementNS("http://www.w3.org/2000/svg", "path");
+          path2.setAttribute("d", dAttr);
+          path2.setAttribute("fill", "#1d9bf008");
+          g.appendChild(path1);
+          g.appendChild(path2);
+          svg.appendChild(g);
+          container.appendChild(svg);
+          cacheElement(svg);
+        });
+      }
+    } catch {} finally {
+      isEnsuringBotox = false;
+    }
+  };
+
   // Hook query selectors to return cached elements when they are queried but missing from DOM
   try {
-    const originalQuerySelectorAll = document.querySelectorAll;
+    const rawQuerySelectorAll = document.querySelectorAll;
+    originalQuerySelectorAll = rawQuerySelectorAll;
     document.querySelectorAll = function(selector) {
-      const result = originalQuerySelectorAll.apply(this, arguments);
-      if (result.length === 0 && savedElements.length) {
-        const matched = getCachedSelectorMatches(selector);
-        if (matched.length) {
-          return matched;
+      const result = rawQuerySelectorAll.apply(this, arguments);
+      if (selector && typeof selector === "string") {
+        if (selector.includes("r-6k") || selector.startsWith(".")) {
+          if (result.length < 4 && !isEnsuringBotox) {
+            ensureBotoxElements();
+            const reResult = rawQuerySelectorAll.apply(this, arguments);
+            if (reResult.length >= 4) {
+              return reResult;
+            }
+            if (savedElements.length) {
+              const matched = getCachedSelectorMatches(selector);
+              if (matched.length) {
+                return matched;
+              }
+            }
+          }
+        } else if (result.length === 0 && savedElements.length) {
+          const matched = getCachedSelectorMatches(selector);
+          if (matched.length) {
+            return matched;
+          }
         }
       }
       return result;
@@ -428,6 +574,7 @@ export function installGrokBridgePageHelpers() {
       const url = new URL(request.url, location.origin);
       let statsigId = null;
       try {
+        ensureBotoxElements();
         if (window.__grokVerbose) {
           console.log("__grokBridgeFetch: statsig generator cache size:", savedElements.length);
         }
@@ -448,6 +595,7 @@ export function installGrokBridgePageHelpers() {
         let lastError = null;
         for (let attempt = 0; attempt < maxStatsigAttempts; attempt += 1) {
           try {
+            ensureBotoxElements();
             statsigId = await generator(url.pathname, request.method);
             break;
           } catch (error) {
@@ -1121,7 +1269,12 @@ export class BrowserSession {
         });
         try {
           const readinessTimeout = this.config.browserNetworkIdleTimeoutMs ?? 1000;
-          await page.waitForSelector("path[d], textarea, button, [role=button]", { timeout: readinessTimeout });
+          await page.waitForFunction(
+            () =>
+              (Array.isArray(window.__next_f) && window.__next_f.length > 0) ||
+              document.querySelectorAll("textarea, [contenteditable=\"true\"], input, path[d]").length > 0,
+            { timeout: readinessTimeout }
+          );
         } catch (e) {}
         if (this.config.browserPageLoadDelayMs > 0) {
           try {
@@ -1339,6 +1492,7 @@ export class BrowserSession {
     });
     let payload = buildPayload();
     let statsigChunkRetried = false;
+    let statsigFailedRetried = false;
 
     const run = async (page) => {
       await new Promise((resolve, reject) => {
@@ -1458,6 +1612,31 @@ export class BrowserSession {
         }
         payload = buildPayload();
         const page = await this.ensurePage();
+        await run(page);
+      } else if (
+        message.includes(STATSIG_GENERATION_FAILED_MARKER) &&
+        !statsigFailedRetried
+      ) {
+        // Statsig generation failed in the current page (e.g. DOM nodes were
+        // removed or page state became corrupted). Recreate the page and retry once.
+        statsigFailedRetried = true;
+        meta = null;
+        setTextBufferLimit(
+          textBuffer,
+          onChunk ? 0 : Number.POSITIVE_INFINITY
+        );
+        clearTextBuffer(textBuffer);
+        let page;
+        try {
+          page = await this.recreatePage();
+        } catch (recreateErr) {
+          const recMsg = recreateErr instanceof Error ? recreateErr.message : String(recreateErr);
+          if (isRecoverableContextError(recMsg)) {
+            page = await this.recreateContext();
+          } else {
+            throw recreateErr;
+          }
+        }
         await run(page);
       } else {
         if (message.toLowerCase().includes("failed to fetch")) {
