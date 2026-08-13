@@ -3,10 +3,11 @@
 # restart.sh - restart the grok-to-openai bridge.
 #
 # Usage:
-#   ./restart.sh               Stop any running instance, then start in the
+#   ./restart.sh               Stop any running instance, then start detached,
+#                              logging to .data/server.log (default).
+#   ./restart.sh --foreground  Stop any running instance, then start in the
 #                              foreground (same as `npm start`).
-#   ./restart.sh --background  Stop any running instance, then start detached,
-#                              logging to .data/server.log.
+#   ./restart.sh --background  Explicit background mode.
 #
 # Safe to run when the server is already running: the old process is stopped
 # gracefully (SIGTERM, with a grace period for browser shutdown), leftover
@@ -17,17 +18,18 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-MODE="foreground"
+MODE="background"
 for arg in "$@"; do
   case "$arg" in
     -b | --background) MODE="background" ;;
+    -f | --foreground) MODE="foreground" ;;
     -h | --help)
-      sed -n '2,14p' "$0"
+      sed -n '2,15p' "$0"
       exit 0
       ;;
     *)
       echo "Unknown option: $arg" >&2
-      echo "Usage: $0 [--background]" >&2
+      echo "Usage: $0 [--foreground] [--background]" >&2
       exit 2
       ;;
   esac
