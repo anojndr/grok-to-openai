@@ -772,7 +772,16 @@ export class GrokClient {
 
     const parser = createNdjsonParser((payload) => {
       const delta = applyGrokEvent(state, payload);
-      if (delta?.type === "token" && delta.token) {
+      // Only final-tagged, non-thinking tokens belong in the OpenAI output.
+      // applyGrokEvent still returns provisional deltas for state/diagnostics,
+      // but forwarding them makes finalization append the canonical answer a
+      // second time when the progressive stream is compared with visible text.
+      if (
+        delta?.type === "token" &&
+        delta.token &&
+        delta.messageTag === "final" &&
+        !delta.isThinking
+      ) {
         onToken?.(delta.token, delta);
       }
     });

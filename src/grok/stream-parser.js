@@ -157,10 +157,13 @@ export function applyGrokEvent(state, payload) {
 
     const messageTag = response.messageTag ?? null;
     const isThinking = response.isThinking === true;
-    // Only `final`-tagged deltas belong to the rendered answer. Thinking-phase
+    // Only final, non-thinking deltas belong to the rendered answer. Thinking
     // and `response_start` deltas would otherwise leak planning text and
     // marker whitespace into the accumulated text.
-    const isFinalText = messageTag === "final" && response.token.length > 0;
+    const isFinalText =
+      messageTag === "final" &&
+      !isThinking &&
+      response.token.length > 0;
 
     if (isFinalText) {
       state[ASSISTANT_TEXT].append(response.token);

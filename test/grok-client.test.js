@@ -335,6 +335,111 @@ test("uploadFile classifies a 200 Cloudflare challenge body as a blocked Grok se
   assert.equal(recreateContextCalls, 1);
 });
 
+test("streaming callbacks receive only final answer tokens", async () => {
+  const client = new GrokClient({
+    grokBaseUrl: "https://grok.com",
+    defaultModel: "grok-4.6-auto"
+  });
+
+  client.browser = {
+    async request(request) {
+      request.onChunk?.(
+        `${JSON.stringify({
+          result: {
+            response: {
+              token: "The answer.",
+              isThinking: false,
+              messageTag: "header"
+            }
+          }
+        })}\n`
+      );
+      request.onChunk?.(
+        `${JSON.stringify({
+          result: {
+            response: {
+              token: "Untagged provisional text",
+              isThinking: false
+            }
+          }
+        })}\n`
+      );
+      request.onChunk?.(
+        `${JSON.stringify({
+          result: {
+            response: {
+              token: "Final-tagged thinking text",
+              isThinking: true,
+              messageTag: "final"
+            }
+          }
+        })}\n`
+      );
+      request.onChunk?.(
+        `${JSON.stringify({
+          result: {
+            response: {
+              token: "The answer.",
+              isThinking: false,
+              messageTag: "final"
+            }
+          }
+        })}\n`
+      );
+      request.onChunk?.(
+        `${JSON.stringify({
+          result: {
+            response: {
+              token: "The answer.",
+              isThinking: false,
+              messageTag: "response_start"
+            }
+          }
+        })}\n`
+      );
+      request.onChunk?.(
+        `${JSON.stringify({
+          result: {
+            response: {
+              modelResponse: {
+                responseId: "resp_123",
+                message: "The answer."
+              }
+            }
+          }
+        })}\n`
+      );
+
+      return {
+        meta: {
+          status: 200
+        },
+        text: ""
+      };
+    }
+  };
+
+  const tokens = [];
+  await client.createConversationAndRespond({
+    model: "grok-4.6-auto",
+    message: "Answer this.",
+    onToken(token, meta) {
+      tokens.push({ token, messageTag: meta.messageTag });
+    }
+  });
+
+  assert.deepEqual(tokens, [
+    {
+      token: "The answer.",
+      messageTag: "final"
+    }
+  ]);
+  assert.equal(
+    tokens.map(({ token }) => token).join(""),
+    "The answer."
+  );
+});
+
 test("createConversationAndRespond captures a delayed final response without a trailing newline", async () => {
   const client = new GrokClient({
     grokBaseUrl: "https://grok.com",

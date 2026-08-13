@@ -153,6 +153,35 @@ test("applyGrokEvent only accumulates final-tagged deltas into the text stream",
   assert.equal(state.assistantVisibleText, "The answer.");
 });
 
+test("applyGrokEvent excludes untagged and final-tagged thinking tokens", () => {
+  const state = collectGrokStreamingState();
+
+  const untaggedDelta = applyGrokEvent(state, {
+    result: {
+      response: {
+        token: "Untagged provisional text",
+        isThinking: false
+      }
+    }
+  });
+  const thinkingDelta = applyGrokEvent(state, {
+    result: {
+      response: {
+        token: "Final-tagged thinking text",
+        isThinking: true,
+        messageTag: "final"
+      }
+    }
+  });
+
+  assert.equal(untaggedDelta.messageTag, null);
+  assert.equal(thinkingDelta.messageTag, "final");
+  assert.equal(state.assistantText, "");
+  assert.equal(state.assistantVisibleText, "");
+  assert.equal(state.sawThinkingToken, true);
+  assert.equal(state.sawVisibleToken, false);
+});
+
 test("applyGrokEvent captures direct assistant response payloads", () => {
   const state = collectGrokStreamingState();
 
