@@ -1,6 +1,7 @@
 import path from "node:path";
 import fs from "node:fs/promises";
 import { parseCookieSets } from "../lib/cookies.js";
+import { HttpError } from "../lib/errors.js";
 import { GrokClient } from "./client.js";
 import { GROK_SESSION_BLOCKED_ERROR_CODE } from "./browser-session.js";
 
@@ -315,7 +316,8 @@ export class GrokAccountPool {
     );
   }
 
-  async withAccount(accountIndex, operation) {
+  async withAccount(accountIndex, operation, options = {}) {
+    const fallback = options.fallback ?? true;
     const accounts = await this.getAccounts();
     this.checkPoolExhaustion(accounts);
 
@@ -327,7 +329,13 @@ export class GrokAccountPool {
     }
 
     if (this.isAccountUnavailable(account.index)) {
-      return this.withFallback(operation);
+      if (!fallback) {
+        throw new HttpError(
+          503,
+          `Grok account ${account.index} is temporarily unavailable`
+        );
+      }
+      return this.withFallback(operation, options);
     }
 
     try {
@@ -339,12 +347,12 @@ export class GrokAccountPool {
       await this.activateFallbackAccount(account, accounts);
       return result;
     } catch (error) {
-      if (this.isSessionUnavailableError(error)) {
-        await this.handleFailure(account, accounts, error);
-        return this.withFallback(operation);
+      await this.handleFailure(account, accounts, error);
+
+      if (fallback && this.isSessionUnavailableError(error)) {
+        return this.withFallback(operation, options);
       }
 
-      await this.handleFailure(account, accounts, error);
       throw error;
     }
   }

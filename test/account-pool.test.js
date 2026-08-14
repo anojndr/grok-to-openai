@@ -261,6 +261,51 @@ test("withAccount falls back when the requested account is Cloudflare-blocked", 
   assert.equal(accounts[1].runCalls, 1);
 });
 
+test("withAccount with fallback: false throws immediately when the account is Cloudflare-blocked without trying other accounts", async () => {
+  const calls = [];
+  const sessionBlockedError = new HttpError(502, "blocked", {
+    code: GROK_SESSION_BLOCKED_ERROR_CODE
+  });
+  const accounts = [
+    createMockAccount("primary", ["primary-ok"]),
+    createMockAccount("secondary", [sessionBlockedError]),
+    createMockAccount("tertiary", ["unused"])
+  ];
+  const pool = new GrokAccountPool({}, { accounts });
+
+  await assert.rejects(
+    pool.withAccount(
+      1,
+      async (client) => {
+        calls.push(client.name);
+        return client.run();
+      },
+      { fallback: false }
+    ),
+    (err) => err?.details?.code === GROK_SESSION_BLOCKED_ERROR_CODE
+  );
+
+  assert.deepEqual(calls, ["secondary"]);
+  assert.equal(accounts[1].closeCalls, 1);
+  assert.equal(pool.isAccountUnavailable(1), true);
+
+  // Subsequent call with fallback: false on quarantined account should throw without running anything
+  await assert.rejects(
+    pool.withAccount(
+      1,
+      async (client) => {
+        calls.push(client.name);
+        return client.run();
+      },
+      { fallback: false }
+    ),
+    /unavailable/i
+  );
+
+  assert.deepEqual(calls, ["secondary"]);
+});
+
+
 test("withFallback quarantines Cloudflare-blocked accounts and skips them on later attempts", async () => {
   const calls = [];
   const sessionBlockedError = new HttpError(502, "blocked", {

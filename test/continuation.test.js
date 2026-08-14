@@ -6,6 +6,8 @@ import {
   buildReplayConversationRequest,
   continueResponseConversation
 } from "../src/openai/continuation.js";
+import { GrokAccountPool } from "../src/grok/account-pool.js";
+import { GROK_SESSION_BLOCKED_ERROR_CODE } from "../src/grok/browser-session.js";
 
 function createMemoryFileStore() {
   const records = new Map();
@@ -1124,4 +1126,66 @@ test("continueResponseConversation tries grok fast on the same replay account fo
       responses: []
     }
   });
+});
+
+test("continueResponseConversation with GrokAccountPool does not attempt cross-account addResponse when preferred account is blocked or quarantined", async () => {
+  const fileStore = createMemoryFileStore();
+  const previousHistory = {
+    instructions: ["Context"],
+    messages: [
+      { role: "user", text: "Turn 1", attachments: [] },
+      { role: "assistant", text: "Reply 1", attachments: [] }
+    ]
+  };
+
+  const addResponseCalls = [];
+  const createConversationCalls = [];
+
+  const account0 = {
+    async addResponse() {
+      addResponseCalls.push(0);
+      throw new HttpError(502, "blocked", { code: GROK_SESSION_BLOCKED_ERROR_CODE });
+    },
+    async createConversationAndRespond() {
+      createConversationCalls.push(0);
+      throw new HttpError(502, "blocked", { code: GROK_SESSION_BLOCKED_ERROR_CODE });
+    }
+  };
+
+  const account1 = {
+    async addResponse() {
+      addResponseCalls.push(1);
+      throw new HttpError(500, "Conversation not found");
+    },
+    async createConversationAndRespond(args) {
+      createConversationCalls.push(1);
+      return {
+        model: args.model,
+        state: { responses: [] }
+      };
+    }
+  };
+
+  const pool = new GrokAccountPool({}, { accounts: [account0, account1] });
+
+  const result = await continueResponseConversation({
+    previousRecord: {
+      grok: {
+        accountIndex: 0,
+        conversationId: "conv_0",
+        assistantResponseId: "resp_0"
+      },
+      history: previousHistory
+    },
+    currentMessages: [{ role: "user", text: "Turn 2", files: [] }],
+    instructions: "",
+    publicModel: "grok-4.6-auto",
+    grokAccounts: pool,
+    uploadFilesToGrok: async () => [],
+    fileStore
+  });
+
+  assert.deepEqual(addResponseCalls, [0]);
+  assert.deepEqual(createConversationCalls, [1]);
+  assert.equal(result.accountIndex, 1);
 });

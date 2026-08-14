@@ -396,13 +396,13 @@ export function isMissingConversationError(error) {
 
 function createSingleAccountAdapter(grokClient) {
   return {
-    async withAccount(accountIndex, operation) {
+    async withAccount(accountIndex, operation, options = {}) {
       return {
         accountIndex: Number.isInteger(accountIndex) ? accountIndex : 0,
         value: await operation(grokClient, accountIndex)
       };
     },
-    async withFallback(operation) {
+    async withFallback(operation, options = {}) {
       return {
         accountIndex: 0,
         value: await operation(grokClient, 0)
@@ -480,7 +480,8 @@ export async function continueResponseConversation({
             });
           }
         });
-      }
+      },
+      { fallback: false }
     );
 
     return {
@@ -488,7 +489,7 @@ export async function continueResponseConversation({
       ...result.value
     };
   } catch (error) {
-    if (!previousRecord.history?.messages?.length) {
+    if (!previousRecord.history?.messages?.length && !loadPreviousHistory) {
       throw error;
     }
 
