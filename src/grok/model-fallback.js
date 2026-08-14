@@ -1,5 +1,8 @@
 import { GROK_46_BETA_MODE_ID, resolveModel } from "./model-map.js";
-import { GROK_SESSION_BLOCKED_ERROR_CODE } from "./browser-session.js";
+import {
+  GROK_SESSION_BLOCKED_ERROR_CODE,
+  GROK_REQUEST_TIMEOUT_ERROR_CODE
+} from "./browser-session.js";
 
 const FAST_FALLBACK_MODEL = "grok-4.6-fast";
 
@@ -35,7 +38,11 @@ export async function withFastModelFallback({
     try {
       return await operation(model, wrappedOnToken);
     } catch (error) {
+      const isBrowserTimeout =
+        error?.details?.code === GROK_REQUEST_TIMEOUT_ERROR_CODE ||
+        error?.status === 504;
       const isTimeout =
+        !isBrowserTimeout &&
         error &&
         String(error.message || "")
           .toLowerCase()
@@ -75,10 +82,15 @@ export async function withFastModelFallback({
       accountClient.unsupportedModes.add(grokModeId);
     }
 
+    const isSessionDead =
+      error?.details?.code === GROK_SESSION_BLOCKED_ERROR_CODE ||
+      error?.details?.code === GROK_REQUEST_TIMEOUT_ERROR_CODE ||
+      error?.status === 504;
+
     if (
       hasEmittedTokens ||
       !shouldFallbackToFast(publicModel) ||
-      error?.details?.code === GROK_SESSION_BLOCKED_ERROR_CODE
+      isSessionDead
     ) {
       throw error;
     }

@@ -1189,3 +1189,77 @@ test("continueResponseConversation with GrokAccountPool does not attempt cross-a
   assert.deepEqual(createConversationCalls, [1]);
   assert.equal(result.accountIndex, 1);
 });
+
+test("continueResponseConversation replays on fallback account when preferred account times out", async () => {
+  const fileStore = createMemoryFileStore();
+  const previousHistory = {
+    instructions: [],
+    messages: [
+      { role: "user", text: "send the docs for discordchatexporter", attachments: [] },
+      { role: "assistant", text: "Official docs: https://github.com/...", attachments: [] }
+    ]
+  };
+
+  const addResponseCalls = [];
+  const createConversationCalls = [];
+
+  const account0 = {
+    async addResponse() {
+      addResponseCalls.push(0);
+      throw new HttpError(429, "Too many requests");
+    },
+    async createConversationAndRespond() {
+      createConversationCalls.push(0);
+      throw new HttpError(429, "Too many requests");
+    }
+  };
+
+  const account1 = {
+    async addResponse() {
+      addResponseCalls.push(1);
+      throw new HttpError(504, "Grok request timed out after 600000 ms");
+    },
+    async createConversationAndRespond() {
+      createConversationCalls.push(1);
+      throw new HttpError(504, "Grok request timed out after 600000 ms");
+    }
+  };
+
+  const account2 = {
+    async addResponse() {
+      addResponseCalls.push(2);
+      throw new Error("unexpected addResponse");
+    },
+    async createConversationAndRespond(args) {
+      createConversationCalls.push(2);
+      return {
+        model: args.model,
+        state: { responses: [] }
+      };
+    }
+  };
+
+  const pool = new GrokAccountPool({}, { accounts: [account0, account1, account2] });
+
+  const result = await continueResponseConversation({
+    previousRecord: {
+      grok: {
+        accountIndex: 1,
+        conversationId: "conv_old",
+        assistantResponseId: "resp_old"
+      },
+      history: previousHistory
+    },
+    currentMessages: [{ role: "user", text: "how can i export messages", files: [] }],
+    instructions: "",
+    publicModel: "grok-4.6-fast",
+    grokAccounts: pool,
+    uploadFilesToGrok: async () => [],
+    fileStore
+  });
+
+  assert.deepEqual(addResponseCalls, [1]);
+  assert.deepEqual(createConversationCalls, [0, 2]);
+  assert.equal(result.accountIndex, 2);
+});
+

@@ -3,7 +3,10 @@ import fs from "node:fs/promises";
 import { parseCookieSets } from "../lib/cookies.js";
 import { HttpError } from "../lib/errors.js";
 import { GrokClient } from "./client.js";
-import { GROK_SESSION_BLOCKED_ERROR_CODE } from "./browser-session.js";
+import {
+  GROK_SESSION_BLOCKED_ERROR_CODE,
+  GROK_REQUEST_TIMEOUT_ERROR_CODE
+} from "./browser-session.js";
 
 function buildAccountProfileDir(browserProfileDir, accountIndex, accountCount) {
   if (!browserProfileDir || accountCount <= 1) {
@@ -581,7 +584,15 @@ export class GrokAccountPool {
       return false;
     }
 
-    if (error.details?.code === GROK_SESSION_BLOCKED_ERROR_CODE) {
+    if (
+      error.details?.code === GROK_SESSION_BLOCKED_ERROR_CODE ||
+      error.details?.code === GROK_REQUEST_TIMEOUT_ERROR_CODE ||
+      error.details?.code === "statsig_unavailable" ||
+      error.code === GROK_REQUEST_TIMEOUT_ERROR_CODE ||
+      error.code === "ETIMEDOUT" ||
+      error.code === "ECONNRESET" ||
+      error.code === "ECONNREFUSED"
+    ) {
       return true;
     }
 
@@ -589,7 +600,13 @@ export class GrokAccountPool {
       error.status === 401 ||
       error.status === 403 ||
       error.status === 429 ||
-      error.status === 503
+      error.status === 503 ||
+      error.status === 504 ||
+      error.statusCode === 401 ||
+      error.statusCode === 403 ||
+      error.statusCode === 429 ||
+      error.statusCode === 503 ||
+      error.statusCode === 504
     ) {
       return true;
     }
@@ -622,6 +639,20 @@ export class GrokAccountPool {
       message.includes("forbidden") ||
       message.includes("401") ||
       message.includes("403") ||
+      message.includes("504") ||
+      message.includes("timed out") ||
+      message.includes("timeout") ||
+      message.includes("target page, context or browser has been closed") ||
+      message.includes("target closed") ||
+      message.includes("browser has been closed") ||
+      message.includes("connection closed") ||
+      message.includes("could not load statsig middleware") ||
+      message.includes("could not find statsig module") ||
+      message.includes("statsig_unavailable") ||
+      message.includes("ended the stream before the final assistant response") ||
+      message.includes("econnreset") ||
+      message.includes("econnrefused") ||
+      message.includes("etimedout") ||
       message.includes("redirected to login page") ||
       message.includes("grok session is blocked or not authenticated")
     ) {

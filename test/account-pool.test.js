@@ -5,7 +5,10 @@ import os from "node:os";
 import path from "node:path";
 import { GrokAccountPool } from "../src/grok/account-pool.js";
 import { HttpError } from "../src/lib/errors.js";
-import { GROK_SESSION_BLOCKED_ERROR_CODE } from "../src/grok/browser-session.js";
+import {
+  GROK_SESSION_BLOCKED_ERROR_CODE,
+  GROK_REQUEST_TIMEOUT_ERROR_CODE
+} from "../src/grok/browser-session.js";
 
 function createMockAccount(name, outcomes) {
   let closeCalls = 0;
@@ -636,6 +639,48 @@ test("withFallback rotates on login redirect error message", async () => {
   const redirectError = new Error("redirected to login page (/login)");
   const accounts = [
     createMockAccount("primary", [redirectError]),
+    createMockAccount("secondary", ["secondary-ok"])
+  ];
+  const pool = new GrokAccountPool({}, { accounts });
+
+  const result = await pool.withFallback(async (client) => {
+    return client.run();
+  });
+
+  assert.deepEqual(result, {
+    accountIndex: 1,
+    value: "secondary-ok"
+  });
+  assert.ok(pool.unavailableAccountIndexes.has(0));
+});
+
+test("withFallback rotates and quarantines on 504 request timeout error", async () => {
+  const timeoutError = new HttpError(
+    504,
+    "Grok request timed out after 600000 ms",
+    { code: GROK_REQUEST_TIMEOUT_ERROR_CODE }
+  );
+  const accounts = [
+    createMockAccount("primary", [timeoutError]),
+    createMockAccount("secondary", ["secondary-ok"])
+  ];
+  const pool = new GrokAccountPool({}, { accounts });
+
+  const result = await pool.withFallback(async (client) => {
+    return client.run();
+  });
+
+  assert.deepEqual(result, {
+    accountIndex: 1,
+    value: "secondary-ok"
+  });
+  assert.ok(pool.unavailableAccountIndexes.has(0));
+});
+
+test("withFallback rotates and quarantines on statsig or connection failure error", async () => {
+  const connectionError = new Error("Connection closed while reading from the driver");
+  const accounts = [
+    createMockAccount("primary", [connectionError]),
     createMockAccount("secondary", ["secondary-ok"])
   ];
   const pool = new GrokAccountPool({}, { accounts });
