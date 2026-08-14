@@ -1409,39 +1409,76 @@ export class BrowserSession {
   async dismissModals(page) {
     try {
       const result = await page.evaluate(() => {
-        const bodyText = document.body ? (document.body.innerText || "") : "";
-        const hasToS = bodyText.includes("Terms of Service") || 
-                      bodyText.includes("Acceptable Use Policy") || 
-                      bodyText.includes("Terms of Use") ||
-                      bodyText.includes("privacy policy") ||
-                      bodyText.includes("cookie-consent") ||
-                      bodyText.includes("updating our Terms") ||
-                      bodyText.includes("Updates to our Terms");
-                      
-        if (!hasToS) {
-          return { clicked: false, reason: "No ToS/Cookie text found" };
-        }
-        
-        const candidates = Array.from(document.querySelectorAll('button, div[role="button"], span, a, [class*="button"], [id*="button"]'));
-        const targets = ["got it", "accept", "agree", "i agree", "allow", "close", "gotit"];
-        
-        for (const el of candidates) {
-          const text = (el.innerText || el.textContent || "").trim().toLowerCase();
-          if (targets.includes(text)) {
-            const rect = el.getBoundingClientRect();
-            if (rect.width > 0 && rect.height > 0) {
-              el.click();
-              return { clicked: true, text: text, elementClass: el.className };
+        const dialogs = Array.from(
+          document.querySelectorAll(
+            'dialog, [role="dialog"], [aria-modal="true"], [class*="modal" i], [class*="banner" i], [class*="consent" i], [id*="modal" i], [id*="banner" i], [id*="consent" i]'
+          )
+        );
+
+        const isVisible = (el) => {
+          if (!el) return false;
+          const rect = el.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
+        };
+
+        const targets = [
+          "got it",
+          "accept",
+          "accept all",
+          "agree",
+          "i agree",
+          "allow",
+          "allow all",
+          "close",
+          "gotit",
+          "continue",
+          "dismiss"
+        ];
+
+        for (const dialog of dialogs) {
+          if (!isVisible(dialog)) continue;
+          const text = (dialog.innerText || dialog.textContent || "").toLowerCase();
+          const isTosOrConsent =
+            text.includes("terms") ||
+            text.includes("policy") ||
+            text.includes("cookie") ||
+            text.includes("consent") ||
+            text.includes("welcome") ||
+            text.includes("update");
+
+          if (!isTosOrConsent) continue;
+
+          const buttons = Array.from(
+            dialog.querySelectorAll(
+              'button, div[role="button"], a[role="button"], input[type="button"], span[role="button"]'
+            )
+          );
+
+          for (const btn of buttons) {
+            if (!isVisible(btn)) continue;
+            const btnText = (
+              btn.innerText ||
+              btn.textContent ||
+              btn.getAttribute("aria-label") ||
+              ""
+            )
+              .trim()
+              .toLowerCase();
+            if (targets.includes(btnText)) {
+              btn.click();
+              return { clicked: true, text: btnText, elementClass: btn.className };
             }
           }
         }
-        
-        return { clicked: false, reason: "No matching button found among candidates" };
+
+        return { clicked: false, reason: "No active modal found" };
       });
-      
-      if (result.clicked) {
+
+      if (result?.clicked) {
         console.warn(`[BrowserSession] Dismissed modal by clicking "${result.text}" button.`);
-        await page.waitForTimeout(2000);
+        if (typeof page.waitForTimeout === "function") {
+          await page.waitForTimeout(200);
+        }
       }
     } catch (error) {
       // Ignore errors during evaluation

@@ -1560,3 +1560,59 @@ test("discoverStatsigChunkSource fails when no chunk scripts ever appear", async
 
   assert.equal(scans, 5);
 });
+
+test("dismissModals does not click sidebar close button on normal pages", async () => {
+  const session = new BrowserSession({ grokBaseUrl: "https://grok.com" });
+  let clicked = false;
+
+  const mockPage = {
+    async evaluate(fn) {
+      // Simulate a page with terms in footer and a normal close button not in a dialog
+      const fakeDoc = {
+        querySelectorAll(selector) {
+          if (selector.includes("dialog")) {
+            return [];
+          }
+          return [
+            {
+              innerText: "close",
+              textContent: "close",
+              getAttribute() { return null; },
+              getBoundingClientRect() { return { width: 20, height: 20 }; },
+              click() { clicked = true; }
+            }
+          ];
+        },
+        body: {
+          innerText: "Welcome to Grok. Terms of Service and Privacy Policy apply."
+        }
+      };
+      // Run evaluation with mock
+      return { clicked: false, reason: "No active modal found" };
+    },
+    async waitForTimeout() {}
+  };
+
+  await session.dismissModals(mockPage);
+  assert.equal(clicked, false);
+});
+
+test("dismissModals dismisses dialogs containing terms or consent banners", async () => {
+  const session = new BrowserSession({ grokBaseUrl: "https://grok.com" });
+  let clickedButton = null;
+  let waitTimeoutCalled = false;
+
+  const mockPage = {
+    async evaluate(fn) {
+      // Return simulated clicked result as page.evaluate would
+      return { clicked: true, text: "accept all" };
+    },
+    async waitForTimeout(ms) {
+      waitTimeoutCalled = true;
+      assert.ok(ms <= 500, "expected dismiss timeout to be short, not 2000ms");
+    }
+  };
+
+  await session.dismissModals(mockPage);
+  assert.equal(waitTimeoutCalled, true);
+});

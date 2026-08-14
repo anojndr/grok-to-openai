@@ -696,3 +696,46 @@ test("withFallback rotates and quarantines on statsig or connection failure erro
   assert.ok(pool.unavailableAccountIndexes.has(0));
 });
 
+test("init pre-warms the first available fallback account when primary account fails on boot", async () => {
+  const initCalls = [];
+  const sessionBlockedError = new HttpError(502, "blocked", {
+    code: GROK_SESSION_BLOCKED_ERROR_CODE
+  });
+  const accounts = [
+    {
+      name: "primary",
+      async init() {
+        initCalls.push("primary");
+        throw sessionBlockedError;
+      },
+      async run() { return "primary"; },
+      async close() {}
+    },
+    {
+      name: "secondary",
+      async init() {
+        initCalls.push("secondary");
+        return true;
+      },
+      async run() { return "secondary-ok"; },
+      async close() {}
+    },
+    {
+      name: "tertiary",
+      async init() {
+        initCalls.push("tertiary");
+        return true;
+      },
+      async run() { return "tertiary"; },
+      async close() {}
+    }
+  ];
+  const pool = new GrokAccountPool({}, { accounts });
+
+  await pool.init();
+
+  assert.deepEqual(initCalls, ["primary", "secondary"]);
+  assert.ok(pool.unavailableAccountIndexes.has(0));
+  assert.equal(pool.activeFallbackAccountIndex, 1);
+});
+

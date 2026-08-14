@@ -72,9 +72,31 @@ export class GrokAccountPool {
 
   async init() {
     const accounts = await this.getAccounts();
-    const primaryAccount = this.getPrimaryAccount(accounts);
+    if (!accounts || !accounts.length) {
+      return;
+    }
+
+    let primaryAccount = this.getPrimaryAccount(accounts);
     if (primaryAccount) {
-      await this.runAccountOperation(primaryAccount, (client) => client.init());
+      try {
+        await this.runAccountOperation(primaryAccount, (client) => client.init?.());
+        return;
+      } catch (error) {
+        console.warn(`Primary Grok account failed to initialize on boot: ${error.message}`);
+        await this.handleFailure(primaryAccount, accounts, error);
+      }
+    }
+
+    const fallbackAccounts = this.getFallbackAccounts(accounts);
+    for (const fallbackAccount of fallbackAccounts) {
+      try {
+        await this.runAccountOperation(fallbackAccount, (client) => client.init?.());
+        await this.activateFallbackAccount(fallbackAccount, accounts);
+        return;
+      } catch (error) {
+        console.warn(`Fallback Grok account ${fallbackAccount.index} failed to initialize on boot: ${error.message}`);
+        await this.handleFailure(fallbackAccount, accounts, error);
+      }
     }
   }
 

@@ -149,3 +149,24 @@ test("parseCookieSets rejects malformed non-empty cookie sources", () => {
     /valid JSON or Netscape cookies/
   );
 });
+
+test("parseCookieSets deduplicates accounts with identical SSO tokens", () => {
+  const text = `
+# Netscape HTTP Cookie File
+.grok.com\tTRUE\t/\tTRUE\t1790626586\tsso\tsame-session-token
+grok.com\tFALSE\t/\tFALSE\t1806613002\ti18nextLng\ten
+
+# Netscape HTTP Cookie File
+.grok.com\tTRUE\t/\tTRUE\t1790626586\tsso\tdifferent-token
+grok.com\tFALSE\t/\tFALSE\t1806613002\ti18nextLng\ten
+
+# Duplicate of first account
+# Netscape HTTP Cookie File
+.grok.com\tTRUE\t/\tTRUE\t1790626586\tsso\tsame-session-token
+grok.com\tFALSE\t/\tFALSE\t1806613002\ti18nextLng\ten
+`;
+  const sets = parseCookieSets(text);
+  assert.equal(sets.length, 2);
+  assert.equal(sets[0][0].value, "same-session-token");
+  assert.equal(sets[1][0].value, "different-token");
+});

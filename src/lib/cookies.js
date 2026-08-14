@@ -245,6 +245,52 @@ export function parseCookieJson(text) {
   }
 }
 
+export function getCookieSessionIdentifier(cookies) {
+  if (!Array.isArray(cookies)) {
+    return "";
+  }
+
+  const ssoCookie = cookies.find(
+    (c) =>
+      c &&
+      typeof c === "object" &&
+      (c.name === "sso" ||
+        c.name === "sso-rw" ||
+        c.name === "auth_token" ||
+        c.name === "session_id")
+  );
+  if (ssoCookie?.value) {
+    return `${ssoCookie.name}:${ssoCookie.value}`;
+  }
+
+  return cookies
+    .filter((c) => c && typeof c === "object" && c.name && c.value)
+    .map((c) => `${c.name}=${c.value}`)
+    .sort()
+    .join(";");
+}
+
+export function deduplicateCookieSets(cookieSets) {
+  if (!Array.isArray(cookieSets) || cookieSets.length <= 1) {
+    return cookieSets;
+  }
+
+  const seen = new Set();
+  const result = [];
+
+  for (const set of cookieSets) {
+    const key = getCookieSessionIdentifier(set);
+    if (!key || !seen.has(key)) {
+      if (key) {
+        seen.add(key);
+      }
+      result.push(set);
+    }
+  }
+
+  return result;
+}
+
 export function parseCookieSets(text) {
   if (!text.trim()) {
     return [];
@@ -252,12 +298,12 @@ export function parseCookieSets(text) {
 
   const jsonGroups = parseCookieJson(text);
   if (jsonGroups) {
-    return jsonGroups;
+    return deduplicateCookieSets(jsonGroups);
   }
 
   const netscapeGroups = parseNetscapeCookieTextGroups(text);
   if (netscapeGroups.length) {
-    return netscapeGroups;
+    return deduplicateCookieSets(netscapeGroups);
   }
 
   throw new SyntaxError("Cookie source does not contain valid JSON or Netscape cookies");
