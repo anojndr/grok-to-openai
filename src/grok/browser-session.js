@@ -295,19 +295,25 @@ export function installGrokBridgePageHelpers() {
     if (isEnsuringBotox) return;
     isEnsuringBotox = true;
     try {
-      const queryFn = originalQuerySelectorAll || document.querySelectorAll;
-      const existing = Array.from(
-        queryFn.call(document, "[class*=\"r-6k\"], .r-6k45k0")
-      );
-      if (existing.length >= 4 && existing.every((el) => el.childNodes?.length > 0)) {
-        for (const el of existing) {
-          cacheElement(el);
-        }
-        return;
+      let container = document.getElementById("__grok_botox_container");
+      if (!container) {
+        container = document.createElement("div");
+        container.id = "__grok_botox_container";
+        container.style.cssText =
+          "position:absolute;visibility:hidden;top:0;left:0;pointer-events:none;";
+        (document.body || document.documentElement || document).appendChild(container);
       }
 
-      const cached = getCachedSelectorMatches("[class*=\"r-6k\"], .r-6k45k0");
-      if (cached.length >= 4 && cached.every((el) => el.childNodes?.length > 0)) {
+      const existingSvgs = Array.from(container.querySelectorAll("svg"));
+      if (
+        existingSvgs.length >= 4 &&
+        existingSvgs.every(
+          (el) => el.childNodes?.length > 0 && el.childNodes[0]?.childNodes?.length >= 2
+        )
+      ) {
+        for (const el of existingSvgs) {
+          cacheElement(el);
+        }
         return;
       }
 
@@ -339,46 +345,45 @@ export function installGrokBridgePageHelpers() {
         }
       }
 
-      if (Array.isArray(curves) && curves.length > 0) {
-        let container = document.getElementById("__grok_botox_container");
-        if (!container) {
-          container = document.createElement("div");
-          container.id = "__grok_botox_container";
-          container.style.cssText =
-            "position:absolute;visibility:hidden;top:0;left:0;pointer-events:none;";
-          (document.body || document.documentElement || document).appendChild(container);
-        }
-        container.innerHTML = "";
-        curves.forEach((curve, index) => {
-          const dAttr = `M 10,30 C${curve
-            .map(
-              (e) =>
-                ` ${e.color[0]},${e.color[1]} ${e.color[2]},${e.color[3]} ${e.color[4]},${e.color[5]} h ${e.deg} s ${e.bezier[0]},${e.bezier[1]} ${e.bezier[2]},${e.bezier[3]}`
-            )
-            .join(" C")}`;
-          const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-          svg.setAttribute("viewBox", "0 0 24 24");
-          svg.setAttribute("id", `loading-x-anim-${index}`);
-          svg.setAttribute(
-            "class",
-            `r-1p0dtai r-13gxpu9 r-4qtqp9 r-yyyyoo r-wy61xf r-1d2f490 ${cssClass} r-ywje51`
-          );
-          const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
-          const path1 = document.createElementNS("http://www.w3.org/2000/svg", "path");
-          path1.setAttribute(
-            "d",
-            "M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"
-          );
-          const path2 = document.createElementNS("http://www.w3.org/2000/svg", "path");
-          path2.setAttribute("d", dAttr);
-          path2.setAttribute("fill", "#1d9bf008");
-          g.appendChild(path1);
-          g.appendChild(path2);
-          svg.appendChild(g);
-          container.appendChild(svg);
-          cacheElement(svg);
-        });
+      if (!Array.isArray(curves) || curves.length === 0) {
+        curves = [
+          [{ color: [0, 0, 0, 0, 0, 0], deg: 0, bezier: [0, 0, 0, 0] }],
+          [{ color: [0, 0, 0, 0, 0, 0], deg: 0, bezier: [0, 0, 0, 0] }],
+          [{ color: [0, 0, 0, 0, 0, 0], deg: 0, bezier: [0, 0, 0, 0] }],
+          [{ color: [0, 0, 0, 0, 0, 0], deg: 0, bezier: [0, 0, 0, 0] }]
+        ];
       }
+
+      container.innerHTML = "";
+      curves.forEach((curve, index) => {
+        const dAttr = `M 10,30 C${curve
+          .map(
+            (e) =>
+              ` ${e.color[0]},${e.color[1]} ${e.color[2]},${e.color[3]} ${e.color[4]},${e.color[5]} h ${e.deg} s ${e.bezier[0]},${e.bezier[1]} ${e.bezier[2]},${e.bezier[3]}`
+          )
+          .join(" C")}`;
+        const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+        svg.setAttribute("viewBox", "0 0 24 24");
+        svg.setAttribute("id", `loading-x-anim-${index}`);
+        svg.setAttribute(
+          "class",
+          `r-1p0dtai r-13gxpu9 r-4qtqp9 r-yyyyoo r-wy61xf r-1d2f490 ${cssClass} r-ywje51`
+        );
+        const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+        const path1 = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        path1.setAttribute(
+          "d",
+          "M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"
+        );
+        const path2 = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        path2.setAttribute("d", dAttr);
+        path2.setAttribute("fill", "#1d9bf008");
+        g.appendChild(path1);
+        g.appendChild(path2);
+        svg.appendChild(g);
+        container.appendChild(svg);
+        cacheElement(svg);
+      });
     } catch {} finally {
       isEnsuringBotox = false;
     }
@@ -900,6 +905,7 @@ async function getResponseBody(response) {
 }
 
 const globalStatsigCache = new Map();
+let globalStatsigInFlightPromise = null;
 
 export class BrowserSession {
   constructor(config) {
@@ -948,20 +954,26 @@ export class BrowserSession {
       return cached;
     }
 
-    if (this.statsigPromise) {
-      return this.statsigPromise;
+    if (globalStatsigInFlightPromise) {
+      const result = await globalStatsigInFlightPromise;
+      this.statsigChunkUrl = result.url;
+      this.statsigModuleId = result.moduleId;
+      return result;
     }
 
-    const statsigPromise = this.discoverStatsigChunkSource(cacheKey);
-    this.statsigPromise = statsigPromise;
-
-    try {
-      return await statsigPromise;
-    } finally {
-      if (this.statsigPromise === statsigPromise) {
-        this.statsigPromise = null;
+    const statsigPromise = (async () => {
+      try {
+        return await this.discoverStatsigChunkSource(cacheKey);
+      } finally {
+        globalStatsigInFlightPromise = null;
       }
-    }
+    })();
+    globalStatsigInFlightPromise = statsigPromise;
+
+    const discovered = await statsigPromise;
+    this.statsigChunkUrl = discovered.url;
+    this.statsigModuleId = discovered.moduleId;
+    return discovered;
   }
 
   async discoverStatsigChunkSource(cacheKey) {
@@ -977,50 +989,105 @@ export class BrowserSession {
       urls = await page.evaluate(() =>
         Array.from(document.querySelectorAll("script"))
           .map((s) => s.src)
-          .filter((src) => src.includes("/_next/static/chunks/"))
+          .filter((src) => src && src.includes("/_next/static/chunks/"))
       );
 
       if (urls.length) {
         break;
       }
       if (attempt < maxAttempts - 1) {
-        await page.waitForTimeout(attemptDelayMs);
+        if (typeof page.waitForTimeout === "function") {
+          await page.waitForTimeout(attemptDelayMs);
+        } else {
+          await new Promise((resolve) => setTimeout(resolve, attemptDelayMs));
+        }
       }
+    }
+
+    if (urls.length < 10) {
+      try {
+        const pageUrl = page.url() || "https://grok.com";
+        const htmlRes = await fetch(pageUrl, { signal: AbortSignal.timeout(5000) });
+        if (htmlRes.ok) {
+          const html = await htmlRes.text();
+          const matches = Array.from(
+            html.matchAll(/src="([^"]+\/_next\/static\/chunks\/[^"]+)"/g)
+          ).map((m) => m[1]);
+          for (const m of matches) {
+            const fullUrl = m.startsWith("http") ? m : new URL(m, pageUrl).href;
+            if (!urls.includes(fullUrl)) {
+              urls.push(fullUrl);
+            }
+          }
+        }
+      } catch {}
     }
 
     if (!urls.length) {
       throw new Error("No Next.js static chunks found on Grok page");
     }
 
-    const chunkTexts = {};
-    const fetchPromises = urls.map(async (url) => {
+    const fetchChunk = async (url) => {
       try {
-        const res = await fetch(url);
+        const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
         if (res.ok) {
-          chunkTexts[url] = await res.text();
+          return await res.text();
         }
       } catch {}
-    });
-
-    await Promise.all(fetchPromises);
+      return null;
+    };
 
     let middlewareUrl = null;
     let statsigModuleId = null;
+    let generatorChunkRelativePath = null;
+    let targetInnerModuleId = null;
 
-    for (const [url, text] of Object.entries(chunkTexts)) {
-      const idx = text.indexOf("x-statsig-id");
-      if (idx !== -1) {
-        middlewareUrl = url;
-        const legacyMatch = /\.([a-zA-Z_0-9]+)\((\d+)\)\.then\(/g.exec(text);
-        if (legacyMatch) {
-          statsigModuleId = legacyMatch[2];
-          break;
+    const chunkTexts = {};
+    const concurrency = 15;
+
+    for (let i = 0; i < urls.length; i += concurrency) {
+      const batch = urls.slice(i, i + concurrency);
+      const results = await Promise.all(batch.map(fetchChunk));
+
+      for (let j = 0; j < batch.length; j++) {
+        const text = results[j];
+        if (!text) continue;
+        const url = batch[j];
+        chunkTexts[url] = text;
+
+        if (!statsigModuleId && text.includes("x-statsig-id")) {
+          middlewareUrl = url;
+          const idx = text.indexOf("x-statsig-id");
+          const legacyMatch = /\.([a-zA-Z_0-9]+)\((\d+)\)\.then\(/g.exec(text);
+          if (legacyMatch) {
+            statsigModuleId = legacyMatch[2];
+          } else {
+            const snippet = text.slice(Math.max(0, idx - 1500), idx);
+            const matches = Array.from(snippet.matchAll(/\b[a-zA-Z_0-9\.]+\((\d{5,})\)/g));
+            if (matches.length) {
+              statsigModuleId = matches[matches.length - 1][1];
+            }
+          }
+        }
+      }
+
+      if (statsigModuleId) {
+        for (const [url, text] of Object.entries(chunkTexts)) {
+          if (text.includes(statsigModuleId) && url !== middlewareUrl) {
+            const broadRegex = new RegExp(
+              statsigModuleId +
+                '[^}]+?"(static/chunks/[^"]+)"[^}]+?\\.then\\(\\(\\)\\s*=>\\s*[a-zA-Z_0-9]+\\(([^\\)]+)\\)\\)'
+            );
+            const match = broadRegex.exec(text);
+            if (match) {
+              generatorChunkRelativePath = match[1];
+              targetInnerModuleId = match[2];
+              break;
+            }
+          }
         }
 
-        const snippet = text.slice(Math.max(0, idx - 1500), idx);
-        const matches = Array.from(snippet.matchAll(/\b[a-zA-Z_0-9\.]+\((\d{5,})\)/g));
-        if (matches.length) {
-          statsigModuleId = matches[matches.length - 1][1];
+        if (generatorChunkRelativePath && targetInnerModuleId) {
           break;
         }
       }
@@ -1030,19 +1097,20 @@ export class BrowserSession {
       throw new Error("Could not find statsig module ID in chunks");
     }
 
-    let generatorChunkRelativePath = null;
-    let targetInnerModuleId = null;
-
-    for (const [url, text] of Object.entries(chunkTexts)) {
-      const broadRegex = new RegExp(
-        statsigModuleId +
-          '[^}]+?"(static/chunks/[^"]+)"[^}]+?\\.then\\(\\(\\)\\s*=>\\s*[a-zA-Z_0-9]+\\(([^\\)]+)\\)\\)'
-      );
-      const match = broadRegex.exec(text);
-      if (match) {
-        generatorChunkRelativePath = match[1];
-        targetInnerModuleId = match[2];
-        break;
+    if (!generatorChunkRelativePath || !targetInnerModuleId) {
+      for (const [url, text] of Object.entries(chunkTexts)) {
+        if (text.includes(statsigModuleId) && url !== middlewareUrl) {
+          const broadRegex = new RegExp(
+            statsigModuleId +
+              '[^}]+?"(static/chunks/[^"]+)"[^}]+?\\.then\\(\\(\\)\\s*=>\\s*[a-zA-Z_0-9]+\\(([^\\)]+)\\)\\)'
+          );
+          const match = broadRegex.exec(text);
+          if (match) {
+            generatorChunkRelativePath = match[1];
+            targetInnerModuleId = match[2];
+            break;
+          }
+        }
       }
     }
 
