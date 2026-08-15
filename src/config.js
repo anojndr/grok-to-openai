@@ -65,9 +65,10 @@ export const config = {
   browserPageLoadDelayMs: envInteger("BROWSER_PAGE_LOAD_DELAY_MS", 1000),
   browserStreamBatchMaxChars: envInteger("BROWSER_STREAM_BATCH_MAX_CHARS", 16384, { min: 1 }),
   browserStreamBatchDelayMs: envInteger("BROWSER_STREAM_BATCH_DELAY_MS", 2),
-  browserStatsigMaxAttempts: envInteger("BROWSER_STATSIG_MAX_ATTEMPTS", 50, { min: 1 }),
-  browserStatsigRetryDelayMs: envInteger("BROWSER_STATSIG_RETRY_DELAY_MS", 50, { min: 1 }),
+  browserStatsigMaxAttempts: envInteger("BROWSER_STATSIG_MAX_ATTEMPTS", 600, { min: 1 }),
+  browserStatsigRetryDelayMs: envInteger("BROWSER_STATSIG_RETRY_DELAY_MS", 150, { min: 1 }),
   browserRequestTimeoutMs: envInteger("BROWSER_REQUEST_TIMEOUT_MS", 10 * 60 * 1000, { min: 1 }),
+  fallbackMaxTotalMs: envInteger("FALLBACK_MAX_TOTAL_MS", 120000, { min: 1 }),
   shutdownTimeoutMs: envInteger("SHUTDOWN_TIMEOUT_MS", 30 * 1000, { min: 1 }),
   fileUploadConcurrency: envInteger("FILE_UPLOAD_CONCURRENCY", 4, { min: 1 }),
   responseHydrationDelaysMs: process.env.RESPONSE_HYDRATION_DELAYS_MS

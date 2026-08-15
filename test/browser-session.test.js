@@ -975,6 +975,40 @@ test("page bridge marks stale statsig chunk sources for rediscovery", async () =
   assert.match(env.errorPayloads[0].message, new RegExp(STATSIG_CHUNK_STALE_MARKER));
 });
 
+test("page bridge bails out quickly when the page redirected to login", async () => {
+  const originalLocation = globalThis.location;
+  let statsigCalls = 0;
+  const env = installBridgeTestGlobals({
+    statsigGen: async () => {
+      statsigCalls += 1;
+      throw new TypeError(
+        "Cannot read properties of undefined (reading 'childNodes')"
+      );
+    }
+  });
+
+  try {
+    globalThis.location = { origin: "https://grok.com", pathname: "/login" };
+    installGrokBridgePageHelpers();
+    await env.window.__grokBridgeFetch({
+      ...STATSIG_FETCH_PAYLOAD,
+      statsigMaxAttempts: 10,
+      statsigRetryDelayMs: 5
+    });
+  } finally {
+    globalThis.location = originalLocation;
+    env.restore();
+  }
+
+  assert.equal(env.fetched.length, 0);
+  assert.equal(env.errorPayloads.length, 1);
+  assert.match(env.errorPayloads[0].message, /redirected to login page/);
+  assert.ok(
+    statsigCalls < 10,
+    `expected early bail, generator was called ${statsigCalls} times`
+  );
+});
+
 test("request recreates the page when statsig generation fails on the first attempt", async () => {
   const session = createSession((instance, payload) => {
     instance.attempts = (instance.attempts || 0) + 1;
@@ -1014,7 +1048,7 @@ test("request recreates the page when statsig generation fails on the first atte
 test("page bridge self-heals botox elements from window.__next_f when DOM is empty", async () => {
   const env = installBridgeTestGlobals({
     statsigGen: async () => {
-      const els = globalThis.document.querySelectorAll(".r-6k45k0");
+      const els = globalThis.document.querySelectorAll(".r-3aha00");
       if (!els || els.length < 4) {
         throw new TypeError("Cannot read properties of undefined (reading 'childNodes')");
       }
@@ -1025,7 +1059,7 @@ test("page bridge self-heals botox elements from window.__next_f when DOM is emp
   env.window.__next_f = [
     [
       1,
-      '{"curves":[[{"color":[1,2,3,4,5,6],"deg":90,"bezier":[10,20,30,40]}],[{"color":[1,2,3,4,5,6],"deg":90,"bezier":[10,20,30,40]}],[{"color":[1,2,3,4,5,6],"deg":90,"bezier":[10,20,30,40]}],[{"color":[1,2,3,4,5,6],"deg":90,"bezier":[10,20,30,40]}]],"css_class":"r-6k45k0"}'
+      '{"curves":[[{"color":[1,2,3,4,5,6],"deg":90,"bezier":[10,20,30,40]}],[{"color":[1,2,3,4,5,6],"deg":90,"bezier":[10,20,30,40]}],[{"color":[1,2,3,4,5,6],"deg":90,"bezier":[10,20,30,40]}],[{"color":[1,2,3,4,5,6],"deg":90,"bezier":[10,20,30,40]}]],"css_class":"r-3aha00"}'
     ]
   ];
 

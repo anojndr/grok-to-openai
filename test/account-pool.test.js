@@ -110,6 +110,67 @@ test(
 );
 
 test(
+  "withFallback stops the sweep once the total fallback deadline is exceeded on session-unavailable failures",
+  async () => {
+    const timeoutError = new HttpError(504, "Grok request timed out after 600000 ms", {
+      code: GROK_REQUEST_TIMEOUT_ERROR_CODE
+    });
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const createSlowMockAccount = (name) => {
+      let runCalls = 0;
+      return {
+        name,
+        get runCalls() {
+          return runCalls;
+        },
+        async run() {
+          runCalls += 1;
+          await sleep(30);
+          throw timeoutError;
+        },
+        async close() {}
+      };
+    };
+    const calls = [];
+    const accounts = [
+      createSlowMockAccount("primary"),
+      createSlowMockAccount("secondary"),
+      createSlowMockAccount("tertiary")
+    ];
+    const pool = new GrokAccountPool({ fallbackMaxTotalMs: 5 }, { accounts });
+
+    await assert.rejects(
+      pool.withFallback(async (client) => {
+        calls.push(client.name);
+        return client.run();
+      }),
+      (err) => err.status === 504
+    );
+
+    // The deadline must stop the sweep right after the first failed account
+    // instead of walking the whole pool for minutes.
+    assert.ok(
+      calls.length < 3,
+      `expected sweep to stop early, tried: ${calls.join(",")}`
+    );
+  }
+);
+
+test("withFallback quarantines an account whose statsig id generation failed", async () => {
+  const statsigError = new Error(
+    "Grok statsig id generation failed: Cannot read properties of undefined (reading 'childNodes')"
+  );
+  const accounts = [
+    createMockAccount("primary", [statsigError, statsigError])
+  ];
+  const pool = new GrokAccountPool({}, { accounts });
+
+  await assert.rejects(pool.withFallback(async (client) => client.run()));
+
+  assert.equal(pool.isAccountUnavailable(0), true);
+});
+
+test(
   "withFallback restarts from the secondary account after the last fallback fails and raises after two exhausted passes",
   async () => {
     const calls = [];

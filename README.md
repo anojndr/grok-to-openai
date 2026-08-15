@@ -117,6 +117,9 @@ IMPORT_COOKIES_ON_BOOT=true
 BROWSER_PROFILE_DIR=.browser-profile
 BROWSER_STREAM_BATCH_MAX_CHARS=16384
 BROWSER_STREAM_BATCH_DELAY_MS=2
+BROWSER_STATSIG_MAX_ATTEMPTS=600
+BROWSER_STATSIG_RETRY_DELAY_MS=150
+FALLBACK_MAX_TOTAL_MS=120000
 BROWSER_REQUEST_TIMEOUT_MS=600000
 SHUTDOWN_TIMEOUT_MS=30000
 FILE_UPLOAD_CONCURRENCY=4
@@ -136,6 +139,15 @@ Configuration notes:
 - `GROK_BASE_URL`: defaults to `https://grok.com`.
 - `BROWSER_STREAM_BATCH_MAX_CHARS` / `BROWSER_STREAM_BATCH_DELAY_MS`:
   browser-to-Node stream batching; defaults `16384` / `2`.
+- `BROWSER_STATSIG_MAX_ATTEMPTS` / `BROWSER_STATSIG_RETRY_DELAY_MS`: how long the
+  in-page statsig id generator keeps retrying while the Grok app is still
+  mounting (its DOM input appears tens of seconds after a cold page load);
+  defaults `600` attempts every `150` ms (~90 s). Accounts whose pages can
+  never mount the app (login redirects, session expiry) bail out immediately
+  and are quarantined.
+- `FALLBACK_MAX_TOTAL_MS`: global deadline for one multi-account fallback
+  sweep. Once it elapses on a session-unavailable failure the request errors
+  immediately instead of walking every account; default `120000` (2 min).
 - `BROWSER_REQUEST_TIMEOUT_MS`: max lifetime of one Grok browser request;
   defaults to `600000` (10 min), timed-out fetches return `504`.
 - `SHUTDOWN_TIMEOUT_MS`: drain time for active requests on shutdown;
@@ -156,9 +168,15 @@ restart headless.
 
 Requests never go out without a valid `x-statsig-id`: if Grok's statsig
 middleware cannot produce one yet (fresh page whose app is still mounting),
-the bridge retries for a few seconds until the page is ready, and if the
-cached statsig chunk goes stale after a Grok redeploy it rediscovers the
-chunk automatically and retries the request once.
+the bridge retries in-page for up to `BROWSER_STATSIG_MAX_ATTEMPTS ×
+BROWSER_STATSIG_RETRY_DELAY_MS` — long enough to cover a cold page load —
+injecting a DOM stand-in for the logo element the middleware reads (class
+name learned from the page's own `__next_f` payload and observed elements).
+If the cached statsig chunk goes stale after a Grok redeploy it rediscovers
+the chunk automatically and retries the request once; accounts that can
+never generate an id (expired sessions, login redirects) are quarantined and
+a failing sweep aborts after `FALLBACK_MAX_TOTAL_MS` instead of crawling
+every account.
 
 Start the server and run tests:
 

@@ -393,6 +393,21 @@ export class GrokAccountPool {
     }
 
     let fallbackAccounts = this.getFallbackAccounts(accounts);
+    const deadlineMs = Number(this.config.fallbackMaxTotalMs) || 0;
+    const sweepStartedAt = Date.now();
+    const throwIfSweepDeadlinePassed = (error) => {
+      // A failing sweep should not stall the client for minutes while it walks
+      // every account. Once the total fallback deadline has elapsed on a
+      // session-unavailable failure, surface the error right away; the failed
+      // account is already quarantined, so the next request skips it.
+      if (
+        deadlineMs > 0 &&
+        Date.now() - sweepStartedAt >= deadlineMs &&
+        this.isSessionUnavailableError(error)
+      ) {
+        throw error;
+      }
+    };
 
     if (!fallbackAccounts.length) {
       let lastError = null;
@@ -411,6 +426,7 @@ export class GrokAccountPool {
         } catch (error) {
           lastError = error;
           await this.handleFailure(primaryAccount, accounts, error);
+          throwIfSweepDeadlinePassed(error);
         }
       }
 
@@ -431,6 +447,7 @@ export class GrokAccountPool {
         } catch (error) {
           lastError = error;
           await this.handleFailure(primaryAccount, accounts, error);
+          throwIfSweepDeadlinePassed(error);
         }
       }
 
@@ -449,6 +466,7 @@ export class GrokAccountPool {
       } catch (error) {
         lastError = error;
         const failure = await this.handleFailure(fallbackAccount, accounts, error);
+        throwIfSweepDeadlinePassed(error);
         if (failure.wrapped) {
           exhaustedPasses += 1;
         }
@@ -670,6 +688,7 @@ export class GrokAccountPool {
       message.includes("connection closed") ||
       message.includes("could not load statsig middleware") ||
       message.includes("could not find statsig module") ||
+      message.includes("statsig id generation failed") ||
       message.includes("statsig_unavailable") ||
       message.includes("ended the stream before the final assistant response") ||
       message.includes("econnreset") ||

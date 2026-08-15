@@ -94,6 +94,23 @@ export function installGrokBridgePageHelpers() {
   const maxCachedPathAncestorDepth = 12;
   let savedElementsVersion = 0;
 
+  // The statsig middleware queries the "loading X" logo by its obfuscated
+  // class name, which changes with every Grok deploy. Keep every class name
+  // we have ever seen (legacy fallback, __next_f payloads, and real logo
+  // elements) and stamp them all onto the botox stand-ins so the middleware
+  // finds its element no matter which variant the current build queries.
+  const knownStatsigCssClasses = new Set(["r-6k45k0"]);
+  const learnStatsigCssClass = (className) => {
+    if (typeof className !== "string") {
+      return;
+    }
+    for (const token of className.split(/\s+/)) {
+      if (/^r-[a-z0-9]+$/i.test(token)) {
+        knownStatsigCssClasses.add(token);
+      }
+    }
+  };
+
   const readElementClassName = (element) => {
     if (typeof element.className === "string") {
       return element.className;
@@ -189,6 +206,7 @@ export function installGrokBridgePageHelpers() {
     }
 
     for (const targetElement of candidates) {
+      learnStatsigCssClass(readElementClassName(targetElement));
       cacheElement(targetElement);
       let element = targetElement.parentElement;
       let ancestorDepth = 0;
@@ -318,7 +336,6 @@ export function installGrokBridgePageHelpers() {
       }
 
       let curves = null;
-      let cssClass = "r-6k45k0";
       if (Array.isArray(window.__next_f)) {
         for (const item of window.__next_f) {
           const text =
@@ -337,7 +354,7 @@ export function installGrokBridgePageHelpers() {
                 const parsed = JSON.parse(jsonStr);
                 if (Array.isArray(parsed.curves)) {
                   curves = parsed.curves;
-                  cssClass = parsed.css_class || cssClass;
+                  learnStatsigCssClass(parsed.css_class);
                 }
               }
             } catch {}
@@ -367,7 +384,9 @@ export function installGrokBridgePageHelpers() {
         svg.setAttribute("id", `loading-x-anim-${index}`);
         svg.setAttribute(
           "class",
-          `r-1p0dtai r-13gxpu9 r-4qtqp9 r-yyyyoo r-wy61xf r-1d2f490 ${cssClass} r-ywje51`
+          `r-1p0dtai r-13gxpu9 r-4qtqp9 r-yyyyoo r-wy61xf r-1d2f490 ${Array.from(
+            knownStatsigCssClasses
+          ).join(" ")} r-ywje51`
         );
         const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
         const path1 = document.createElementNS("http://www.w3.org/2000/svg", "path");
@@ -598,6 +617,21 @@ export function installGrokBridgePageHelpers() {
         const maxStatsigAttempts = Number(request.statsigMaxAttempts) || 50;
         const statsigRetryDelayMs = Number(request.statsigRetryDelayMs) || 50;
         let lastError = null;
+        // If the page redirected to a login/onboarding screen the Grok app
+        // never mounts, so the statsig generator can never succeed. Bail out
+        // after the first failed attempt instead of burning the whole budget.
+        const isLoginRedirect = () => {
+          try {
+            if (typeof location === "undefined") {
+              return false;
+            }
+            return /^\/(login|signin|sign-in|signup|sign-up|register|magic-link)(\/|$)/.test(
+              location.pathname || ""
+            );
+          } catch {
+            return false;
+          }
+        };
         for (let attempt = 0; attempt < maxStatsigAttempts; attempt += 1) {
           try {
             ensureBotoxElements();
@@ -609,6 +643,11 @@ export function installGrokBridgePageHelpers() {
               console.error(
                 `__grokBridgeFetch: statsig id attempt ${attempt + 1}/${maxStatsigAttempts} failed:`,
                 error
+              );
+            }
+            if (attempt % 25 === 0 && isLoginRedirect()) {
+              throw new Error(
+                `redirected to login page (${location.pathname || ""})`
               );
             }
             if (attempt < maxStatsigAttempts - 1) {
@@ -1720,7 +1759,8 @@ export class BrowserSession {
         await run(page);
       } else if (
         message.includes(STATSIG_GENERATION_FAILED_MARKER) &&
-        !statsigFailedRetried
+        !statsigFailedRetried &&
+        !message.includes("redirected to login page")
       ) {
         // Statsig generation failed in the current page (e.g. DOM nodes were
         // removed or page state became corrupted). Recreate the page and retry once.
