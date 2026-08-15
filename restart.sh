@@ -107,13 +107,15 @@ if [[ -n "$pids" ]]; then
   fi
 fi
 
-# leftover headless Chrome from a force-killed run would hold profile locks
+# leftover headless Chrome from a force-killed run would hold profile locks.
+# The pattern starts with "--", so pkill/pgrep need "--" to avoid parsing it
+# as an option (without it the kill silently no-ops and the browser leaks).
 profile_pattern="--user-data-dir=$PWD/.browser-profile"
-if pgrep -f "$profile_pattern" >/dev/null 2>&1; then
+if pgrep -f -- "$profile_pattern" >/dev/null 2>&1; then
   echo "Stopping leftover browser processes from a previous run..."
-  pkill -TERM -f "$profile_pattern" 2>/dev/null || true
+  pkill -TERM -f -- "$profile_pattern" 2>/dev/null || true
   sleep 3
-  pkill -KILL -f "$profile_pattern" 2>/dev/null || true
+  pkill -KILL -f -- "$profile_pattern" 2>/dev/null || true
 fi
 
 # wait until the port is actually free before binding

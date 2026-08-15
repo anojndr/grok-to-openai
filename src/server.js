@@ -163,6 +163,11 @@ function maybeHandleStreamingError(req, res, error) {
     return false;
   }
 
+  console.error(
+    `[request] ${req.method} ${req.path} FAILED (stream): ${error?.message ?? error}`,
+    error?.stack ? `\n${error.stack}` : ""
+  );
+
   const payload = toOpenAIError(error);
 
   if (req.path === "/v1/responses") {
@@ -208,6 +213,41 @@ app.use((req, _res, next) => {
     return;
   }
 
+  next();
+});
+
+app.use((req, res, next) => {
+  const startedAt = Date.now();
+  const previewInput = (body) => {
+    if (!body || typeof body !== "object") {
+      return "";
+    }
+    const input = body.input ?? body.messages?.[body.messages.length - 1]?.content;
+    if (typeof input === "string") {
+      return input.slice(0, 80).replace(/\s+/g, " ").trim();
+    }
+    if (Array.isArray(input)) {
+      for (const item of input) {
+        if (typeof item?.text === "string") {
+          return item.text.slice(0, 80).replace(/\s+/g, " ").trim();
+        }
+        if (typeof item?.content === "string") {
+          return item.content.slice(0, 80).replace(/\s+/g, " ").trim();
+        }
+      }
+    }
+    return "";
+  };
+
+  res.on("finish", () => {
+    const durationMs = Date.now() - startedAt;
+    if (req.path.startsWith("/v1/responses") || req.path.startsWith("/v1/chat/completions")) {
+      console.log(
+        `[request] ${req.method} ${req.path} model=${req.body?.model ?? "-"} ` +
+          `input="${previewInput(req.body)}" -> ${res.statusCode} in ${durationMs} ms`
+      );
+    }
+  });
   next();
 });
 
@@ -305,14 +345,40 @@ async function uploadFilesToGrok(accountClient, files) {
   });
 }
 
+async function resolveForcedAccountIndex(req) {
+  const raw = req.get("x-grok-account");
+  if (raw === undefined || raw === null || raw === "") {
+    return null;
+  }
+
+  const index = Number(raw);
+  if (!Number.isInteger(index) || index < 0) {
+    throw new HttpError(
+      400,
+      "x-grok-account must be a non-negative integer account index"
+    );
+  }
+
+  const accounts = await grokAccounts.getAccounts();
+  if (index >= accounts.length) {
+    throw new HttpError(
+      400,
+      `x-grok-account ${index} is out of range (${accounts.length} accounts configured)`
+    );
+  }
+
+  return index;
+}
+
 async function executeConversationRequest({
   instructions,
   publicModel,
   message,
   files,
-  onToken
+  onToken,
+  accountIndex = null
 }) {
-  const result = await grokAccounts.withFallback(async (accountClient) => {
+  const run = async (accountClient) => {
     const uploadedIds = await uploadFilesToGrok(accountClient, files);
     const fileAttachments = [];
     const imageAttachments = [];
@@ -343,7 +409,12 @@ async function executeConversationRequest({
         });
       }
     });
-  });
+  };
+
+  const result =
+    accountIndex === null
+      ? await grokAccounts.withFallback(run)
+      : await grokAccounts.withAccount(accountIndex, run, { fallback: false });
 
   return {
     accountIndex: result.accountIndex,
@@ -371,7 +442,8 @@ async function executeManualHistory({
   messages,
   instructions,
   publicModel,
-  onToken
+  onToken,
+  accountIndex = null
 }) {
   const lastMessage = messages[messages.length - 1];
   if (!lastMessage || lastMessage.role !== "user") {
@@ -389,12 +461,14 @@ async function executeManualHistory({
     publicModel,
     message: combinedMessage,
     files: lastMessage.files,
-    onToken
+    onToken,
+    accountIndex
   });
 }
 
 async function runResponseRequest(parsed, normalized, options = {}) {
   const onToken = options.onToken ?? null;
+  const accountIndex = options.accountIndex ?? null;
   const previousRecordOption = options.previousRecord;
   const loadPreviousHistoryOption = options.loadPreviousHistory ?? null;
 
@@ -429,6 +503,7 @@ async function runResponseRequest(parsed, normalized, options = {}) {
       uploadFilesToGrok,
       fileStore,
       onToken,
+      accountIndex,
       loadPreviousHistory:
         loadPreviousHistoryOption ??
         (async () => {
@@ -445,7 +520,8 @@ async function runResponseRequest(parsed, normalized, options = {}) {
       publicModel,
       message: message.text,
       files: message.files,
-      onToken
+      onToken,
+      accountIndex
     });
   }
 
@@ -453,7 +529,8 @@ async function runResponseRequest(parsed, normalized, options = {}) {
     messages: normalized.messages,
     instructions: normalized.instructions,
     publicModel,
-    onToken
+    onToken,
+    accountIndex
   });
 }
 
@@ -461,7 +538,8 @@ async function runChatCompletionRequest(reqBody, options = {}) {
   return runPreparedChatCompletionRequest(reqBody, {
     executeConversationRequest,
     executeManualHistory,
-    onToken: options.onToken ?? null
+    onToken: options.onToken ?? null,
+    accountIndex: options.accountIndex ?? null
   });
 }
 
@@ -529,6 +607,7 @@ app.post("/v1/responses", async (req, res, next) => {
     const requestBody = req.body;
     const responseId = createId("resp");
     const messageId = createId("msg");
+    const forcedAccountIndex = await resolveForcedAccountIndex(req);
     const parsed = responsesCreateSchema.parse(requestBody);
     const previousRecord = parsed.previous_response_id
       ? await responseStore.get(parsed.previous_response_id)
@@ -631,6 +710,7 @@ app.post("/v1/responses", async (req, res, next) => {
       });
       const result = await runResponseRequest(parsed, normalized, {
         previousRecord,
+        accountIndex: forcedAccountIndex,
         loadPreviousHistory: parsed.previous_response_id
           ? async () => {
               const record = await responseStore.getWithHistory(
@@ -772,6 +852,7 @@ app.post("/v1/responses", async (req, res, next) => {
     });
     const result = await runResponseRequest(parsed, normalized, {
       previousRecord,
+      accountIndex: forcedAccountIndex,
       loadPreviousHistory: parsed.previous_response_id
         ? async () => {
             const record = await responseStore.getWithHistory(
@@ -835,6 +916,7 @@ app.post("/v1/responses", async (req, res, next) => {
 
 app.post("/v1/chat/completions", async (req, res, next) => {
   try {
+    const forcedAccountIndex = await resolveForcedAccountIndex(req);
     const prepared = await prepareChatCompletionRequest(req.body, {
       fileStore,
       defaultModel: config.defaultModel,
@@ -901,7 +983,8 @@ app.post("/v1/chat/completions", async (req, res, next) => {
             return;
           }
           progressiveTextStream.observe(token);
-        }
+        },
+        accountIndex: forcedAccountIndex
       });
       const assistantOutput = await buildHostedAssistantOutput(
         result.state,
@@ -958,7 +1041,9 @@ app.post("/v1/chat/completions", async (req, res, next) => {
       return;
     }
 
-    const result = await runChatCompletionRequest(prepared);
+    const result = await runChatCompletionRequest(prepared, {
+      accountIndex: forcedAccountIndex
+    });
     const assistantOutput = await buildHostedAssistantOutput(
       result.state,
       parsed.source_attribution,
@@ -989,6 +1074,11 @@ app.use((error, req, res, _next) => {
   if (maybeHandleStreamingError(req, res, error)) {
     return;
   }
+
+  console.error(
+    `[request] ${req.method} ${req.path} FAILED: ${error?.message ?? error}`,
+    error?.stack ? `\n${error.stack}` : ""
+  );
 
   if (res.headersSent || res.writableEnded) {
     if (!res.writableEnded) {

@@ -690,6 +690,12 @@ export function installGrokBridgePageHelpers() {
         console.log("__grokBridgeFetch Request Body:", JSON.stringify(request.body));
       }
 
+      try {
+        await window.__grokBridgeCallBinding("__grokBridgeDispatched", {
+          requestId: request.requestId
+        });
+      } catch {}
+
       const response = await fetch(request.url, {
         method: request.method,
         headers,
@@ -1258,6 +1264,11 @@ export class BrowserSession {
       }
     };
 
+    await exposeAliases(["__grokBridgeDispatched", "grokBridgeDispatched"], (_source, payload) => {
+      const pending = this.pending.get(payload.requestId);
+      pending?.onDispatched?.();
+    });
+
     await exposeAliases(["__grokBridgeMeta", "grokBridgeMeta"], (_source, payload) => {
       const pending = this.pending.get(payload.requestId);
       pending?.onMeta(payload);
@@ -1603,6 +1614,12 @@ export class BrowserSession {
       .catch(() => false);
   }
 
+  accountLabel() {
+    const dir = this.config.browserProfileDir || "";
+    const base = typeof dir === "string" ? dir.split(/[\\/]/).pop() : "";
+    return base || "default";
+  }
+
   async request({
     requestId,
     url,
@@ -1612,8 +1629,15 @@ export class BrowserSession {
     onChunk = null,
     onMeta = null
   }) {
+    const requestStartedAt = Date.now();
+    let statsigLoadedAt = 0;
+    let pageReadyAt = 0;
+    let firstByteAt = 0;
+    const label = this.accountLabel();
+
     await this.init();
     await this.loadStatsigChunkSource();
+    statsigLoadedAt = Date.now();
 
     let meta = null;
     const textBuffer = {
@@ -1637,24 +1661,67 @@ export class BrowserSession {
     let payload = buildPayload();
     let statsigChunkRetried = false;
     let statsigFailedRetried = false;
+    let ttfbRetried = false;
 
     const run = async (page) => {
+      pageReadyAt = Date.now();
       await new Promise((resolve, reject) => {
         const configuredTimeout = Number(this.config.browserRequestTimeoutMs);
         const timeoutMs =
           Number.isFinite(configuredTimeout) && configuredTimeout > 0
             ? configuredTimeout
             : 10 * 60 * 1000;
+        const ttfbConfigured = Number(this.config.browserTtfbTimeoutMs);
+        const ttfbTimeoutMs =
+          Number.isFinite(ttfbConfigured) && ttfbConfigured > 0
+            ? ttfbConfigured
+            : 45 * 1000;
         let timeout;
+        let ttfbTimer = null;
+        const startTtfbTimer = () => {
+          if (ttfbTimer || meta) {
+            return;
+          }
+
+          ttfbTimer = setTimeout(() => {
+            ttfbTimer = null;
+            void this.abortRequest(page, requestId).catch(() => {});
+            finish(
+              reject,
+              new HttpError(
+                504,
+                `Grok request produced no response within ${ttfbTimeoutMs} ms`,
+                { code: GROK_REQUEST_TIMEOUT_ERROR_CODE }
+              )
+            );
+          }, ttfbTimeoutMs);
+          ttfbTimer.unref?.();
+        };
+        const clearTtfbTimer = () => {
+          if (ttfbTimer) {
+            clearTimeout(ttfbTimer);
+            ttfbTimer = null;
+          }
+        };
         const finish = (callback, value) => {
           clearTimeout(timeout);
+          clearTtfbTimer();
           this.pending.delete(requestId);
           callback(value);
         };
 
         this.pending.set(requestId, {
+          onDispatched() {
+            // The in-page fetch left the page; response headers must follow
+            // within the TTFB deadline or the page is wedged.
+            startTtfbTimer();
+          },
           onMeta(payload) {
             meta = payload;
+            clearTtfbTimer();
+            if (!firstByteAt) {
+              firstByteAt = Date.now();
+            }
 
             if (payload.status >= 400) {
               setTextBufferLimit(textBuffer, ERROR_RESPONSE_TEXT_LIMIT);
@@ -1665,6 +1732,9 @@ export class BrowserSession {
             onMeta?.(payload);
           },
           onChunk(chunk) {
+            if (!firstByteAt) {
+              firstByteAt = Date.now();
+            }
             appendTextChunk(textBuffer, chunk);
             onChunk?.(chunk);
           },
@@ -1783,6 +1853,32 @@ export class BrowserSession {
           }
         }
         await run(page);
+      } else if (
+        message.includes("produced no response within") &&
+        !ttfbRetried
+      ) {
+        // The page dispatched the fetch but response headers never arrived:
+        // the page is wedged (stale SPA, dead network path). Recreate the
+        // page and retry once before falling back to other accounts.
+        ttfbRetried = true;
+        meta = null;
+        setTextBufferLimit(
+          textBuffer,
+          onChunk ? 0 : Number.POSITIVE_INFINITY
+        );
+        clearTextBuffer(textBuffer);
+        let page;
+        try {
+          page = await this.recreatePage();
+        } catch (recreateErr) {
+          const recMsg = recreateErr instanceof Error ? recreateErr.message : String(recreateErr);
+          if (isRecoverableContextError(recMsg)) {
+            page = await this.recreateContext();
+          } else {
+            throw recreateErr;
+          }
+        }
+        await run(page);
       } else {
         if (message.toLowerCase().includes("failed to fetch")) {
           await this.validatePage(await this.ensurePage()).catch(() => {});
@@ -1790,6 +1886,16 @@ export class BrowserSession {
         throw error;
       }
     }
+
+    const totalMs = Date.now() - requestStartedAt;
+    console.log(
+      `[grok-request] ${label} ${method} ${url.replace(this.config.grokBaseUrl ?? "https://grok.com", "")} ` +
+        `status=${meta?.status ?? "ERR"} total=${totalMs}ms ` +
+        `init=${statsigLoadedAt ? statsigLoadedAt - requestStartedAt : "?"}ms ` +
+        `page=${pageReadyAt ? pageReadyAt - requestStartedAt : "?"}ms ` +
+        `ttfb=${firstByteAt ? firstByteAt - pageReadyAt : "?"}ms ` +
+        `first-chunk=${firstByteAt ? firstByteAt - requestStartedAt : "?"}ms`
+    );
 
     return {
       meta,

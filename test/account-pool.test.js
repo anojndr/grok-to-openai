@@ -156,6 +156,48 @@ test(
   }
 );
 
+test(
+  "withFallback resets the sweep deadline after a slow primary failure so fallbacks are still tried",
+  async () => {
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const primary = {
+      name: "primary",
+      async run() {
+        await sleep(60);
+        throw new HttpError(504, "Grok request timed out after 600000 ms", {
+          code: GROK_REQUEST_TIMEOUT_ERROR_CODE
+        });
+      },
+      async close() {}
+    };
+    const secondary = {
+      name: "secondary",
+      async run() {
+        return "secondary-ok";
+      },
+      async close() {}
+    };
+
+    const calls = [];
+    const pool = new GrokAccountPool(
+      { fallbackMaxTotalMs: 5 },
+      { accounts: [primary, secondary] }
+    );
+
+    const result = await pool.withFallback(async (client) => {
+      calls.push(client.name);
+      return client.run();
+    });
+
+    // A 60 ms primary hang exceeds the 5 ms sweep deadline, but the deadline
+    // must not starve the fallback: the sweep clock resets once the primary
+    // attempt is over, so the backup account still gets a chance.
+    assert.equal(result.accountIndex, 1);
+    assert.equal(result.value, "secondary-ok");
+    assert.deepEqual(calls, ["primary", "secondary"]);
+  }
+);
+
 test("withFallback quarantines an account whose statsig id generation failed", async () => {
   const statsigError = new Error(
     "Grok statsig id generation failed: Cannot read properties of undefined (reading 'childNodes')"
@@ -642,7 +684,7 @@ test("withFallback rotates on heavy usage error", async () => {
   assert.ok(pool.unavailableAccountIndexes.has(0));
 });
 
-test("withFallback resets unavailable status when all accounts are exhausted", async () => {
+test("withFallback fails fast when all accounts are unavailable instead of storming the pool", async () => {
   const rateLimitError = new HttpError(429, "Too Many Requests");
   const accounts = [
     createMockAccount("primary", [rateLimitError, "primary-recovered"]),
@@ -650,12 +692,85 @@ test("withFallback resets unavailable status when all accounts are exhausted", a
   ];
   const pool = new GrokAccountPool({}, { accounts });
 
-  const result = await pool.withFallback(async (client) => {
-    return client.run();
-  });
+  // First request exhausts both accounts (429 -> quarantine -> sweep).
+  await assert.rejects(
+    pool.withFallback(async (client) => client.run()),
+    /Too Many Requests/
+  );
 
-  assert.equal(result.value, "primary-recovered");
-  assert.equal(pool.unavailableAccountIndexes.size, 0);
+  // A second request with the whole pool quarantined must fail fast with 503
+  // and NOT attempt any account again (previously this cleared every
+  // quarantine and re-tried the whole pool for minutes).
+  const calls = [];
+  await assert.rejects(
+    pool.withFallback(async (client) => {
+      calls.push(client.name);
+      return client.run();
+    }),
+    (error) => error?.status === 503 && error?.details?.code === "pool_exhausted"
+  );
+
+  assert.equal(calls.length, 0);
+  // Cooldown is still intact (not cleared by exhaustion) so the pool recovers
+  // on its own once the 15-minute cooldown elapses.
+  assert.equal(pool.unavailableAccountIndexes.size, 2);
+});
+
+test("rate-limited accounts get a short cooldown while hard failures keep the long one", async () => {
+  const rateLimitError = new HttpError(429, "Too Many Requests");
+  const blockedError = new HttpError(502, "Grok session is blocked or not authenticated", {
+    code: GROK_SESSION_BLOCKED_ERROR_CODE
+  });
+  const accounts = [
+    {
+      name: "secondary",
+      index: 1,
+      async run() {},
+      async close() {}
+    }
+  ];
+  const pool = new GrokAccountPool(
+    { rateLimitCooldownMs: 2000 },
+    { accounts: [createMockAccount("primary", []), ...accounts] }
+  );
+
+  // 429 -> short cooldown (2000ms).
+  await pool.handleFailure({ index: 0, client: { close: async () => {} } }, pool.loadedAccounts, rateLimitError);
+  assert.equal(pool.unavailableAccountCooldowns.get(0), 2000);
+
+  // Hard session block -> full 15-minute cooldown.
+  await pool.handleFailure({ index: 1, client: { close: async () => {} } }, pool.loadedAccounts, blockedError);
+  assert.equal(pool.unavailableAccountCooldowns.get(1), 15 * 60 * 1000);
+
+  // The 429 cooldown expires on its own (override 5000ms only affects the
+  // explicit param; the stored 2000ms governs).
+  pool.unavailableAccountTimestamps.set(0, Date.now() - 3000);
+  assert.equal(pool.isAccountUnavailable(0), false);
+  assert.equal(pool.isAccountUnavailable(1), true);
+});
+
+test("withFallback aborts after three consecutive 429s instead of walking the whole pool", async () => {
+  const rateLimitError = new HttpError(429, "Too Many Requests");
+  const accounts = [
+    createMockAccount("primary", [rateLimitError, rateLimitError]),
+    createMockAccount("secondary", [rateLimitError]),
+    createMockAccount("tertiary", [rateLimitError]),
+    createMockAccount("quaternary", ["should-not-run"])
+  ];
+  const pool = new GrokAccountPool({}, { accounts });
+
+  const calls = [];
+  await assert.rejects(
+    pool.withFallback(async (client) => {
+      calls.push(client.name);
+      return client.run();
+    }),
+    /Too Many Requests/
+  );
+
+  // primary -> secondary -> tertiary are all 429; the sweep must stop after
+  // three rate-limit failures without touching the fourth account.
+  assert.deepEqual(calls, ["primary", "secondary", "tertiary"]);
 });
 
 test("withFallback rotates on 401 unauthenticated error", async () => {

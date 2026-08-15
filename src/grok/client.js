@@ -464,7 +464,7 @@ export class GrokClient {
         message,
         fileAttachments,
         imageAttachments,
-        disableSearch: false,
+        disableSearch: Boolean(this.config.disableSearch),
         enableImageGeneration: true,
         returnImageBytes: false,
         returnRawGrokInXaiRequest: false,
@@ -513,7 +513,7 @@ export class GrokClient {
       body: {
         message,
         parentResponseId,
-        disableSearch: false,
+        disableSearch: Boolean(this.config.disableSearch),
         enableImageGeneration: true,
         imageAttachments,
         returnImageBytes: false,

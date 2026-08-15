@@ -123,6 +123,27 @@ async function stopServer({ child, dataDir }) {
   assert.equal(forced, false, "Server did not shut down cleanly after SIGTERM");
 }
 
+test("X-Grok-Account header with a non-integer value is rejected with 400", async () => {
+  const server = await startServer();
+
+  try {
+    const response = await fetch(`${server.baseUrl}/v1/responses`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-grok-account": "not-an-integer"
+      },
+      body: JSON.stringify({ input: "hi" })
+    });
+
+    assert.equal(response.status, 400);
+    const payload = await response.json();
+    assert.match(payload.error.message, /x-grok-account must be a non-negative integer/);
+  } finally {
+    await stopServer(server);
+  }
+});
+
 test("server accepts JSON bodies larger than the former 8mb cap", async () => {
   const server = await startServer();
 

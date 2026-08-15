@@ -429,7 +429,8 @@ export async function continueResponseConversation({
   uploadFilesToGrok,
   fileStore,
   onToken = null,
-  loadPreviousHistory = null
+  loadPreviousHistory = null,
+  accountIndex = null
 }) {
   const lastUserMessage = currentMessages[currentMessages.length - 1];
   if (!lastUserMessage || lastUserMessage.role !== "user") {
@@ -437,7 +438,8 @@ export async function continueResponseConversation({
   }
 
   const accounts = grokAccounts ?? createSingleAccountAdapter(grokClient);
-  const preferredAccountIndex = previousRecord.grok?.accountIndex ?? 0;
+  const preferredAccountIndex =
+    accountIndex ?? previousRecord.grok?.accountIndex ?? 0;
   let followUpError = null;
 
   try {
@@ -510,7 +512,7 @@ export async function continueResponseConversation({
     fileStore
   });
 
-  const replayResult = await accounts.withFallback(async (accountClient) => {
+  const runReplay = async (accountClient) => {
     const uploadedIds = await uploadFilesForAccount(
       uploadFilesToGrok,
       accountClient,
@@ -545,7 +547,12 @@ export async function continueResponseConversation({
         });
       }
     });
-  });
+  };
+
+  const replayResult =
+    accountIndex === null
+      ? await accounts.withFallback(runReplay)
+      : await accounts.withAccount(accountIndex, runReplay, { fallback: false });
 
   return {
     accountIndex: replayResult.accountIndex,

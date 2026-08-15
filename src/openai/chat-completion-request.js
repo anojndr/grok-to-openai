@@ -43,6 +43,7 @@ export async function prepareChatCompletionRequest(reqBody, options = {}) {
 export async function runPreparedChatCompletionRequest(prepared, options) {
   const { parsed, normalized, publicModel } = prepared;
   const onToken = options?.onToken ?? null;
+  const accountIndex = options?.accountIndex ?? null;
 
   if (!normalized.messages.length) {
     throw new HttpError(400, "messages must include at least one user message");
@@ -59,7 +60,8 @@ export async function runPreparedChatCompletionRequest(prepared, options) {
       publicModel,
       message: message.text,
       files: message.files,
-      onToken
+      onToken,
+      accountIndex
     });
   }
 
@@ -67,6 +69,7 @@ export async function runPreparedChatCompletionRequest(prepared, options) {
     messages: normalized.messages,
     instructions: normalized.instructions,
     publicModel,
-    onToken
+    onToken,
+    accountIndex
   });
 }

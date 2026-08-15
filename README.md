@@ -40,7 +40,12 @@ Playwright browser profile. It does not use the official xAI API.
   fallbacks in deterministic order. Rate limits (`429`, "too many requests"),
   auth failures (`401`/`403`, "session expired", login redirects), and session
   blocks quarantine an account on a 15-minute cooldown. After two full
-  fallback passes fail, the request errors.
+  fallback passes fail, the request errors. One backup account is kept warm
+  in the background so a fallback request never pays a cold browser start.
+- **Account targeting**: send `X-Grok-Account: <index>` on `/v1/responses` or
+  `/v1/chat/completions` to route a request to one specific account (no
+  fallback; unavailable accounts answer `503`). Useful for testing/ops; omit
+  the header for normal pooled behavior.
 - **Resilience**: Transient browser context/protocol errors recreate the
   session and retry; modal/ToS popups are auto-dismissed; storage-exhausted
   accounts are pruned; timed-out page fetches return `504`.
@@ -120,12 +125,15 @@ BROWSER_STREAM_BATCH_DELAY_MS=2
 BROWSER_STATSIG_MAX_ATTEMPTS=600
 BROWSER_STATSIG_RETRY_DELAY_MS=150
 FALLBACK_MAX_TOTAL_MS=120000
+RATE_LIMIT_COOLDOWN_MS=120000
 BROWSER_REQUEST_TIMEOUT_MS=600000
+BROWSER_TTFB_TIMEOUT_MS=45000
 SHUTDOWN_TIMEOUT_MS=30000
 FILE_UPLOAD_CONCURRENCY=4
 DATA_DIR=.data
 DATABASE_URL=postgresql://user:pass@db.example.com:5432/groktoopenai?sslmode=disable
 DEFAULT_MODEL=grok-4.6-auto
+GROK_DISABLE_SEARCH=false
 PIXELVAULT_API_KEY=your-pixelvault-api-key
 PIXELVAULT_EXPIRATION=
 ALLOW_ORIGINS=*
@@ -150,6 +158,20 @@ Configuration notes:
   immediately instead of walking every account; default `120000` (2 min).
 - `BROWSER_REQUEST_TIMEOUT_MS`: max lifetime of one Grok browser request;
   defaults to `600000` (10 min), timed-out fetches return `504`.
+- `BROWSER_TTFB_TIMEOUT_MS`: how long a request may wait for Grok response
+  headers after the in-page fetch has been dispatched; defaults to `45000`
+  (45 s). A wedged page (stale SPA, dead network path) that would otherwise
+  hang until the full request timeout now fails fast, recreates the page,
+  and retries once before falling back to other accounts.
+- `RATE_LIMIT_COOLDOWN_MS`: quarantine length for rate-limited (`429`)
+  accounts; defaults to `120000` (2 min). Auth/session failures keep the
+  full 15-minute cooldown. Keeps a pool of throttled accounts self-healing
+  instead of sitting out for 15 minutes.
+- `GROK_DISABLE_SEARCH`: set `true` to send `disableSearch` on every
+  conversation request. Grok's web search phase is the main driver of
+  multi-second response latency for factual/current-events prompts, so
+  disabling it gets responses back inside the 10-20 s envelope but drops
+  web citations. Defaults to `false` (search + citations kept).
 - `SHUTDOWN_TIMEOUT_MS`: drain time for active requests on shutdown;
   defaults to `30000`.
 - `FILE_UPLOAD_CONCURRENCY`: parallel attachment uploads per request;

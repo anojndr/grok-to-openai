@@ -68,7 +68,9 @@ export const config = {
   browserStatsigMaxAttempts: envInteger("BROWSER_STATSIG_MAX_ATTEMPTS", 600, { min: 1 }),
   browserStatsigRetryDelayMs: envInteger("BROWSER_STATSIG_RETRY_DELAY_MS", 150, { min: 1 }),
   browserRequestTimeoutMs: envInteger("BROWSER_REQUEST_TIMEOUT_MS", 10 * 60 * 1000, { min: 1 }),
+  browserTtfbTimeoutMs: envInteger("BROWSER_TTFB_TIMEOUT_MS", 45 * 1000, { min: 1000 }),
   fallbackMaxTotalMs: envInteger("FALLBACK_MAX_TOTAL_MS", 120000, { min: 1 }),
+  rateLimitCooldownMs: envInteger("RATE_LIMIT_COOLDOWN_MS", 2 * 60 * 1000, { min: 1000 }),
   shutdownTimeoutMs: envInteger("SHUTDOWN_TIMEOUT_MS", 30 * 1000, { min: 1 }),
   fileUploadConcurrency: envInteger("FILE_UPLOAD_CONCURRENCY", 4, { min: 1 }),
   responseHydrationDelaysMs: process.env.RESPONSE_HYDRATION_DELAYS_MS
@@ -79,6 +81,7 @@ export const config = {
     : null,
   defaultModel: process.env.DEFAULT_MODEL ?? "grok-4.6-auto",
   defaultMode: process.env.DEFAULT_MODE ?? "auto",
+  disableSearch: envBool("GROK_DISABLE_SEARCH", false),
   allowOrigins: process.env.ALLOW_ORIGINS ?? "*",
   verbose: envBool("VERBOSE", false)
 };

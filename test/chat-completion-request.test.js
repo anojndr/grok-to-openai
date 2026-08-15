@@ -69,7 +69,8 @@ test("runPreparedChatCompletionRequest uses prepared context without re-parsing 
         publicModel: "resolved-public-model",
         message: "Hello",
         files: [],
-        onToken: null
+        onToken: null,
+        accountIndex: null
       });
       return { ok: true };
     },

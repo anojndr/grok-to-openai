@@ -29,6 +29,7 @@ export class GrokAccountPool {
     this.activeFallbackAccountIndex = null;
     this.unavailableAccountIndexes = new Set();
     this.unavailableAccountTimestamps = new Map();
+    this.unavailableAccountCooldowns = new Map();
     this.lastLoadedContent = null;
     this.lastReloadWarning = null;
     this.loadedAccounts = null;
@@ -36,17 +37,29 @@ export class GrokAccountPool {
     this.pendingClientCloses = new Set();
     this.clientClosePromises = new Map();
     this.knownClients = new Set();
+    this.warmBackupIndex = null;
+    this.initializedClients = new WeakSet();
+    this.clientInitPromises = new Map();
     this.closed = false;
   }
 
-  isAccountUnavailable(index, cooldownMs = 15 * 60 * 1000) {
+  isAccountUnavailable(index, cooldownMs = null) {
     if (!this.unavailableAccountIndexes.has(index)) {
       return false;
     }
     const timestamp = this.unavailableAccountTimestamps.get(index);
-    if (timestamp && Date.now() - timestamp > cooldownMs) {
+    // Rate-limit (429) quarantines use a short cooldown so the pool
+    // self-heals quickly when Grok's throttling window passes; hard
+    // failures (session blocked, expired auth) keep the full 15 minutes.
+    const effectiveCooldownMs =
+      cooldownMs ??
+      this.unavailableAccountCooldowns.get(index) ??
+      this.config.rateLimitCooldownMs ??
+      15 * 60 * 1000;
+    if (timestamp && Date.now() - timestamp > effectiveCooldownMs) {
       this.unavailableAccountIndexes.delete(index);
       this.unavailableAccountTimestamps.delete(index);
+      this.unavailableAccountCooldowns.delete(index);
       return false;
     }
     return true;
@@ -56,18 +69,58 @@ export class GrokAccountPool {
     if (!accounts || accounts.length === 0) {
       return false;
     }
+    // Purging expired cooldowns is what lets the pool recover over time;
+    // do NOT clear the whole quarantine set here. Clearing it the moment
+    // every account is unavailable made each queued request re-try EVERY
+    // account (each 429-ing again) for minutes — a retry storm that turned
+    // an all-exhausted pool into a multi-minute stall instead of a fast 503.
     for (const index of Array.from(this.unavailableAccountIndexes)) {
       this.isAccountUnavailable(index);
     }
-    if (this.unavailableAccountIndexes.size >= accounts.length) {
-      console.warn(`All ${accounts.length} configured accounts in pool are marked as unavailable. Resetting pool status to retry them.`);
-      this.unavailableAccountIndexes.clear();
-      this.unavailableAccountTimestamps.clear();
-      this.activeFallbackAccountIndex = null;
-      void this.closeAccountsWhenIdle(accounts);
-      return true;
+    return this.unavailableAccountIndexes.size >= accounts.length;
+  }
+
+  async ensureClientInitialized(account, { foreground = false } = {}) {
+    const client = account.client;
+    if (this.initializedClients.has(client)) {
+      return;
     }
-    return false;
+
+    const existingPromise = this.clientInitPromises.get(client);
+    if (existingPromise) {
+      if (foreground) {
+        await existingPromise;
+      }
+      return;
+    }
+
+    const initPromise = Promise.resolve()
+      .then(() => client.init?.())
+      .catch((error) => {
+        this.initializedClients.delete(client);
+        console.warn(`Failed to initialize account ${account.index}: ${error.message}`);
+        throw error;
+      })
+      .finally(() => {
+        if (this.clientInitPromises.get(client) === initPromise) {
+          this.clientInitPromises.delete(client);
+        }
+      });
+
+    this.clientInitPromises.set(client, initPromise);
+    this.initializedClients.add(client);
+
+    if (foreground) {
+      try {
+        await initPromise;
+        this.initializedClients.add(client);
+      } catch (error) {
+        this.initializedClients.delete(client);
+        throw error;
+      }
+    } else {
+      initPromise.catch(() => {});
+    }
   }
 
   async init() {
@@ -79,7 +132,11 @@ export class GrokAccountPool {
     let primaryAccount = this.getPrimaryAccount(accounts);
     if (primaryAccount) {
       try {
-        await this.runAccountOperation(primaryAccount, (client) => client.init?.());
+        await this.runAccountOperation(primaryAccount, () =>
+          this.ensureClientInitialized(primaryAccount, { foreground: true }));
+        // Keep one backup account warm in the background so the first request
+        // after a primary failure never pays a cold browser start.
+        void this.syncBackupWarm(accounts);
         return;
       } catch (error) {
         console.warn(`Primary Grok account failed to initialize on boot: ${error.message}`);
@@ -90,14 +147,19 @@ export class GrokAccountPool {
     const fallbackAccounts = this.getFallbackAccounts(accounts);
     for (const fallbackAccount of fallbackAccounts) {
       try {
-        await this.runAccountOperation(fallbackAccount, (client) => client.init?.());
+        await this.runAccountOperation(fallbackAccount, () =>
+          this.ensureClientInitialized(fallbackAccount, { foreground: true }));
         await this.activateFallbackAccount(fallbackAccount, accounts);
-        return;
+        break;
       } catch (error) {
         console.warn(`Fallback Grok account ${fallbackAccount.index} failed to initialize on boot: ${error.message}`);
         await this.handleFailure(fallbackAccount, accounts, error);
       }
     }
+
+    // Keep one backup account warm in the background so the first request
+    // after a primary failure never pays a cold browser start.
+    void this.syncBackupWarm(accounts);
   }
 
   async getAccounts() {
@@ -187,6 +249,7 @@ export class GrokAccountPool {
     this.activeFallbackAccountIndex = null;
     this.unavailableAccountIndexes.clear();
     this.unavailableAccountTimestamps.clear();
+    this.unavailableAccountCooldowns.clear();
     this.trackAccounts(nextAccounts);
 
     if (previousAccounts) {
@@ -384,7 +447,17 @@ export class GrokAccountPool {
 
   async withFallback(operation, options = {}) {
     const accounts = await this.getAccounts();
-    this.checkPoolExhaustion(accounts);
+    if (this.checkPoolExhaustion(accounts)) {
+      // Every account is quarantined. Fail fast with 503 instead of walking
+      // the whole pool again: cooldowns expire by themselves, so the next
+      // request naturally recovers. (Without this, each request re-tried all
+      // accounts for minutes whenever they were all rate-limited.)
+      throw new HttpError(
+        503,
+        "All Grok accounts are temporarily unavailable",
+        { code: "pool_exhausted" }
+      );
+    }
 
     let primaryAccount = this.getPrimaryAccount(accounts);
 
@@ -394,7 +467,7 @@ export class GrokAccountPool {
 
     let fallbackAccounts = this.getFallbackAccounts(accounts);
     const deadlineMs = Number(this.config.fallbackMaxTotalMs) || 0;
-    const sweepStartedAt = Date.now();
+    let sweepStartedAt = Date.now();
     const throwIfSweepDeadlinePassed = (error) => {
       // A failing sweep should not stall the client for minutes while it walks
       // every account. Once the total fallback deadline has elapsed on a
@@ -435,19 +508,32 @@ export class GrokAccountPool {
 
     let lastError = null;
     let exhaustedPasses = 0;
+    let consecutiveRateLimitFailures = 0;
 
     while (exhaustedPasses < 2) {
       primaryAccount = this.getPrimaryAccount(accounts);
       if (primaryAccount) {
+        const attemptStartedAt = Date.now();
         try {
+          await this.runAccountOperation(primaryAccount, () =>
+            this.ensureClientInitialized(primaryAccount, { foreground: true }));
           return {
             accountIndex: primaryAccount.index,
             value: await this.runAccountOperation(primaryAccount, operation)
           };
         } catch (error) {
           lastError = error;
+          console.warn(
+            `[fallback] account ${primaryAccount.index} failed after ${Date.now() - attemptStartedAt} ms: ${error.message}`
+          );
           await this.handleFailure(primaryAccount, accounts, error);
-          throwIfSweepDeadlinePassed(error);
+          consecutiveRateLimitFailures = this.isRateLimitError(error)
+            ? consecutiveRateLimitFailures + 1
+            : 0;
+          // The fallback walk gets its own deadline: the primary attempt may
+          // have consumed the whole sweep budget (e.g. a long page hang),
+          // which would otherwise starve every fallback of a chance.
+          sweepStartedAt = Date.now();
         }
       }
 
@@ -457,15 +543,30 @@ export class GrokAccountPool {
       }
 
       const fallbackAccount = this.getActiveFallbackAccount(fallbackAccounts);
+      const attemptStartedAt = Date.now();
 
       try {
+        await this.runAccountOperation(fallbackAccount, () =>
+          this.ensureClientInitialized(fallbackAccount, { foreground: true }));
         return {
           accountIndex: fallbackAccount.index,
           value: await this.runAccountOperation(fallbackAccount, operation)
         };
       } catch (error) {
         lastError = error;
+        console.warn(
+          `[fallback] account ${fallbackAccount.index} failed after ${Date.now() - attemptStartedAt} ms: ${error.message}`
+        );
         const failure = await this.handleFailure(fallbackAccount, accounts, error);
+        consecutiveRateLimitFailures = this.isRateLimitError(error)
+          ? consecutiveRateLimitFailures + 1
+          : 0;
+        // If three different accounts in a row were all rate-limited, the
+        // whole pool is throttled right now; walking the rest just burns
+        // time and trips our own request deadline. Surface the error now.
+        if (consecutiveRateLimitFailures >= 3) {
+          throw error;
+        }
         throwIfSweepDeadlinePassed(error);
         if (failure.wrapped) {
           exhaustedPasses += 1;
@@ -547,6 +648,51 @@ export class GrokAccountPool {
     return fallbackAccounts[0];
   }
 
+  async syncBackupWarm(accounts) {
+    if (this.closed) {
+      return;
+    }
+
+    // Warming a backup requires a second account; with a single account this
+    // would also trip checkPoolExhaustion's all-unavailable reset and clear
+    // a fresh quarantine, so bail before touching the pool status.
+    if (!accounts || accounts.length < 2) {
+      this.warmBackupIndex = null;
+      return;
+    }
+
+    const fallbackAccounts = this.getFallbackAccounts(accounts);
+    if (!fallbackAccounts.length) {
+      this.warmBackupIndex = null;
+      return;
+    }
+
+    const target = this.getActiveFallbackAccount(fallbackAccounts);
+
+    // A cold backup costs ~20-30 s (browser launch + page mount + statsig
+    // discovery) on first use. Keep exactly one backup account warm in the
+    // background so fallback requests stay fast without holding one Chrome
+    // per account (memory bound). The previously warmed backup is already
+    // closed by handleFailure/activateFallbackAccount when the active
+    // fallback changes, so we only update the target here.
+    if (this.warmBackupIndex === target.index) {
+      return;
+    }
+
+    this.warmBackupIndex = target.index;
+    void this.runAccountOperation(target, () =>
+      this.ensureClientInitialized(target, { foreground: true }))
+      .catch((error) => {
+        if (this.warmBackupIndex === target.index) {
+          this.warmBackupIndex = null;
+        }
+        console.warn(
+          `[warm] backup account ${target.index} failed to initialize: ${error.message}`
+        );
+        return this.handleFailure(target, accounts, error);
+      });
+  }
+
   async activateFallbackAccount(account, accounts) {
     const primaryAccount = accounts[0];
     if (!primaryAccount || account.index === primaryAccount.index) {
@@ -572,6 +718,15 @@ export class GrokAccountPool {
     if (this.isSessionUnavailableError(error)) {
       this.unavailableAccountIndexes.add(account.index);
       this.unavailableAccountTimestamps.set(account.index, Date.now());
+      // Grok rate limits reset much faster than auth/session failures; use a
+      // short cooldown for 429s so the pool self-heals instead of taking a
+      // full 15-minute outage whenever every account is throttled.
+      this.unavailableAccountCooldowns.set(
+        account.index,
+        this.isRateLimitError(error)
+          ? this.config.rateLimitCooldownMs ?? 2 * 60 * 1000
+          : 15 * 60 * 1000
+      );
       await this.closeClientWhenIdle(account.client);
 
       if (account.index === this.activeFallbackAccountIndex) {
@@ -616,7 +771,18 @@ export class GrokAccountPool {
 
     const nextPosition = (currentPosition + 1) % fallbackAccounts.length;
     this.activeFallbackAccountIndex = fallbackAccounts[nextPosition].index;
+    void this.syncBackupWarm(accounts);
     return { wrapped: nextPosition === 0 };
+  }
+
+  isRateLimitError(error) {
+    return (
+      error?.status === 429 ||
+      error?.statusCode === 429 ||
+      /\btoo many requests\b|\brate limit\b|\brate_limit\b|\bexceeded limit\b/i.test(
+        String(error?.message ?? "")
+      )
+    );
   }
 
   isSessionUnavailableError(error) {

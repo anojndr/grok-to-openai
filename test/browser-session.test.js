@@ -105,6 +105,52 @@ test("request caps buffered error bodies for streamed responses", async () => {
   assert.equal(response.text, "x".repeat(ERROR_RESPONSE_TEXT_LIMIT));
 });
 
+test("request fails fast when headers never arrive, recreates the page, and retries once", async () => {
+  let dispatchCount = 0;
+  let metaCount = 0;
+
+  const session = createSession(async (instance, payload) => {
+    const pending = instance.pending.get(payload.requestId);
+    if (dispatchCount === 0) {
+      // First attempt: the fetch is dispatched but response headers never
+      // arrive, so the TTFB deadline fires and the page is recreated.
+      dispatchCount += 1;
+      pending.onDispatched?.();
+      return;
+    }
+    if (dispatchCount === 1) {
+      // Retry on the recreated page: headers arrive promptly.
+      dispatchCount += 1;
+      pending.onMeta({ requestId: payload.requestId, status: 200, headers: {} });
+      pending.onChunk("retry-ok");
+      pending.resolve();
+      return;
+    }
+    metaCount += 1;
+    pending.onMeta({ requestId: payload.requestId, status: 200, headers: {} });
+    pending.resolve();
+  });
+
+  let recreateCalls = 0;
+  session.recreatePage = async () => {
+    recreateCalls += 1;
+    return {};
+  };
+
+  const config = { browserTtfbTimeoutMs: 5 };
+  Object.assign(session.config, config);
+
+  const response = await session.request({
+    requestId: "req-ttfb",
+    url: "https://grok.com/rest/test"
+  });
+
+  assert.equal(recreateCalls, 1);
+  assert.equal(dispatchCount, 2);
+  assert.equal(response.meta?.status, 200);
+  assert.equal(response.text, "retry-ok");
+});
+
 test("request aborts page fetches that exceed the configured timeout", async () => {
   const session = createSession(() => new Promise(() => {}));
   session.config.browserRequestTimeoutMs = 10;
@@ -536,6 +582,8 @@ test("installBindings exposes both canonical and legacy Grok bridge names", asyn
   await session.installBindings();
 
   assert.deepEqual(exposed, [
+    "__grokBridgeDispatched",
+    "grokBridgeDispatched",
     "__grokBridgeMeta",
     "grokBridgeMeta",
     "__grokBridgeChunk",
@@ -1374,8 +1422,9 @@ test("init coalesces concurrent persistent launches for the same profile", async
   assert.equal(launchCount, 1);
   assert.equal(contexts.length, 1);
   assert.equal(contexts[0].newPageCalls, 1);
-  assert.equal(contexts[0].bindings.length, 8);
+  assert.equal(contexts[0].bindings.length, 10);
   assert.equal(contexts[0].addInitScriptCalls, 1);
+
 });
 
 test("close resets binding state so a later init reinstalls page bindings", async () => {
@@ -1408,8 +1457,8 @@ test("close resets binding state so a later init reinstalls page bindings", asyn
   }
 
   assert.equal(launchCount, 2);
-  assert.equal(contexts[0].bindings.length, 8);
-  assert.equal(contexts[1].bindings.length, 8);
+  assert.equal(contexts[0].bindings.length, 10);
+  assert.equal(contexts[1].bindings.length, 10);
   assert.equal(contexts[0].closeCalls, 1);
 });
 
