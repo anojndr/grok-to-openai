@@ -749,6 +749,46 @@ test("rate-limited accounts get a short cooldown while hard failures keep the lo
   assert.equal(pool.isAccountUnavailable(1), true);
 });
 
+test("recurring rate limits escalate the cooldown so a saturated pool backs off", async () => {
+  const rateLimitError = new HttpError(429, "Too Many Requests");
+  const pool = new GrokAccountPool(
+    { rateLimitCooldownMs: 2000 },
+    { accounts: [createMockAccount("primary", [])] }
+  );
+  const account = { index: 0, client: { close: async () => {} } };
+
+  // First 429 on a healthy account -> base cooldown (2000ms).
+  await pool.handleFailure(account, pool.loadedAccounts, rateLimitError);
+  assert.equal(pool.unavailableAccountCooldowns.get(0), 2000);
+
+  // Cooldown expires (observed by the pool), the account is retried, and it
+  // trips the limiter again: the cooldown must escalate instead of looping.
+  pool.unavailableAccountTimestamps.set(0, Date.now() - 3000);
+  assert.equal(pool.isAccountUnavailable(0), false);
+  await pool.handleFailure(account, pool.loadedAccounts, rateLimitError);
+  assert.equal(pool.unavailableAccountCooldowns.get(0), 5 * 60 * 1000);
+
+  // A third recurrence escalates further.
+  pool.unavailableAccountTimestamps.set(0, Date.now() - 6 * 60 * 1000);
+  assert.equal(pool.isAccountUnavailable(0), false);
+  await pool.handleFailure(account, pool.loadedAccounts, rateLimitError);
+  assert.equal(pool.unavailableAccountCooldowns.get(0), 15 * 60 * 1000);
+
+  // Cooldown expiry makes the account retryable again, but the throttle
+  // history (the cooldown record itself) survives until a successful
+  // operation resets it.
+  pool.unavailableAccountTimestamps.set(0, Date.now() - 16 * 60 * 1000);
+  assert.equal(pool.isAccountUnavailable(0), false);
+  assert.equal(pool.unavailableAccountCooldowns.get(0), 15 * 60 * 1000);
+
+  // A successful operation resets the history; a fresh 429 after that starts
+  // again at the base cooldown.
+  await pool.runAccountOperation(account, async () => "ok");
+  assert.equal(pool.unavailableAccountCooldowns.has(0), false);
+  await pool.handleFailure(account, pool.loadedAccounts, rateLimitError);
+  assert.equal(pool.unavailableAccountCooldowns.get(0), 2000);
+});
+
 test("withFallback aborts after three consecutive 429s instead of walking the whole pool", async () => {
   const rateLimitError = new HttpError(429, "Too Many Requests");
   const accounts = [

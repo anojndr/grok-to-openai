@@ -58,11 +58,50 @@ export class GrokAccountPool {
       15 * 60 * 1000;
     if (timestamp && Date.now() - timestamp > effectiveCooldownMs) {
       this.unavailableAccountIndexes.delete(index);
-      this.unavailableAccountTimestamps.delete(index);
-      this.unavailableAccountCooldowns.delete(index);
+      // unavailableAccountTimestamps and unavailableAccountCooldowns survive
+      // the purge as throttle history: a post-expiry retry that trips the
+      // limiter again escalates via handleFailure; only a successful
+      // operation resets the history.
       return false;
     }
     return true;
+  }
+
+  // Cooldown ladder for recurring rate limits: each time an account is
+  // retried after its cooldown expired and trips the limiter again, wait
+  // longer. Starts at the configured base and caps at 60 minutes so a
+  // saturated pool never loops on short cooldowns, while a single 429 still
+  // recovers quickly.
+  rateLimitCooldownForRetries(retries = 0) {
+    const baseCooldownMs = this.config.rateLimitCooldownMs ?? 2 * 60 * 1000;
+    if (retries <= 0) {
+      return baseCooldownMs;
+    }
+
+    const ladder = [
+      5 * 60 * 1000,
+      15 * 60 * 1000,
+      30 * 60 * 1000,
+      60 * 60 * 1000
+    ];
+    const escalated = ladder[Math.min(retries - 1, ladder.length - 1)];
+
+    return Math.max(baseCooldownMs, escalated);
+  }
+
+  // Number of rate-limit recurrences encoded by a surviving cooldown record:
+  // base (no history) -> 1 recurrence, 5min -> 2, 15min -> 3, 30min+ -> cap.
+  rateLimitRecurrenceCount(previousCooldownMs) {
+    const baseCooldownMs = this.config.rateLimitCooldownMs ?? 2 * 60 * 1000;
+    const ladder = [
+      baseCooldownMs,
+      5 * 60 * 1000,
+      15 * 60 * 1000,
+      30 * 60 * 1000,
+      60 * 60 * 1000
+    ];
+    const position = ladder.indexOf(previousCooldownMs);
+    return position >= 0 ? position + 1 : 1;
   }
 
   checkPoolExhaustion(accounts) {
@@ -359,7 +398,12 @@ export class GrokAccountPool {
     );
 
     try {
-      return await operation(client, account.index);
+      const value = await operation(client, account.index);
+      // A successful operation proves the upstream limiter window has passed;
+      // reset the rate-limit escalation history for this account.
+      this.unavailableAccountTimestamps.delete(account.index);
+      this.unavailableAccountCooldowns.delete(account.index);
+      return value;
     } finally {
       const remaining = (this.activeClientOperations.get(client) ?? 1) - 1;
       if (remaining > 0) {
@@ -716,17 +760,44 @@ export class GrokAccountPool {
 
   async handleFailure(account, accounts, error = null) {
     if (this.isSessionUnavailableError(error)) {
+      // Capture pre-mutation state: the expiry purge below (and the refresh
+      // after it) must not erase the history this function escalates on.
+      const previousCooldownMs = this.unavailableAccountCooldowns.get(
+        account.index
+      );
+      const previousTimestamp = this.unavailableAccountTimestamps.get(
+        account.index
+      );
+      const previousElapsed =
+        previousCooldownMs != null &&
+        previousTimestamp != null &&
+        Date.now() - previousTimestamp > previousCooldownMs;
+
+      // Purge a stale quarantine first so the cooldown history below reflects
+      // post-expiry state; the cooldown record deliberately survives the purge.
+      this.isAccountUnavailable(account.index);
       this.unavailableAccountIndexes.add(account.index);
       this.unavailableAccountTimestamps.set(account.index, Date.now());
-      // Grok rate limits reset much faster than auth/session failures; use a
-      // short cooldown for 429s so the pool self-heals instead of taking a
-      // full 15-minute outage whenever every account is throttled.
-      this.unavailableAccountCooldowns.set(
-        account.index,
-        this.isRateLimitError(error)
-          ? this.config.rateLimitCooldownMs ?? 2 * 60 * 1000
-          : 15 * 60 * 1000
-      );
+      if (this.isRateLimitError(error)) {
+        // Grok rate limits reset much faster than auth/session failures; use a
+        // short cooldown for 429s so the pool self-heals instead of taking a
+        // full 15-minute outage whenever every account is throttled.
+        // unavailableAccountCooldowns survives the expiry purge (see
+        // isAccountUnavailable). If a previous cooldown has already elapsed
+        // and the limiter trips again, the upstream window outlasted it:
+        // escalate instead of looping at the base.
+        const retries = previousElapsed
+          ? this.rateLimitRecurrenceCount(previousCooldownMs)
+          : 0;
+        this.unavailableAccountCooldowns.set(
+          account.index,
+          this.rateLimitCooldownForRetries(retries)
+        );
+      } else {
+        // Hard failures (session blocks, auth expiry) always get the full
+        // 15-minute cooldown regardless of any rate-limit history.
+        this.unavailableAccountCooldowns.set(account.index, 15 * 60 * 1000);
+      }
       await this.closeClientWhenIdle(account.client);
 
       if (account.index === this.activeFallbackAccountIndex) {
