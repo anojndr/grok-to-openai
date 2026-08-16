@@ -163,6 +163,13 @@ Configuration notes:
   (45 s). A wedged page (stale SPA, dead network path) that would otherwise
   hang until the full request timeout now fails fast, recreates the page,
   and retries once before falling back to other accounts.
+- Browser memory tuning: each account's Chromium runs with a
+  `--max-old-space-size=512` renderer heap cap (a guard against slow
+  page-heap growth on multi-day uptimes — the Grok SPA stays far below it,
+  so requests never hit GC pressure), and the in-page DOM-clone cache is
+  bounded (1024 clones) instead of growing forever. Per-account browser
+  footprint is otherwise kept low by the pool warming exactly one primary
+  plus one backup browser; the bridge never holds one Chrome per account.
 - `RATE_LIMIT_COOLDOWN_MS`: quarantine length for rate-limited (`429`)
   accounts; defaults to `120000` (2 min). Auth/session failures keep the
   full 15-minute cooldown. Keeps a pool of throttled accounts self-healing

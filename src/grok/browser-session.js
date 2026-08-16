@@ -85,13 +85,21 @@ export function installGrokBridgePageHelpers() {
 
   // Element caching to survive anti-bot DOM removal
   const savedElements = [];
-  const cachedElements = new WeakSet();
+  const cachedElementClones = new WeakMap();
   const oversizedElements = new WeakSet();
   const savedElementBuckets = new Map();
   const selectorMatchCache = new Map();
   const classMatchCache = new Map();
   const maxCachedElementDescendants = 128;
   const maxCachedPathAncestorDepth = 12;
+  // The clone cache exists to survive anti-bot DOM teardown, but every
+  // unique SVG/meta node the observer sees used to be cloned and retained
+  // forever: on a long-lived page the detached clones and their buckets
+  // grew without bound. Keep a bounded FIFO window of recent clones — the
+  // botox stand-ins are re-created and re-cached on demand, so eviction
+  // never breaks statsig id generation.
+  const maxSavedElements = 1024;
+  const maxSavedElementBuckets = 512;
   let savedElementsVersion = 0;
 
   // The statsig middleware queries the "loading X" logo by its obfuscated
@@ -131,6 +139,34 @@ export function installGrokBridgePageHelpers() {
       element.childElementCount ?? ""
     ].join("\u0000");
 
+  const pruneSavedElementsCache = () => {
+    // FIFO window: drop the oldest clones, then rebuild the dedupe buckets
+    // from what remains so bucket keys never reference evicted clones.
+    if (
+      savedElements.length <= maxSavedElements &&
+      savedElementBuckets.size <= maxSavedElementBuckets
+    ) {
+      return;
+    }
+
+    const excessClones = savedElements.length - maxSavedElements;
+    if (excessClones > 0) {
+      savedElements.splice(0, excessClones);
+    }
+
+    savedElementBuckets.clear();
+    for (const savedElement of savedElements) {
+      const bucketKey = getElementBucketKey(savedElement);
+      const bucket = savedElementBuckets.get(bucketKey);
+      if (bucket) {
+        bucket.push(savedElement);
+      } else if (savedElementBuckets.size < maxSavedElementBuckets) {
+        savedElementBuckets.set(bucketKey, [savedElement]);
+      }
+    }
+    savedElementsVersion += 1;
+  };
+
   const cacheElement = (element) => {
     if (!element || element.nodeType !== 1) {
       return false;
@@ -138,7 +174,20 @@ export function installGrokBridgePageHelpers() {
     if (oversizedElements.has(element)) {
       return false;
     }
-    if (cachedElements.has(element)) {
+
+    const mappedClone = cachedElementClones.get(element);
+    if (mappedClone) {
+      if (savedElements.includes(mappedClone)) {
+        return true;
+      }
+      // The clone was evicted by the FIFO window; re-admit it.
+      const bucketKey = getElementBucketKey(element);
+      const bucket = savedElementBuckets.get(bucketKey) ?? [];
+      bucket.push(mappedClone);
+      savedElementBuckets.set(bucketKey, bucket);
+      savedElements.push(mappedClone);
+      savedElementsVersion += 1;
+      pruneSavedElementsCache();
       return true;
     }
 
@@ -149,11 +198,16 @@ export function installGrokBridgePageHelpers() {
         oversizedElements.add(element);
         return false;
       }
-      cachedElements.add(element);
 
       const bucketKey = getElementBucketKey(element);
       const bucket = savedElementBuckets.get(bucketKey) ?? [];
-      if (bucket.some((savedElement) => savedElement.isEqualNode(element))) {
+      const existingClone = bucket.find((savedElement) =>
+        savedElement.isEqualNode(element)
+      );
+      if (existingClone) {
+        // A structurally identical clone is already retained; remember the
+        // mapping so repeated observations of this element stay cheap.
+        cachedElementClones.set(element, existingClone);
         return true;
       }
 
@@ -162,6 +216,8 @@ export function installGrokBridgePageHelpers() {
       savedElementBuckets.set(bucketKey, bucket);
       savedElements.push(clone);
       savedElementsVersion += 1;
+      cachedElementClones.set(element, clone);
+      pruneSavedElementsCache();
       return true;
     } catch {
       return false;
@@ -1211,7 +1267,15 @@ export class BrowserSession {
         this.config.browserProfileDir,
         {
           headless: this.config.headless,
-          executablePath: this.config.chromeExecutablePath || undefined
+          executablePath: this.config.chromeExecutablePath || undefined,
+          // Memory guardrail: cap each renderer's V8 old space so a
+          // long-lived page cannot balloon its heap over days of uptime.
+          // The Grok SPA and the streaming bridge work far below 512 MB, so
+          // this never causes GC pressure on normal traffic. (Chromium flags
+          // like --process-per-site / --disable-gpu were measured inert
+          // here: site isolation keeps cross-origin renderers, and headless
+          // always spawns its GPU process for SwiftShader compositing.)
+          args: ["--js-flags=--max-old-space-size=512"]
         }
       );
       this.context = context;

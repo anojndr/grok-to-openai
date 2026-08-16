@@ -779,6 +779,7 @@ function installBridgeTestGlobals({ statsigGen, fetchImpl }) {
 
   const errorPayloads = [];
   const fetched = [];
+  const observers = [];
   function createMockElement(tag = "div") {
     const children = [];
     const attributes = new Map();
@@ -807,10 +808,14 @@ function installBridgeTestGlobals({ statsigGen, fetchImpl }) {
       },
       matches(selector) {
         if (!selector) return false;
-        if (selector.startsWith("#") && element.id === selector.slice(1)) return true;
-        if (selector.startsWith(".") && element.className.includes(selector.slice(1))) return true;
-        if (selector.startsWith('[id="') && element.id === selector.slice(5, -2)) return true;
-        if (selector.toLowerCase() === tag.toLowerCase()) return true;
+        for (const part of selector.split(",")) {
+          const sel = part.trim();
+          if (!sel) continue;
+          if (sel.startsWith("#") && element.id === sel.slice(1)) return true;
+          if (sel.startsWith(".") && element.className.includes(sel.slice(1))) return true;
+          if (sel.startsWith('[id="') && element.id === sel.slice(5, -2)) return true;
+          if (sel.toLowerCase() === tag.toLowerCase()) return true;
+        }
         return false;
       },
       querySelectorAll(selector) {
@@ -898,6 +903,10 @@ function installBridgeTestGlobals({ statsigGen, fetchImpl }) {
       configurable: true,
       writable: true,
       value: class {
+        constructor(callback) {
+          this.callback = callback;
+          observers.push(this);
+        }
         observe() {}
       }
     },
@@ -931,6 +940,7 @@ function installBridgeTestGlobals({ statsigGen, fetchImpl }) {
     window,
     errorPayloads,
     fetched,
+    observers,
     restore() {
       for (const [name, descriptor] of originalGlobals) {
         if (descriptor) {
@@ -1121,6 +1131,65 @@ test("page bridge self-heals botox elements from window.__next_f when DOM is emp
   assert.equal(env.fetched.length, 1);
   assert.equal(env.fetched[0].statsigId, "botox-healed-statsig-id");
   assert.equal(env.errorPayloads.length, 0);
+});
+
+test("page bridge bounds the saved-element clone cache instead of growing forever", async () => {
+  const env = installBridgeTestGlobals({
+    statsigGen: async () => "bounded-statsig-id"
+  });
+  const consoleLogs = [];
+  const originalConsoleLog = console.log;
+  const originalConsoleError = console.error;
+  console.log = (...args) => {
+    consoleLogs.push(args.map(String).join(" "));
+  };
+  console.error = () => {};
+
+  try {
+    installGrokBridgePageHelpers();
+    env.window.__grokVerbose = true;
+
+    assert.equal(env.observers.length, 1);
+    const observer = env.observers[0];
+
+    // Flood the observer with far more unique statsig-candidate nodes than
+    // the clone-cache bound: each one clones because its class/id differs.
+    const addedNodes = [];
+    for (let i = 0; i < 1100; i += 1) {
+      const el = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      el.setAttribute("class", `r-bounds-${i}`);
+      el.setAttribute("d", `M${i},0 L${i},10`);
+      addedNodes.push(el);
+    }
+    observer.callback([{ addedNodes, type: "childList" }]);
+
+    await env.window.__grokBridgeFetch(STATSIG_FETCH_PAYLOAD);
+
+    const sizeLine = consoleLogs.find((line) =>
+      line.includes("statsig generator cache size")
+    );
+    assert.ok(
+      sizeLine,
+      `expected a cache-size log line, got: ${consoleLogs.join("\n") || "(none)"}`
+    );
+    const size = Number(/cache size: (\d+)/.exec(sizeLine)?.[1]);
+    assert.ok(Number.isInteger(size), `unparseable cache size line: ${sizeLine}`);
+    assert.ok(size <= 1024, `saved-element cache exceeded its bound: ${size}`);
+
+    // The recent clones must still be reachable through the selector
+    // fallback after the FIFO window pruned the oldest entries.
+    assert.ok(
+      document.querySelector(".r-bounds-1099"),
+      "recently cached elements must stay queryable after pruning"
+    );
+    assert.equal(env.fetched.length, 1);
+    assert.equal(env.fetched[0].statsigId, "bounded-statsig-id");
+    assert.equal(env.errorPayloads.length, 0);
+  } finally {
+    console.log = originalConsoleLog;
+    console.error = originalConsoleError;
+    env.restore();
+  }
 });
 
 function createMockResponse({
