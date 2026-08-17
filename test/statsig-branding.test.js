@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { extractStatsigBrandingFromHtml } from "../src/grok/browser-session.js";
+import {
+  extractStatsigBrandingFromHtml,
+  fetchStatsigBranding
+} from "../src/grok/browser-session.js";
 
 // The statsig middleware fingerprints the "loading X" logo and folds the
 // curve path values into the id. The curves + css_class live in the
@@ -73,4 +76,63 @@ test("the extracted curves must carry enough segments for the middleware's R[O] 
   const html = buildLoginHtml(realLengthCurves, "r-gtuf8w");
   const branding = extractStatsigBrandingFromHtml(html);
   assert.ok(branding.curves.every((curve) => curve.length >= 16));
+});
+
+test("fetchStatsigBranding accepts /login 404 responses that still carry the app HTML", async () => {
+  // grok.com serves /login as HTTP 404 with the full app HTML (anti-bot
+  // routing). Treating non-ok as failure drops the only per-deploy source of
+  // real logo curves, so the stand-ins fall back to synthetic values and xAI
+  // rejects every generated id with "Request rejected by anti-bot rules.".
+  const html = buildLoginHtml(realLengthCurves, "r-gtuf8w");
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: false,
+    status: 404,
+    headers: { get: () => "text/html; charset=utf-8" },
+    text: async () => html
+  });
+
+  try {
+    const branding = await fetchStatsigBranding("https://grok.com");
+    assert.ok(branding, "branding must be extracted from the 404 body");
+    assert.equal(branding.cssClass, "r-gtuf8w");
+    assert.ok(branding.curves.every((curve) => curve.length >= 16));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("fetchStatsigBranding stays null for non-HTML failure bodies", async () => {
+  // A challenge page or API error must not be parsed as branding.
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: false,
+    status: 403,
+    headers: { get: () => "application/json" },
+    text: async () => "{\"error\":\"blocked\"}"
+  });
+
+  try {
+    const branding = await fetchStatsigBranding("https://grok.com");
+    assert.equal(branding, null);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("fetchStatsigBranding returns null when the body has no branding payload", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    headers: { get: () => "text/html; charset=utf-8" },
+    text: async () => "<html><body>challenge</body></html>"
+  });
+
+  try {
+    const branding = await fetchStatsigBranding("https://grok.com");
+    assert.equal(branding, null);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

@@ -1069,6 +1069,221 @@ test("page bridge bails out quickly when the page redirected to login", async ()
   );
 });
 
+test("page bridge bails out quickly when generation fails identically", async () => {
+  // A deterministic failure (e.g. a stale middleware build querying a DOM
+  // node the new build no longer provides) repeats the exact same error on
+  // every attempt. Retrying it burns the whole multi-minute budget; the
+  // bridge must surface it fast so the server-side rediscovery can take
+  // over.
+  let statsigCalls = 0;
+  const env = installBridgeTestGlobals({
+    statsigGen: async () => {
+      statsigCalls += 1;
+      throw new TypeError(
+        "Cannot read properties of undefined (reading 'childNodes')"
+      );
+    }
+  });
+
+  try {
+    installGrokBridgePageHelpers();
+    await env.window.__grokBridgeFetch({
+      ...STATSIG_FETCH_PAYLOAD,
+      statsigMaxAttempts: 600,
+      statsigRetryDelayMs: 1,
+      statsigIdenticalBailMs: 30
+    });
+  } finally {
+    env.restore();
+  }
+
+  assert.ok(
+    statsigCalls < 100,
+    `expected early bail, generator was called ${statsigCalls} times`
+  );
+  assert.equal(env.fetched.length, 0);
+  assert.equal(env.errorPayloads.length, 1);
+  assert.match(env.errorPayloads[0].message, new RegExp(STATSIG_GENERATION_FAILED_MARKER));
+});
+
+test("page bridge still waits out transient identical failures below the bail window", async () => {
+  // Retrying a few identical failures is the point of the retry loop (the
+  // app is still mounting); the bail must only fire after the streak has
+  // run for the configured window.
+  let statsigCalls = 0;
+  const env = installBridgeTestGlobals({
+    statsigGen: async () => {
+      statsigCalls += 1;
+      if (statsigCalls < 4) {
+        throw new TypeError(
+          "Cannot read properties of undefined (reading 'childNodes')"
+        );
+      }
+      return "waited-out-statsig-id";
+    }
+  });
+
+  try {
+    installGrokBridgePageHelpers();
+    await env.window.__grokBridgeFetch({
+      ...STATSIG_FETCH_PAYLOAD,
+      statsigMaxAttempts: 10,
+      statsigRetryDelayMs: 1,
+      statsigIdenticalBailMs: 5000
+    });
+  } finally {
+    env.restore();
+  }
+
+  assert.equal(statsigCalls, 4);
+  assert.equal(env.fetched.length, 1);
+  assert.equal(env.fetched[0].statsigId, "waited-out-statsig-id");
+  assert.equal(env.errorPayloads.length, 0);
+});
+
+test("page bridge does not bail across a mixed error streak", async () => {
+  let statsigCalls = 0;
+  const env = installBridgeTestGlobals({
+    statsigGen: async () => {
+      statsigCalls += 1;
+      if (statsigCalls % 2 === 1) {
+        throw new Error("first kind of failure");
+      }
+      throw new Error("second kind of failure");
+    }
+  });
+
+  try {
+    installGrokBridgePageHelpers();
+    await env.window.__grokBridgeFetch({
+      ...STATSIG_FETCH_PAYLOAD,
+      statsigMaxAttempts: 600,
+      statsigRetryDelayMs: 1,
+      statsigIdenticalBailMs: 20
+    });
+  } finally {
+    env.restore();
+  }
+
+  // Alternating messages never form an identical streak, so the budget is
+  // exhausted instead of bailing early.
+  assert.ok(statsigCalls >= 500, `expected full budget, got ${statsigCalls}`);
+  assert.equal(env.fetched.length, 0);
+  assert.equal(env.errorPayloads.length, 1);
+  assert.match(env.errorPayloads[0].message, new RegExp(STATSIG_GENERATION_FAILED_MARKER));
+});
+
+test("request rediscovers the statsig chunk source when generation fails", async () => {
+  // A Grok deploy makes the cached middleware chunk stale while it still
+  // loads fine, so the chunk-stale branch never fires: generation crashes
+  // instead. The retry must drop the cached source, rediscover from the
+  // live page, and retry with the fresh middleware rather than recreating
+  // the page with the same stale chunk.
+  const attemptedPayloads = [];
+  const session = createSession((instance, payload) => {
+    attemptedPayloads.push({
+      url: payload.statsigChunkUrl,
+      moduleId: payload.statsigModuleId
+    });
+    instance.attempts = (instance.attempts || 0) + 1;
+
+    if (instance.attempts === 1) {
+      throw new Error(
+        `page.evaluate: Error: ${STATSIG_GENERATION_FAILED_MARKER}: Grok statsig id generation failed: Cannot read properties of undefined (reading 'childNodes')`
+      );
+    }
+
+    const pending = instance.pending.get(payload.requestId);
+    pending.onMeta({
+      requestId: payload.requestId,
+      status: 200,
+      headers: {}
+    });
+    pending.onChunk("recovered-after-rediscovery");
+    pending.resolve();
+  });
+
+  let rediscoverCalls = 0;
+  let recreateCount = 0;
+  session.statsigChunkUrl = "https://grok.com/old-chunk.js";
+  session.statsigModuleId = 111;
+  session.loadStatsigChunkSource = async () => {
+    rediscoverCalls += 1;
+    if (!session.statsigChunkUrl) {
+      session.statsigChunkUrl = "https://grok.com/new-chunk.js";
+      session.statsigModuleId = 222;
+    }
+    return { url: session.statsigChunkUrl, moduleId: session.statsigModuleId };
+  };
+  session.recreatePage = async () => {
+    recreateCount += 1;
+    return {};
+  };
+
+  const response = await session.request({
+    requestId: "req-statsig-rediscover",
+    url: "https://grok.com/rest/test"
+  });
+
+  assert.equal(rediscoverCalls, 2, "rediscovery runs at request start and again after the failure");
+  assert.equal(recreateCount, 1);
+  assert.equal(response.meta?.status, 200);
+  assert.equal(response.text, "recovered-after-rediscovery");
+  assert.equal(attemptedPayloads[0].url, "https://grok.com/old-chunk.js");
+  assert.equal(attemptedPayloads[1].url, "https://grok.com/new-chunk.js");
+  assert.equal(attemptedPayloads[1].moduleId, 222);
+});
+
+test("request retries with the previous chunk source when rediscovery fails", async () => {
+  const session = createSession((instance, payload) => {
+    instance.attempts = (instance.attempts || 0) + 1;
+
+    if (instance.attempts === 1) {
+      throw new Error(
+        `page.evaluate: Error: ${STATSIG_GENERATION_FAILED_MARKER}: Grok statsig id generation failed: Cannot read properties of undefined (reading 'childNodes')`
+      );
+    }
+
+    const pending = instance.pending.get(payload.requestId);
+    pending.onMeta({
+      requestId: payload.requestId,
+      status: 200,
+      headers: {}
+    });
+    pending.onChunk("recovered-with-previous-source");
+    pending.resolve();
+  });
+
+  session.statsigChunkUrl = "https://grok.com/previous-chunk.js";
+  session.statsigModuleId = 333;
+  let rediscoverCalls = 0;
+  session.loadStatsigChunkSource = async () => {
+    rediscoverCalls += 1;
+    // The first call (request start) succeeds; rediscovery after the
+    // failure is wedged and throws.
+    if (rediscoverCalls > 1) {
+      throw new Error("Could not find statsig module ID in chunks");
+    }
+    return { url: session.statsigChunkUrl, moduleId: session.statsigModuleId };
+  };
+  let recreateCount = 0;
+  session.recreatePage = async () => {
+    recreateCount += 1;
+    return {};
+  };
+
+  const response = await session.request({
+    requestId: "req-statsig-rediscover-fail",
+    url: "https://grok.com/rest/test"
+  });
+
+  assert.equal(rediscoverCalls, 2);
+  assert.equal(recreateCount, 1);
+  assert.equal(response.meta?.status, 200);
+  assert.equal(response.text, "recovered-with-previous-source");
+  assert.equal(session.statsigChunkUrl, "https://grok.com/previous-chunk.js");
+});
+
 test("request recreates the page when statsig generation fails on the first attempt", async () => {
   const session = createSession((instance, payload) => {
     instance.attempts = (instance.attempts || 0) + 1;

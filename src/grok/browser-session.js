@@ -719,7 +719,19 @@ export function installGrokBridgePageHelpers() {
 
   if (typeof window.__grokBridgeEnsureStatsigGenerator !== "function") {
     const ensureStatsigGenerator = async (scriptUrl, targetModuleId) => {
-      if (window.__grokStatsigGen) {
+      const sourceKey = `${scriptUrl}:${targetModuleId}`;
+      // A page created before a Grok deploy can hold a generator from the
+      // old build. The old chunk still loads fine, so nothing flags it
+      // stale, but its DOM queries can crash against the new build with
+      // TypeErrors ("childNodes" etc). Key the cache by the source that
+      // produced the generator: after the server rediscovers the chunk
+      // post-deploy, this page replaces its cached generator instead of
+      // returning it forever. Pages without a recorded source (seeded
+      // state) keep using their cached generator.
+      if (
+        window.__grokStatsigGen &&
+        (!window.__grokStatsigGenSrc || window.__grokStatsigGenSrc === sourceKey)
+      ) {
         return window.__grokStatsigGen;
       }
 
@@ -811,6 +823,7 @@ export function installGrokBridgePageHelpers() {
           }
         } catch (e) {}
       }
+      window.__grokStatsigGenSrc = sourceKey;
       window.__grokStatsigGen = gen;
       return window.__grokStatsigGen;
     };
@@ -865,7 +878,19 @@ export function installGrokBridgePageHelpers() {
         // placeholder ids with "Request rejected by anti-bot rules.".
         const maxStatsigAttempts = Number(request.statsigMaxAttempts) || 50;
         const statsigRetryDelayMs = Number(request.statsigRetryDelayMs) || 50;
+        // Deterministic failures (a stale middleware build querying a DOM
+        // node the new build no longer provides) repeat the exact same error
+        // forever; retrying them burns the whole budget. Bail once the same
+        // error has repeated for this long and let the server-side
+        // rediscovery/recreate path take over. Genuinely transient failures
+        // (app still mounting) resolve far earlier on a healthy pipeline.
+        const identicalBailMs =
+          Number(request.statsigIdenticalBailMs) > 0
+            ? Number(request.statsigIdenticalBailMs)
+            : 5000;
         let lastError = null;
+        let lastErrorMessage = null;
+        let identicalErrorStreakStartedAt = null;
         // If the page redirected to a login/onboarding screen the Grok app
         // never mounts, so the statsig generator can never succeed. Bail out
         // after the first failed attempt instead of burning the whole budget.
@@ -888,6 +913,17 @@ export function installGrokBridgePageHelpers() {
             break;
           } catch (error) {
             lastError = error;
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            if (errorMessage === lastErrorMessage) {
+              if (identicalErrorStreakStartedAt == null) {
+                identicalErrorStreakStartedAt = Date.now();
+              } else if (Date.now() - identicalErrorStreakStartedAt >= identicalBailMs) {
+                throw new Error(`Grok statsig id generation failed: ${errorMessage}`);
+              }
+            } else {
+              lastErrorMessage = errorMessage;
+              identicalErrorStreakStartedAt = Date.now();
+            }
             if (window.__grokVerbose) {
               console.error(
                 `__grokBridgeFetch: statsig id attempt ${attempt + 1}/${maxStatsigAttempts} failed:`,
@@ -1275,7 +1311,7 @@ export function extractStatsigBrandingFromHtml(html) {
   return null;
 }
 
-async function fetchStatsigBranding(grokBaseUrl) {
+export async function fetchStatsigBranding(grokBaseUrl) {
   const loginUrl = `${grokBaseUrl}/login`;
   try {
     const res = await fetch(loginUrl, {
@@ -1286,7 +1322,12 @@ async function fetchStatsigBranding(grokBaseUrl) {
       },
       signal: AbortSignal.timeout(15000)
     });
-    if (!res.ok) {
+    const contentType = String(res.headers.get?.("content-type") ?? "");
+    if (!res.ok && !contentType.includes("text/html")) {
+      // grok.com currently serves /login as HTTP 404 while still returning
+      // the full app HTML (anti-bot routing); the branding payload is in
+      // the body either way. Only non-HTML failures (challenge pages,
+      // network errors) are fatal — the extractor returns null for those.
       return null;
     }
     const html = await res.text();
@@ -1296,10 +1337,12 @@ async function fetchStatsigBranding(grokBaseUrl) {
   }
 }
 
+const STATSIG_BRANDING_CACHE_TTL_MS = 15 * 60 * 1000;
+
 async function loadGlobalStatsigBranding(grokBaseUrl) {
   const cached = globalStatsigBranding.get(grokBaseUrl);
-  if (cached) {
-    return cached;
+  if (cached && Date.now() - cached.at < STATSIG_BRANDING_CACHE_TTL_MS) {
+    return cached.branding;
   }
   if (globalStatsigBrandingPromise) {
     return globalStatsigBrandingPromise;
@@ -1314,7 +1357,9 @@ async function loadGlobalStatsigBranding(grokBaseUrl) {
   globalStatsigBrandingPromise = promise;
   const branding = await promise;
   if (branding) {
-    globalStatsigBranding.set(grokBaseUrl, branding);
+    // Cache per deploy: curves/css_class rotate when Grok ships a new
+    // build, so an entry older than the TTL is re-extracted on demand.
+    globalStatsigBranding.set(grokBaseUrl, { branding, at: Date.now() });
   }
   return branding;
 }
@@ -1328,6 +1373,7 @@ export class BrowserSession {
     this.pageUserAgent = null;
     this.branding = null;
     this.brandingPromise = null;
+    this.brandingLoadedAt = null;
     this.pending = new Map();
     this.statsigChunkUrl = null;
     this.statsigModuleId = null;
@@ -1340,7 +1386,10 @@ export class BrowserSession {
   }
 
   async loadStatsigBranding() {
-    if (this.branding) {
+    if (
+      this.brandingLoadedAt &&
+      Date.now() - this.brandingLoadedAt < STATSIG_BRANDING_CACHE_TTL_MS
+    ) {
       return this.branding;
     }
     if (this.brandingPromise) {
@@ -1352,6 +1401,7 @@ export class BrowserSession {
       this.branding = await promise;
       return this.branding;
     } finally {
+      this.brandingLoadedAt = Date.now();
       this.brandingPromise = null;
     }
   }
@@ -2238,8 +2288,15 @@ export class BrowserSession {
         !statsigFailedRetried &&
         !message.includes("redirected to login page")
       ) {
-        // Statsig generation failed in the current page (e.g. DOM nodes were
-        // removed or page state became corrupted). Recreate the page and retry once.
+        // Statsig generation failed on the current page. The usual cause is
+        // a Grok deploy: the cached middleware chunk (or the generator the
+        // page cached from it) is from an earlier build and crashes on the
+        // new DOM. The old chunk still loads fine, so the chunk-stale
+        // branch above never fires, and merely recreating the page would
+        // reload the same stale source. Drop the cached source, rediscover
+        // from the live page, recreate the page (which also drops its
+        // in-page generator cache), and retry once with the fresh
+        // middleware.
         statsigFailedRetried = true;
         meta = null;
         setTextBufferLimit(
@@ -2247,6 +2304,21 @@ export class BrowserSession {
           onChunk ? 0 : Number.POSITIVE_INFINITY
         );
         clearTextBuffer(textBuffer);
+        const staleChunkUrl = this.statsigChunkUrl;
+        const staleModuleId = this.statsigModuleId;
+        this.statsigChunkUrl = null;
+        this.statsigModuleId = null;
+        globalStatsigCache.delete(this.config.grokBaseUrl);
+        try {
+          await this.loadStatsigChunkSource();
+        } catch (rediscoverError) {
+          // Rediscovery failed (page wedged or chunks not yet loaded).
+          // Retry with the previous source; the failure may have been page
+          // state rather than staleness.
+          this.statsigChunkUrl = staleChunkUrl;
+          this.statsigModuleId = staleModuleId;
+        }
+        payload = buildPayload();
         let page;
         try {
           page = await this.recreatePage();
