@@ -107,7 +107,11 @@ export function installGrokBridgePageHelpers() {
   // we have ever seen (legacy fallback, __next_f payloads, and real logo
   // elements) and stamp them all onto the botox stand-ins so the middleware
   // finds its element no matter which variant the current build queries.
-  const knownStatsigCssClasses = new Set(["r-6k45k0"]);
+  // `r-gtuf8w` is the class the middleware queried in the build that dropped
+  // css_class from __next_f; it is also learned dynamically from the
+  // middleware's own queries (see learnStatsigClassesFromSelector), so the
+  // seed only shortens the first request after a deploy.
+  const knownStatsigCssClasses = new Set(["r-6k45k0", "r-gtuf8w"]);
   const learnStatsigCssClass = (className) => {
     if (typeof className !== "string") {
       return;
@@ -118,6 +122,42 @@ export function installGrokBridgePageHelpers() {
       }
     }
   };
+
+  // The statsig middleware also reads the app's site-verification meta
+  // (meta[name^="gr"]) and folds its bytes into the id. Grok injects that
+  // meta from JS at boot, so on a page whose app never mounted the meta is
+  // missing and generation fails. Remember the first token we ever see and
+  // re-inject it when the page lacks one; the token is static per deploy.
+  let knownStatsigMetaContent = null;
+
+  // Extract r-* class tokens from a selector the middleware queried. When
+  // the middleware asks for a logo class we have never seen (new deploy),
+  // this learns it so ensureBotoxElements can stamp it onto the stand-ins
+  // before the query is retried. Returns true when new classes were added.
+  const learnStatsigClassesFromSelector = (selector) => {
+    if (typeof selector !== "string" || !selector.includes("r-")) {
+      return false;
+    }
+    const tokens = selector.match(/\.r-[a-z0-9]+/gi);
+    if (!tokens) {
+      return false;
+    }
+    let changed = false;
+    for (const token of tokens) {
+      const cls = token.slice(1);
+      if (/^r-[a-z0-9]+$/i.test(cls) && !knownStatsigCssClasses.has(cls)) {
+        knownStatsigCssClasses.add(cls);
+        changed = true;
+      }
+    }
+    return changed;
+  };
+
+  // Real per-deploy logo curve data + css_class extracted by the server
+  // from the /login __next_f payload and sent with every request payload.
+  // The middleware folds the curve path values into the statsig id, so the
+  // stand-ins must carry the exact deployment values or xAI rejects the id.
+  const statsigSeed = { curves: null, cssClass: null };
 
   const readElementClassName = (element) => {
     if (typeof element.className === "string") {
@@ -263,6 +303,25 @@ export function installGrokBridgePageHelpers() {
 
     for (const targetElement of candidates) {
       learnStatsigCssClass(readElementClassName(targetElement));
+      if (
+        targetElement.tagName === "META" &&
+        typeof targetElement.getAttribute === "function"
+      ) {
+        const metaName = targetElement.getAttribute("name") || "";
+        if (metaName.startsWith("gr")) {
+          const metaContent = targetElement.getAttribute("content");
+          if (metaContent && metaContent !== knownStatsigMetaContent) {
+            knownStatsigMetaContent = metaContent;
+            // Share the token with the server so other (wedged) pages can
+            // re-inject it; the token is static per deploy.
+            try {
+              window.__grokBridgeCallBinding?.("__grokBridgeStatsigMeta", {
+                content: metaContent
+              });
+            } catch {}
+          }
+        }
+      }
       cacheElement(targetElement);
       let element = targetElement.parentElement;
       let ancestorDepth = 0;
@@ -360,6 +419,10 @@ export function installGrokBridgePageHelpers() {
   };
 
   let isEnsuringBotox = false;
+  // 1 when the current stand-ins carry the seeded (real) curve data, 0 when
+  // they were built from the synthetic fallback. Forces a rebuild when the
+  // server-provided seed curves arrive after a synthetic build.
+  let botoxCurvesVersion = 0;
   let originalQuerySelectorAll = null;
   try {
     originalQuerySelectorAll = document.querySelectorAll;
@@ -369,6 +432,34 @@ export function installGrokBridgePageHelpers() {
     if (isEnsuringBotox) return;
     isEnsuringBotox = true;
     try {
+      // The statsig middleware reads meta[name^="gr"] bytes (site
+      // verification token) to pick one of the four logo stand-ins. Grok
+      // injects that meta from JS at boot; when the page is wedged and the
+      // app never mounted, re-inject the last token we captured so
+      // generation still succeeds.
+      if (knownStatsigMetaContent) {
+        let hasGrMeta = false;
+        try {
+          const metas = document.getElementsByTagName("meta");
+          for (let i = 0; i < metas.length; i += 1) {
+            if ((metas[i].getAttribute?.("name") || "").startsWith("gr")) {
+              hasGrMeta = true;
+              break;
+            }
+          }
+        } catch {}
+        if (!hasGrMeta) {
+          try {
+            const metaEl = document.createElement("meta");
+            metaEl.setAttribute("name", "grok-site-verification");
+            metaEl.setAttribute("content", knownStatsigMetaContent);
+            (document.head || document.documentElement || document).appendChild(
+              metaEl
+            );
+          } catch {}
+        }
+      }
+
       let container = document.getElementById("__grok_botox_container");
       if (!container) {
         container = document.createElement("div");
@@ -379,12 +470,28 @@ export function installGrokBridgePageHelpers() {
       }
 
       const existingSvgs = Array.from(container.querySelectorAll("svg"));
-      if (
+      // Rebuild when any known logo class is missing from the stand-ins:
+      // the middleware's class changes per deploy and a stale stand-in
+      // set would keep failing its query forever.
+      const svgsCarryAllClasses =
         existingSvgs.length >= 4 &&
-        existingSvgs.every(
-          (el) => el.childNodes?.length > 0 && el.childNodes[0]?.childNodes?.length >= 2
-        )
-      ) {
+        existingSvgs.every((el) => {
+          const cls = readElementClassName(el);
+          for (const known of knownStatsigCssClasses) {
+            if (!cls.includes(known)) {
+              return false;
+            }
+          }
+          return (
+            el.childNodes?.length > 0 &&
+            el.childNodes[0]?.childNodes?.length >= 2
+          );
+        });
+      // The curve d stamped on the stand-ins is part of the statsig
+      // fingerprint, so when the seed curves arrive (or change) the
+      // stand-ins must be rebuilt even if their classes/structure are fine.
+      const seedCurvesVersion = statsigSeed.curves ? 1 : 0;
+      if (svgsCarryAllClasses && botoxCurvesVersion === seedCurvesVersion) {
         for (const el of existingSvgs) {
           cacheElement(el);
         }
@@ -418,13 +525,35 @@ export function installGrokBridgePageHelpers() {
         }
       }
 
+      if (
+        (!Array.isArray(curves) || curves.length === 0) &&
+        Array.isArray(statsigSeed.curves) &&
+        statsigSeed.curves.length >= 2
+      ) {
+        // Real deployment curves extracted from the /login payload; these
+        // values must match what the middleware (and xAI) expects.
+        curves = statsigSeed.curves;
+      }
+
       if (!Array.isArray(curves) || curves.length === 0) {
-        curves = [
-          [{ color: [0, 0, 0, 0, 0, 0], deg: 0, bezier: [0, 0, 0, 0] }],
-          [{ color: [0, 0, 0, 0, 0, 0], deg: 0, bezier: [0, 0, 0, 0] }],
-          [{ color: [0, 0, 0, 0, 0, 0], deg: 0, bezier: [0, 0, 0, 0] }],
-          [{ color: [0, 0, 0, 0, 0, 0], deg: 0, bezier: [0, 0, 0, 0] }]
-        ];
+        // The statsig middleware indexes the parsed curve path segments by
+        // `metaBytes[43] % 16`, so each stand-in path must carry at least 16
+        // "C" segments or generation crashes on `undefined[0]`. The real
+        // loading animation uses long multi-point curves; mirror that shape
+        // with a deterministic wave so the fingerprint is non-degenerate.
+        const fallbackPoints = Array.from({ length: 17 }, (_, pointIndex) => {
+          const phase = (pointIndex % 4) * 2;
+          const wave = (offset) => {
+            const value = Math.round(Math.sin((pointIndex + offset) / 2) * 9 + 10);
+            return Math.max(0, Math.min(23, value));
+          };
+          return {
+            color: [wave(0), wave(1), wave(2), wave(3), wave(4), wave(5)],
+            deg: (pointIndex * 17) % 360,
+            bezier: [wave(6), wave(7), wave(8), wave(9)]
+          };
+        });
+        curves = [fallbackPoints, fallbackPoints, fallbackPoints, fallbackPoints];
       }
 
       container.innerHTML = "";
@@ -442,7 +571,7 @@ export function installGrokBridgePageHelpers() {
           "class",
           `r-1p0dtai r-13gxpu9 r-4qtqp9 r-yyyyoo r-wy61xf r-1d2f490 ${Array.from(
             knownStatsigCssClasses
-          ).join(" ")} r-ywje51`
+          ).join(" ")} r-ywje51 r-dnmrzs r-u8s1d r-zchlnj r-1plcrui r-ipm5af r-lrvibr r-1blnp2b`
         );
         const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
         const path1 = document.createElementNS("http://www.w3.org/2000/svg", "path");
@@ -459,6 +588,7 @@ export function installGrokBridgePageHelpers() {
         container.appendChild(svg);
         cacheElement(svg);
       });
+      botoxCurvesVersion = seedCurvesVersion;
     } catch {} finally {
       isEnsuringBotox = false;
     }
@@ -471,8 +601,15 @@ export function installGrokBridgePageHelpers() {
     document.querySelectorAll = function(selector) {
       const result = rawQuerySelectorAll.apply(this, arguments);
       if (selector && typeof selector === "string") {
-        if (selector.includes("r-6k") || selector.startsWith(".")) {
+        if (selector.includes("r-") || selector.startsWith(".")) {
           if (result.length < 4 && !isEnsuringBotox) {
+            // Learn a logo class the middleware queries that we have not
+            // seen (Grok rotates it per deploy), rebuild the stand-ins with
+            // it, then re-query so the middleware finds its element.
+            if (learnStatsigClassesFromSelector(selector)) {
+              selectorMatchCache.clear?.();
+              classMatchCache.clear?.();
+            }
             ensureBotoxElements();
             const reResult = rawQuerySelectorAll.apply(this, arguments);
             if (reResult.length >= 4) {
@@ -498,8 +635,26 @@ export function installGrokBridgePageHelpers() {
     const originalQuerySelector = document.querySelector;
     document.querySelector = function(selector) {
       const result = originalQuerySelector.apply(this, arguments);
-      if (!result && savedElements.length) {
-        return getCachedSelectorMatches(selector)[0] ?? result;
+      if (!result) {
+        if (
+          selector &&
+          typeof selector === "string" &&
+          selector.includes("r-") &&
+          !isEnsuringBotox
+        ) {
+          if (learnStatsigClassesFromSelector(selector)) {
+            selectorMatchCache.clear?.();
+            classMatchCache.clear?.();
+          }
+          ensureBotoxElements();
+          const reResult = originalQuerySelector.apply(this, arguments);
+          if (reResult) {
+            return reResult;
+          }
+        }
+        if (savedElements.length) {
+          return getCachedSelectorMatches(selector)[0] ?? result;
+        }
       }
       return result;
     };
@@ -507,10 +662,28 @@ export function installGrokBridgePageHelpers() {
     const originalGetElementsByClassName = document.getElementsByClassName;
     document.getElementsByClassName = function(className) {
       const result = originalGetElementsByClassName.apply(this, arguments);
-      if (result.length === 0 && savedElements.length) {
-        const matched = getCachedClassMatches(className);
-        if (matched.length) {
-          return matched;
+      if (result.length === 0) {
+        if (
+          className &&
+          typeof className === "string" &&
+          className.startsWith("r-") &&
+          !isEnsuringBotox
+        ) {
+          if (learnStatsigClassesFromSelector("." + className)) {
+            selectorMatchCache.clear?.();
+            classMatchCache.clear?.();
+          }
+          ensureBotoxElements();
+          const reResult = originalGetElementsByClassName.apply(this, arguments);
+          if (reResult.length) {
+            return reResult;
+          }
+        }
+        if (savedElements.length) {
+          const matched = getCachedClassMatches(className);
+          if (matched.length) {
+            return matched;
+          }
         }
       }
       return result;
@@ -654,6 +827,26 @@ export function installGrokBridgePageHelpers() {
       const url = new URL(request.url, location.origin);
       let statsigId = null;
       try {
+        // Apply the per-deploy branding data extracted by the server so the
+        // botox stand-ins carry the exact curves/css_class the middleware
+        // and xAI expect before the first statistics attempt runs.
+        if (
+          request &&
+          typeof request === "object" &&
+          (Array.isArray(request.statsigCurves) ||
+            request.statsigBrandCssClass ||
+            request.statsigMetaContent)
+        ) {
+          if (Array.isArray(request.statsigCurves) && request.statsigCurves.length >= 2) {
+            statsigSeed.curves = request.statsigCurves;
+          }
+          if (typeof request.statsigBrandCssClass === "string") {
+            learnStatsigCssClass(request.statsigBrandCssClass);
+          }
+          if (typeof request.statsigMetaContent === "string" && !knownStatsigMetaContent) {
+            knownStatsigMetaContent = request.statsigMetaContent;
+          }
+        }
         ensureBotoxElements();
         if (window.__grokVerbose) {
           console.log("__grokBridgeFetch: statsig generator cache size:", savedElements.length);
@@ -1008,6 +1201,124 @@ async function getResponseBody(response) {
 const globalStatsigCache = new Map();
 let globalStatsigInFlightPromise = null;
 
+// The site-verification token (meta[name^="gr"]) is injected by the app at
+// boot on every page and is static per deploy. Remember the first token any
+// page reports so wedged pages (app never mounted) can re-inject it and
+// still generate statsig ids.
+let globalStatsigMetaToken = null;
+
+// Grok's statsig middleware fingerprints the "loading X" logo: it queries
+// the logo by a per-deploy obfuscated class and folds the curve path data
+// into the id. The app embeds the curve data + css_class in the __next_f
+// payload of the /login route (the homepage boot payload no longer carries
+// it). Extract it once per deploy and pass it to the in-page bridge so its
+// botox stand-ins carry the exact values xAI expects, otherwise generated
+// ids are rejected with "Request rejected by anti-bot rules.".
+const globalStatsigBranding = new Map();
+let globalStatsigBrandingPromise = null;
+
+function extractNextFPayloads(html) {
+  const payloads = [];
+  const pushRe = /self\.__next_f\.push\(\[1,"((?:[^"\\]|\\.)*)"/g;
+  let match = null;
+  let guard = 0;
+  while ((match = pushRe.exec(html)) !== null && guard < 200) {
+    guard += 1;
+    try {
+      payloads.push(JSON.parse(`"${match[1]}"`));
+    } catch {}
+  }
+  return payloads;
+}
+
+export function extractStatsigBrandingFromHtml(html) {
+  for (const text of extractNextFPayloads(html)) {
+    if (typeof text !== "string" || !text.includes("css_class")) {
+      continue;
+    }
+    const idx = text.indexOf('"css_class"');
+    const startIdx = text.lastIndexOf('{"curves":', idx);
+    if (startIdx === -1) {
+      continue;
+    }
+    const slice = text.slice(startIdx);
+    let depth = 0;
+    let endIdx = -1;
+    for (let i = 0; i < slice.length; i += 1) {
+      if (slice[i] === "{") {
+        depth += 1;
+      } else if (slice[i] === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          endIdx = i + 1;
+          break;
+        }
+      }
+    }
+    if (endIdx === -1) {
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(slice.slice(0, endIdx));
+      if (
+        Array.isArray(parsed.curves) &&
+        parsed.curves.length >= 2 &&
+        typeof parsed.css_class === "string"
+      ) {
+        return {
+          curves: parsed.curves,
+          cssClass: parsed.css_class
+        };
+      }
+    } catch {}
+  }
+  return null;
+}
+
+async function fetchStatsigBranding(grokBaseUrl) {
+  const loginUrl = `${grokBaseUrl}/login`;
+  try {
+    const res = await fetch(loginUrl, {
+      headers: {
+        accept: "text/html,application/xhtml+xml",
+        "user-agent":
+          "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+      },
+      signal: AbortSignal.timeout(15000)
+    });
+    if (!res.ok) {
+      return null;
+    }
+    const html = await res.text();
+    return extractStatsigBrandingFromHtml(html);
+  } catch {
+    return null;
+  }
+}
+
+async function loadGlobalStatsigBranding(grokBaseUrl) {
+  const cached = globalStatsigBranding.get(grokBaseUrl);
+  if (cached) {
+    return cached;
+  }
+  if (globalStatsigBrandingPromise) {
+    return globalStatsigBrandingPromise;
+  }
+  const promise = (async () => {
+    try {
+      return await fetchStatsigBranding(grokBaseUrl);
+    } finally {
+      globalStatsigBrandingPromise = null;
+    }
+  })();
+  globalStatsigBrandingPromise = promise;
+  const branding = await promise;
+  if (branding) {
+    globalStatsigBranding.set(grokBaseUrl, branding);
+  }
+  return branding;
+}
+
 export class BrowserSession {
   constructor(config) {
     this.config = config;
@@ -1015,6 +1326,8 @@ export class BrowserSession {
     this.page = null;
     this.pagePromise = null;
     this.pageUserAgent = null;
+    this.branding = null;
+    this.brandingPromise = null;
     this.pending = new Map();
     this.statsigChunkUrl = null;
     this.statsigModuleId = null;
@@ -1024,6 +1337,23 @@ export class BrowserSession {
     this.closePromise = null;
     this.validatedPage = null;
     this.validatedPageUrl = null;
+  }
+
+  async loadStatsigBranding() {
+    if (this.branding) {
+      return this.branding;
+    }
+    if (this.brandingPromise) {
+      return this.brandingPromise;
+    }
+    const promise = loadGlobalStatsigBranding(this.config.grokBaseUrl);
+    this.brandingPromise = promise;
+    try {
+      this.branding = await promise;
+      return this.branding;
+    } finally {
+      this.brandingPromise = null;
+    }
   }
 
   resetContextState() {
@@ -1369,6 +1699,12 @@ export class BrowserSession {
       );
     });
 
+    await exposeAliases(["__grokBridgeStatsigMeta", "grokBridgeStatsigMeta"], (_source, payload) => {
+      if (payload && typeof payload.content === "string" && payload.content) {
+        globalStatsigMetaToken = payload.content;
+      }
+    });
+
     await this.context.addInitScript(`
       window.__grokVerbose = ${!!this.config?.verbose};
       (${installGrokBridgePageHelpers.toString()})();
@@ -1701,6 +2037,9 @@ export class BrowserSession {
 
     await this.init();
     await this.loadStatsigChunkSource();
+    // Real logo curve data + css_class for the in-page botox stand-ins.
+    // Without the exact per-deploy values xAI rejects the generated id.
+    await this.loadStatsigBranding();
     statsigLoadedAt = Date.now();
 
     let meta = null;
@@ -1720,7 +2059,10 @@ export class BrowserSession {
       statsigMaxAttempts: this.config.browserStatsigMaxAttempts ?? 50,
       statsigRetryDelayMs: this.config.browserStatsigRetryDelayMs ?? 50,
       streamBatchMaxChars: this.config.browserStreamBatchMaxChars,
-      streamBatchDelayMs: this.config.browserStreamBatchDelayMs
+      streamBatchDelayMs: this.config.browserStreamBatchDelayMs,
+      statsigCurves: this.branding?.curves ?? null,
+      statsigBrandCssClass: this.branding?.cssClass ?? null,
+      statsigMetaContent: globalStatsigMetaToken ?? null
     });
     let payload = buildPayload();
     let statsigChunkRetried = false;

@@ -591,7 +591,9 @@ test("installBindings exposes both canonical and legacy Grok bridge names", asyn
     "__grokBridgeDone",
     "grokBridgeDone",
     "__grokBridgeError",
-    "grokBridgeError"
+    "grokBridgeError",
+    "__grokBridgeStatsigMeta",
+    "grokBridgeStatsigMeta"
   ]);
 });
 
@@ -1491,7 +1493,7 @@ test("init coalesces concurrent persistent launches for the same profile", async
   assert.equal(launchCount, 1);
   assert.equal(contexts.length, 1);
   assert.equal(contexts[0].newPageCalls, 1);
-  assert.equal(contexts[0].bindings.length, 10);
+  assert.equal(contexts[0].bindings.length, 12);
   assert.equal(contexts[0].addInitScriptCalls, 1);
 
 });
@@ -1526,8 +1528,8 @@ test("close resets binding state so a later init reinstalls page bindings", asyn
   }
 
   assert.equal(launchCount, 2);
-  assert.equal(contexts[0].bindings.length, 10);
-  assert.equal(contexts[1].bindings.length, 10);
+  assert.equal(contexts[0].bindings.length, 12);
+  assert.equal(contexts[1].bindings.length, 12);
   assert.equal(contexts[0].closeCalls, 1);
 });
 
