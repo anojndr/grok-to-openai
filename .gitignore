@@ -1,7 +1,16 @@
-node_modules/
-.data/
-.browser-profile/
-.tmp/
+# Secrets — NEVER commit account cookies
+accounts.txt
 .env
-.env.*
-.grok.cookies.txt
+
+# Runtime state and artifacts
+.venv/
+__pycache__/
+*.pyc
+server.log
+server.pid
+grok_sessions.db
+grok_sessions.db-wal
+grok_sessions.db-shm
+.openai_files/
+.browser-profile/
+nohup.out
