@@ -16,7 +16,9 @@ Protocol (verified live against wss://grok.com/ws/mgw/):
                  response.created / response.output_item.added /
                  response.content_part.added / response.output_text.delta /
                  response.output_text.done / response.content_part.done /
-                 response.output_item.done / response.completed / error
+                 response.output_item.done / response.completed /
+                 response.search.result / response.grok.output /
+                 response.done / error
 
 Session semantics (measured):
   * A response's context = the items added to its session since the
@@ -236,13 +238,16 @@ class GrokTurn:
         idle_timeout: float = 120.0,
         file_attachment_ids: list[str] | None = None,
         item: dict | None = None,
-    ) -> tuple[str, list[dict]]:
+    ) -> tuple[str, list[dict], list[dict]]:
         """Send response.create and stream deltas.
 
-        Returns (full text, image parts). Image parts are output_image
-        content parts collected from streaming events and the final
-        response object; the chat gateway is text-only today, but this is
-        where inline image output would surface.
+        Returns (full text, image parts, web sources). Image parts are
+        output_image content parts collected from streaming events and the
+        final response object; the chat gateway is text-only today, but this
+        is where inline image output would surface. Web sources are the
+        deduplicated {url, title} citation entries grok attaches to
+        search-backed answers (response.search.result events and the
+        tool_result payload of response.grok.output events).
         """
         response_event = {"type": "response.create",
                           "response": {"model": self.model}}
@@ -257,6 +262,8 @@ class GrokTurn:
         text_parts: list[str] = []
         images: list[dict] = []
         seen_urls: set[str] = set()
+        sources: list[dict] = []
+        seen_source_urls: set[str] = set()
         deadline = time.monotonic() + hard_timeout
         while time.monotonic() < deadline:
             try:
@@ -289,19 +296,22 @@ class GrokTurn:
                 for part in self._item_parts(resp):
                     self._capture_image(part, images, seen_urls)
                 # keep draining: response.done marks the true session end
+            elif t == "response.search.result":
+                self._collect_sources(ev, sources, seen_source_urls)
             elif t == "response.grok.output":
                 # x_grok custom event; carries stream errors in-band
                 output = ev.get("output")
                 err = output.get("stream_error") if isinstance(output, dict) else None
                 if isinstance(err, dict) and err.get("message"):
                     raise GrokError(err.get("message"), kind=err.get("kind") or "grok_error")
+                self._collect_sources(ev, sources, seen_source_urls)
             elif t == "response.done":
                 break
         text = "".join(text_parts)
         if not text and not images:
             raise GrokError("empty response from grok (account likely throttled)",
                             kind="empty_response")
-        return text, images
+        return text, images, sources
 
     @staticmethod
     def _item_parts(item_or_response: dict) -> list[dict]:
@@ -338,6 +348,47 @@ class GrokTurn:
                 if part.get("type") == "output_text":
                     out.append(part.get("text") or "")
         return "".join(out)
+
+    @staticmethod
+    def _web_results(event: dict) -> list[dict]:
+        """Normalize citation entries ({url, title}) out of a gateway event.
+
+        Two shapes carry grok's web citations (verified live):
+          response.search.result -> result.web_results[]
+          response.grok.output  -> output.tool_result.web_search_results[]
+        Prefers the search.result shape when both are present.
+        """
+        candidates = []
+        result = event.get("result")
+        if isinstance(result, dict):
+            candidates.append(result.get("web_results"))
+        output = event.get("output")
+        if isinstance(output, dict):
+            tool = output.get("tool_result")
+            if isinstance(tool, dict):
+                candidates.append(tool.get("web_search_results"))
+        raw = next((c for c in candidates if c), None)
+        if not isinstance(raw, list):
+            return []
+        out = []
+        for entry in raw:
+            if not isinstance(entry, dict):
+                continue
+            url = str(entry.get("url") or "").strip()
+            if not url:
+                continue
+            title = str(entry.get("title") or "").strip() or url
+            out.append({"url": url, "title": title})
+        return out
+
+    def _collect_sources(self, event: dict, sources: list[dict], seen: set[str]) -> None:
+        """Append unique web citations from one event (first-seen order)."""
+        for src in self._web_results(event):
+            key = src["url"].lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            sources.append(src)
 
     # ---- internals -----------------------------------------------------
 

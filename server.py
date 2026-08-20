@@ -21,6 +21,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import FastAPI, File, Form, Request, UploadFile
@@ -42,6 +43,7 @@ PORT = int(os.environ.get("GROK_PORT", "15553"))
 ACCOUNTS_FILE = os.environ.get("GROK_ACCOUNTS_FILE", "accounts.txt")
 DB_PATH = os.environ.get("GROK_DB", "grok_sessions.db")
 API_KEY = os.environ.get("GROK_OPENAI_API_KEY") or None
+INCLUDE_SOURCES = os.environ.get("GROK_INCLUDE_SOURCES", "0").strip().lower() in ("1", "true", "yes", "on")
 MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
 HTTP_TIMEOUT = httpx.Timeout(120.0, connect=20.0)
 
@@ -419,8 +421,8 @@ async def _replay(account: Account, turn: GrokTurn, history: list[dict]) -> tupl
     return file_ids, response_item
 
 
-async def _run_turn(client_key: str, model: str, history: list[dict], on_delta) -> tuple[str, list[dict]]:
-    """Run one chat turn. Returns (text, image parts)."""
+async def _run_turn(client_key: str, model: str, history: list[dict], on_delta) -> tuple[str, list[dict], list[dict]]:
+    """Run one chat turn. Returns (text, image parts, web sources)."""
     last: Exception | None = None
     for _ in range(5):
         row = store.get_session(client_key)
@@ -446,11 +448,11 @@ async def _run_turn(client_key: str, model: str, history: list[dict], on_delta) 
             # Do not attach: x_grok load_existing is unreliable for client-created sessions.
             turn = await manager.new_turn(account, model, None)
             file_ids, response_item = await _replay(account, turn, history)
-            text, images = await turn.generate(on_delta, file_attachment_ids=file_ids or None,
-                                               item=response_item)
+            text, images, sources = await turn.generate(on_delta, file_attachment_ids=file_ids or None,
+                                                        item=response_item)
             store.create_session(client_key, account.index, turn.session_id, turn.conversation_id, model, history)
             pool.report_success(account)
-            return text, images
+            return text, images, sources
         except Exception as exc:
             last = exc
             if isinstance(exc, GrokError) and 400 <= exc.code < 500:
@@ -557,6 +559,66 @@ async def _run_image_turn(prompt: str, n: int = 1, aspect: str = "1:1") -> list[
 # ---------------------------------------------------------------------------
 
 
+SOURCE_APPENDIX_MAX = 50
+
+
+def _include_sources(flag: Any) -> bool:
+    """Per-request override; falls back to the GROK_INCLUDE_SOURCES env flag."""
+    if flag is None:
+        return INCLUDE_SOURCES
+    if isinstance(flag, str):
+        return flag.strip().lower() in ("1", "true", "yes", "on")
+    return bool(flag)
+
+
+def _host_of(url: str) -> str:
+    try:
+        return (urlparse(url).netloc or "").lower()
+    except ValueError:
+        return ""
+
+
+def _source_appendix(sources: list, query: str) -> str:
+    """Bridge source appendix for llmcord-go's "Show Sources" button.
+
+    Same contract as the perplexity-to-openai proxy's include_sources
+    appendix: the trailing \"Sources\" block (markdown links, first-seen
+    order, deduplicated upstream) plus a \"Search Queries\" footer keyed on
+    the client's latest user text. Emitted only when include_sources is
+    enabled, so non-llmcord clients never see it by default.
+    """
+    entries: list[str] = []
+    # Collapse newlines/tabs so multi-line queries cannot break the
+    # backtick spans or the footer, then neutralize backticks themselves.
+    clean_query = " ".join(query.split()).replace("`", "'") if query else ""
+    for src in sources[:SOURCE_APPENDIX_MAX]:
+        if not isinstance(src, dict):
+            continue
+        url = (src.get("url") or "").strip().replace("\n", "").replace("\r", "").replace("\t", "")
+        # llmcord-go's markdown-link regex stops at ')' and whitespace.
+        url = url.replace(")", "%29").replace(" ", "%20")
+        if not url:
+            continue
+        title = " ".join(str(src.get("title") or "").split())
+        title = title.replace("[", "").replace("]", "") or url
+        entry = f"[{title}]({url})"
+        host = _host_of(url)
+        if title != url and host:
+            entry += f" ({host})"
+        if clean_query:
+            entry += f" via `{clean_query}`"
+        entries.append(entry)
+    if not entries:
+        return ""
+    lines = ["Sources"]
+    lines.extend(f"{i}. {entry}" for i, entry in enumerate(entries, start=1))
+    if clean_query:
+        lines.append("")
+        lines.append("Search Queries")
+        lines.append(f"1. `{clean_query}`")
+    return "\n\n" + "\n".join(lines)
+
+
 def _usage(text: str) -> dict:
     completion = max(1, len(text) // 4)
     return {"prompt_tokens": 1, "completion_tokens": completion, "total_tokens": completion + 1}
@@ -648,11 +710,16 @@ async def chat_completions(request: Request):
                     try:
                         async def delta(text, _event):
                             await q.put(_chat_chunk(cid, model, created, {"content": text}))
-                        text, images = await _run_turn(key, model, history, delta)
+                        text, images, sources = await _run_turn(key, model, history, delta)
                         urls = await _host_images(images)
                         if urls:
                             await q.put(_chat_chunk(cid, model, created,
                                                     {"content": _image_tail(text, urls)}))
+                        if _include_sources(body.get("include_sources")):
+                            appendix = _source_appendix(sources, _user_text(history))
+                            if appendix:
+                                await q.put(_chat_chunk(cid, model, created,
+                                                        {"content": appendix}))
                     except Exception as exc:
                         await q.put("data: " + json.dumps({"error": _openai_error(exc)}) + "\n\n")
                     finally:
@@ -674,9 +741,14 @@ async def chat_completions(request: Request):
         if img_prompt is not None:
             urls = await _host_images(await _run_image_turn(img_prompt))
             return _chat_object(cid, model, created, "", urls)
-        text, images = await _run_turn(key, model, history, delta)
+        text, images, sources = await _run_turn(key, model, history, delta)
         urls = await _host_images(images)
-        return _chat_object(cid, model, created, "".join(full), urls)
+        resp = _chat_object(cid, model, created, "".join(full), urls)
+        if _include_sources(body.get("include_sources")):
+            appendix = _source_appendix(sources, _user_text(history))
+            if appendix:
+                resp["choices"][0]["message"]["content"] += appendix
+        return resp
 
 
 # ---------------------------------------------------------------------------
@@ -710,6 +782,7 @@ async def responses_api(request: Request):
                     seq += 1
                     return _response_event(etype, seq, payload)
                 full = []
+                sources_out: list = []
                 q: asyncio.Queue = asyncio.Queue(128)
                 done = asyncio.Event()
                 msg_id = new_id("msg_")
@@ -722,8 +795,9 @@ async def responses_api(request: Request):
                         async def delta(text, _event):
                             full.append(text)
                             await q.put(text)
-                        text, images = await _run_turn(key, model, history, delta)
+                        text, images, sources = await _run_turn(key, model, history, delta)
                         images_out.extend(images)
+                        sources_out.extend(sources)
                     except Exception as exc:
                         await q.put({"error": _openai_error(exc)})
                     finally:
@@ -750,23 +824,31 @@ async def responses_api(request: Request):
                 text = "".join(full)
                 urls = await _host_images(images_out)
                 display = text + _image_tail(text, urls)
+                appendix = ""
+                if _include_sources(body.get("include_sources")):
+                    appendix = _source_appendix(sources_out, _user_text(new_items))
+                wire = display + appendix
                 row = store.get_session(key)
                 if row:
                     store.update_session(key, row.get("conversation_id"), history + [{"role": "assistant", "parts": [{"type": "text", "text": display}]}])
-                yield event("response.output_text.done", item_id=msg_id, output_index=0, content_index=0, text=display, logprobs=[])
-                yield event("response.content_part.done", item_id=msg_id, output_index=0, content_index=0, part={"type": "output_text", "text": display, "annotations": []})
-                yield event("response.output_item.done", output_index=0, item={"id": msg_id, "type": "message", "role": "assistant", "status": "completed", "content": [{"type": "output_text", "text": display, "annotations": []}]})
-                yield event("response.completed", response=_response_object(rid, model, created, text, "completed", previous, urls))
+                yield event("response.output_text.done", item_id=msg_id, output_index=0, content_index=0, text=wire, logprobs=[])
+                yield event("response.content_part.done", item_id=msg_id, output_index=0, content_index=0, part={"type": "output_text", "text": wire, "annotations": []})
+                yield event("response.output_item.done", output_index=0, item={"id": msg_id, "type": "message", "role": "assistant", "status": "completed", "content": [{"type": "output_text", "text": wire, "annotations": []}]})
+                final = _response_object(rid, model, created, text, "completed", previous, urls)
+                if appendix:
+                    final["output"][0]["content"][0]["text"] = wire
+                yield event("response.completed", response=final)
                 store.register_response(rid, key)
             return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
         full = []
+        sources: list = []
         async def delta(text, _event):
             full.append(text)
         if img_prompt is not None:
             images = await _run_image_turn(img_prompt)
             text = ""
         else:
-            text, images = await _run_turn(key, model, history, delta)
+            text, images, sources = await _run_turn(key, model, history, delta)
             text = "".join(full)
         urls = await _host_images(images)
         display = text + _image_tail(text, urls)
@@ -774,7 +856,12 @@ async def responses_api(request: Request):
         if row:
             store.update_session(key, row.get("conversation_id"), history + [{"role": "assistant", "parts": [{"type": "text", "text": display}]}])
         store.register_response(rid, key)
-        return _response_object(rid, model, created, text, "completed", previous, urls)
+        resp = _response_object(rid, model, created, text, "completed", previous, urls)
+        if _include_sources(body.get("include_sources")):
+            appendix = _source_appendix(sources, _user_text(new_items))
+            if appendix:
+                resp["output"][0]["content"][0]["text"] = display + appendix
+        return resp
 
 
 # ---------------------------------------------------------------------------

@@ -32,6 +32,7 @@ Environment variables (defaults in parentheses):
 | `GROK_ACCOUNTS_FILE` (`accounts.txt`) | Cookie accounts file |
 | `GROK_DB` (`grok_sessions.db`) | SQLite session store |
 | `GROK_OPENAI_API_KEY` | If set, requires `Authorization: Bearer <key>` on chat, responses, images, and files requests. `/v1/models` and `/healthz` stay public |
+| `GROK_INCLUDE_SOURCES` (`0`) | When enabled (`1`, `true`, `yes`, `on`), append a "Sources" + "Search Queries" appendix to answers that have grok web results, for the **Show Sources** button in `llmcord-go` (see below); can also be enabled per request with `include_sources: true` |
 | `GROK_FILES_DIR` (`.openai_files`) | Storage for uploaded files |
 | `GROK_LOG` (`server.log`) | Log file used by `restart.sh` |
 | `GROK_PIDFILE` (`server.pid`) | PID file used by `restart.sh` |
@@ -47,6 +48,26 @@ curl http://localhost:15553/v1/chat/completions \
 ```
 
 Supported models: `fast`, `grok-3-mini-fast`, `grok-4.5-fast`, `grok-4.5`, `expert` (aliases map to the same set).
+
+## llmcord-go "Show Sources"
+
+When enabled, answers that have grok web results get a trailing bridge
+appendix (`Sources` + `Search Queries` sections, markdown links keyed on the
+latest user query) in the same contract the `perplexity-to-openai` proxy
+uses with `include_sources: true`. Enable globally with
+`GROK_INCLUDE_SOURCES=1` or per request with `include_sources: true` (in
+`llmcord-go`, set `extra_body: {include_sources: true}` on the provider that
+points at this proxy). Off by default so non-llmcord clients never see the
+appendix; conversation history stored for follow-up turns stays clean.
+The appendix applies to both `/v1/chat/completions` and `/v1/responses`,
+streaming and non-streaming.
+
+```bash
+curl http://localhost:15553/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "grok-4.5", "include_sources": true,
+       "messages": [{"role": "user", "content": "latest news philippines"}]}'
+```
 
 Endpoints:
 
