@@ -595,8 +595,11 @@ def _source_appendix(sources: list, query: str) -> str:
         if not isinstance(src, dict):
             continue
         url = (src.get("url") or "").strip().replace("\n", "").replace("\r", "").replace("\t", "")
-        # llmcord-go's markdown-link regex stops at ')' and whitespace.
-        url = url.replace(")", "%29").replace(" ", "%20")
+        # llmcord-go's markdown-link regex stops at ')' and whitespace;
+        # escaping '(' too keeps the destination paren-free so
+        # balanced-paren parsers do not reject links like
+        # cc938592(v=technet.10).
+        url = url.replace("(", "%28").replace(")", "%29").replace(" ", "%20")
         if not url:
             continue
         title = " ".join(str(src.get("title") or "").split())

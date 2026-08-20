@@ -8,6 +8,10 @@ OpenAI-compatible API proxy for [grok.com](https://grok.com). It fronts grok's W
 - Multiple grok accounts with cookie-based auth, load balancing, and hot reload from `accounts.txt`
 - Multi-turn conversations via a local SQLite store; each turn replays prior history
 - Streaming responses
+- Inline citations: grok's `grok:render` citation markers in answers are
+  replaced with markdown links keyed on the source hostname (the mapping
+  arrives in a separate gateway event, so streamed text is held back only
+  until the URL resolves)
 - Optional bearer-token auth
 
 ## Setup

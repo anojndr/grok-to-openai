@@ -35,9 +35,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 import uuid
 from typing import Awaitable, Callable
+from urllib.parse import urlparse
 
 import websockets
 
@@ -70,6 +72,162 @@ def normalize_model(model: str | None) -> str:
         return "fast"
     m = str(model).strip()
     return MODEL_ALIASES.get(m, "fast")
+
+
+# ---------------------------------------------------------------------------
+# Citation resolution
+# ---------------------------------------------------------------------------
+# Grok's chat gateway emits inline citations as grok:render tags inside the
+# output text (e.g. `<grok:render card_id="b086be" card_type="citation_card"
+# type="render_inline_citation"><argument name="citation_id">5</argument>
+# </grok:render>`); the source url for each card arrives separately in a
+# response.grok.output event as output.card_attachment {id, url} matching
+# the tag's card_id. The web app renders those tags client-side; raw tags
+# must not leak into OpenAI-API output.
+
+TAG_TOKEN_RE = re.compile(
+    r"(<grok:render\b[^>]*?/>)|(<grok:render\b[^>]*>)|(</grok:render>)")
+CARD_ID_RE = re.compile(r'\bcard_id="([^"]+)"')
+# Bounded strip for markup the token pass cannot consume: fragments without
+# a closing '>' (e.g. a tag split mid-attribute by a delta boundary) and
+# orphan closers. Consumes only attribute-shaped tokens (name="value",
+# name=value, or identifier-like names containing _ - : or digits), so a
+# truncated opener cannot leak its trailing attributes and ordinary words
+# after an unclosed fragment are preserved.
+FRAG_TAG_RE = re.compile(
+    r"</?grok:render\b"
+    r"(?:\s+(?:[\w:.-]+=(?:\"[^\"]*\"|[^<>\s]+)|[\w:-]*[-_:\d][\w:-]*=?))*"
+    r"\s*>?")
+# The <argument> body grok puts inside a citation tag, used to extend the
+# deletion span of an opener that never gets closed. `[^<]*` is bounded by
+# the first '<' (linear; no cross-tag scanning) and the body is short.
+ARG_BODY_RE = re.compile(r"<argument\b[^>]*>[^<]*</argument>")
+
+
+def _source_link(url: str) -> str:
+    """Markdown link for a resolved citation url, hostname as the label.
+
+    Same sanitization as the bridge source appendix: whitespace is
+    stripped, and '(', ')', and spaces are percent-escaped. Gateway urls
+    contain raw parens (e.g. `cc938592(v=technet.10)`); escaping both keeps
+    the destination paren-free so balanced-paren markdown parsers accept the
+    link instead of rendering the raw `[label](url)` text. The label is the
+    bare hostname (no userinfo, port, or IPv6 brackets); '['/']' are removed
+    defensively so bracket literals cannot terminate the link text early.
+    """
+    href = (url.strip().replace("\n", "").replace("\r", "").replace("\t", "")
+            .replace("(", "%28").replace(")", "%29").replace(" ", "%20"))
+    host = urlparse(url).hostname
+    label = (host if host else url).replace("[", "").replace("]", "")
+    return f"[{label}]({href})"
+
+
+def _citation_link(text: str, start: int, url: str) -> str:
+    """Return a citation link with exactly one preceding separator."""
+    separator = " " if start and not text[start - 1].isspace() else ""
+    return separator + _source_link(url)
+
+
+def _card_url(opener: str, card_urls: dict[str, str]) -> str:
+    card = CARD_ID_RE.search(opener)
+    if card is None:
+        return ""
+    return card_urls.get(card.group(1), "")
+
+
+def _resolve_citations(text: str, card_urls: dict[str, str]) -> str:
+    """Replace grok:render citation tags with their source links.
+
+    Pairing is left-to-right: each closer closes the most recent opener
+    (nearest-closer), so echoed/quoted grok:render text before a real
+    citation cannot swallow answer text; each pair becomes the source link
+    for its own card_id. Self-closing openers resolve immediately; bare
+    openers never closed are deleted without touching the text between.
+    Leftover fragments (no '>') and orphan closers are stripped with a
+    bounded sweep. Single linear pass.
+    """
+    if "<grok:render" not in text and "</grok:render" not in text:
+        return text
+    ops: list[tuple[int, int, str]] = []  # (start, end, replacement)
+    stack: list[tuple[int, str]] = []     # (start, opener text)
+    for m in TAG_TOKEN_RE.finditer(text):
+        if m.group(3):  # closer
+            if stack:
+                start, opener = stack.pop()
+                url = _card_url(opener, card_urls)
+                ops.append((start, m.end(), _citation_link(text, start, url) if url else ""))
+        elif m.group(1):  # self-closing opener
+            url = _card_url(m.group(1), card_urls)
+            ops.append((m.start(), m.end(), _citation_link(text, m.start(), url) if url else ""))
+        else:  # regular opener
+            stack.append((m.start(), m.group(2)))
+    for start, opener in stack:
+        # an opener that never got closed should not leak its <argument>
+        # body either (real grok tags always carry one)
+        end = start + len(opener)
+        body = ARG_BODY_RE.match(text, end)
+        if body:
+            end = body.end()
+        ops.append((start, end, ""))
+    ops.sort()
+    out: list[str] = []
+    pos = 0
+    i = 0
+    while i < len(ops):
+        start, end, repl = ops[i]
+        if start < pos:
+            i += 1
+            continue
+        # Collect pairs nested strictly inside this span so their links are
+        # preserved: the wider span would otherwise swallow them, silently
+        # dropping valid citations (malformed but not impossible input).
+        nested: list[str] = []
+        j = i + 1
+        while j < len(ops) and ops[j][0] < end:
+            if ops[j][2]:
+                nested.append(ops[j][2])
+            j += 1
+        out.append(text[pos:start])
+        out.append(repl)
+        for nrepl in nested:
+            # nested links may already carry their own leading separator
+            # from _citation_link; this branch adds exactly one
+            out.append(" " + nrepl.lstrip())
+        pos = end
+        i = j
+    out.append(text[pos:])
+    return FRAG_TAG_RE.sub("", "".join(out))
+
+
+def _has_unresolved_citations(text: str, card_urls: dict[str, str]) -> bool:
+    """True when text contains citation markup that cannot be resolved yet.
+
+    The gateway streams a tag before its card_attachment event, so deltas
+    with unresolved tags must be held back until the attachment arrives.
+    Incomplete markup (an opener whose card_id or closing tag has not
+    streamed yet) also counts as unresolved: flushing it would leak the
+    fragment verbatim to the client.
+    """
+    if "<grok:render" not in text and "</grok:render" not in text:
+        return False
+    opens = 0
+    opener_count = 0
+    for m in TAG_TOKEN_RE.finditer(text):
+        if m.group(3):  # closer
+            if opens:
+                opens -= 1
+            continue
+        opener_count += 1
+        card = CARD_ID_RE.search(m.group(1) or m.group(2))
+        if card is None or card.group(1) not in card_urls:
+            return True
+        if not m.group(1):
+            opens += 1
+    if opens:
+        return True
+    # any '<grok:render' occurrence that is not a complete opener token
+    # (fragment mid-stream) may still complete in the next delta
+    return text.count("<grok:render") != opener_count
 
 
 class GrokError(Exception):
@@ -247,7 +405,11 @@ class GrokTurn:
         is where inline image output would surface. Web sources are the
         deduplicated {url, title} citation entries grok attaches to
         search-backed answers (response.search.result events and the
-        tool_result payload of response.grok.output events).
+        tool_result payload of response.grok.output events). Inline
+        grok:render citation tags in the text are replaced with markdown
+        links to their source urls (from response.grok.output card_attachment
+        events); deltas are held back only while an unreceived attachment
+        would be needed.
         """
         response_event = {"type": "response.create",
                           "response": {"model": self.model}}
@@ -260,10 +422,42 @@ class GrokTurn:
             response_event["item"] = item
         await self._send_event(response_event)
         text_parts: list[str] = []
+        pending: list[str] = []
+        card_urls: dict[str, str] = {}
+        # Authoritative full text from output_text.done / response.completed.
+        # It is resolved lazily once card attachments are done arriving
+        # (response.done or terminal timeout), never force-flushed early.
+        authoritative: str = ""
         images: list[dict] = []
         seen_urls: set[str] = set()
         sources: list[dict] = []
         seen_source_urls: set[str] = set()
+
+        async def flush_pending(force: bool = False) -> None:
+            """Forward buffered deltas once their citations can be resolved.
+
+            Deltas containing grok:render citation tags are held back until
+            the matching card_attachment arrives (the gateway streams the
+            tag before the attachment); unresolved tags at stream end are
+            stripped so no raw markup leaks into output.
+            """
+            if not pending:
+                return
+            joined = "".join(pending)
+            if not force and _has_unresolved_citations(joined, card_urls):
+                return
+            pending.clear()
+            resolved = _resolve_citations(joined, card_urls)
+            if resolved:
+                # A citation opener can be the first item in this flush even
+                # when plain text was emitted by the previous flush. Apply
+                # the same exactly-one-space rule across that chunk boundary.
+                if (resolved.startswith("[") and text_parts and
+                        text_parts[-1] and not text_parts[-1][-1].isspace()):
+                    resolved = " " + resolved
+                text_parts.append(resolved)
+                await on_delta(resolved, {})
+
         deadline = time.monotonic() + hard_timeout
         while time.monotonic() < deadline:
             try:
@@ -281,18 +475,28 @@ class GrokTurn:
             if t == "response.output_text.delta":
                 delta = ev.get("delta", "") or ""
                 if not ev.get("x_grok", {}).get("is_thinking"):
-                    text_parts.append(delta)
-                    await on_delta(delta, ev)
+                    pending.append(delta)
+                    await flush_pending()
             elif t == "response.output_item.added":
                 for part in self._item_parts(ev.get("item")):
                     self._capture_image(part, images, seen_urls)
             elif t == "response.content_part.added":
                 self._capture_image(ev.get("part"), images, seen_urls)
+            elif t == "response.output_text.done":
+                # Authoritative final text. Card_attachment events can still
+                # arrive after this event (each citation streams its tag
+                # before its url), so the final text is NOT flushed or
+                # resolved here; response.done applies it once all
+                # attachments are in. Flushing early would strip citations
+                # whose urls had not arrived yet.
+                final = ev.get("text") or ""
+                if final:
+                    authoritative = final
             elif t == "response.completed":
                 resp = ev.get("response", {})
                 full = self._extract_text(resp)
                 if full:
-                    text_parts = [full]
+                    authoritative = full
                 for part in self._item_parts(resp):
                     self._capture_image(part, images, seen_urls)
                 # keep draining: response.done marks the true session end
@@ -305,8 +509,31 @@ class GrokTurn:
                 if isinstance(err, dict) and err.get("message"):
                     raise GrokError(err.get("message"), kind=err.get("kind") or "grok_error")
                 self._collect_sources(ev, sources, seen_source_urls)
+                att = output.get("card_attachment") if isinstance(output, dict) else None
+                # contract: {id, url} per the protocol note above; `type` is
+                # render metadata and must not gate resolution
+                if isinstance(att, dict):
+                    card_id = att.get("id")
+                    url = att.get("url")
+                    if isinstance(card_id, str) and card_id and isinstance(url, str) and url:
+                        card_urls[card_id] = url
+                await flush_pending()
             elif t == "response.done":
+                # terminal event: all card attachments have streamed, so
+                # unresolved buffered text can finally be resolved forward
+                await flush_pending(force=True)
+                if authoritative:
+                    full = _resolve_citations(authoritative, card_urls)
+                    if full:
+                        text_parts = [full]
                 break
+        # The loop can also exit on hard_timeout without response.done;
+        # flush anything still buffered so no stream tail is silently lost.
+        await flush_pending(force=True)
+        if authoritative:
+            full = _resolve_citations(authoritative, card_urls)
+            if full:
+                text_parts = [full]
         text = "".join(text_parts)
         if not text and not images:
             raise GrokError("empty response from grok (account likely throttled)",

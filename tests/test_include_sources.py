@@ -79,8 +79,8 @@ class SourceAppendixTest(unittest.TestCase):
 
     def test_url_parens_and_spaces_escaped(self):
         out = server._source_appendix(
-            [{"url": "https://x.io/a b)c", "title": "T"}], "q")
-        self.assertIn("https://x.io/a%20b%29c", out)
+            [{"url": "https://x.io/a(b c)d", "title": "T"}], "q")
+        self.assertIn("https://x.io/a%28b%20c%29d", out)
 
     def test_query_backticks_sanitized(self):
         out = server._source_appendix(SOURCES[:1], "what's `up`")
