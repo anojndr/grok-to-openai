@@ -172,6 +172,23 @@ class AccountPool:
                 acc.in_flight += 1
             return acc
 
+    async def acquire_many(self, n: int) -> list[Account]:
+        """Acquire up to n distinct accounts (least-loaded, round-robin).
+
+        Returns fewer than n when the pool cannot supply that many usable
+        accounts (duplicates are never returned); an empty list means no
+        account is available at all.
+        """
+        async with self._lock:
+            picked: list[Account] = []
+            for _ in range(n):
+                acc = self.pick()
+                if acc is None or acc in picked:
+                    break
+                acc.in_flight += 1
+                picked.append(acc)
+            return picked
+
     def release(self, acc: Account) -> None:
         if acc.in_flight > 0:
             acc.in_flight -= 1

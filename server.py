@@ -82,33 +82,41 @@ async def _reload_loop():
 
 
 async def _probe_loop():
-    # REST rate-limit checks do not create expensive chat sessions.
+    # REST rate-limit checks do not create expensive chat sessions. Probes
+    # run concurrently over one shared client (connection pooling, no serial
+    # handshakes), and unhealthy accounts are re-probed every 60s so a
+    # recovered account rejoins rotation within a minute instead of five.
     while True:
         try:
             now = time.monotonic()
-            for account in pool.accounts():
-                interval = 1800 if account.healthy else 300
-                if account.last_probe == 0 or now - account.last_probe >= interval:
-                    await _probe_account(account)
+            due = [a for a in pool.accounts()
+                   if a.last_probe == 0 or now - a.last_probe >= (60 if not a.healthy else 1800)]
+            if due:
+                async with httpx.AsyncClient(timeout=30) as client:
+                    # Probe in small parallel batches: a startup/reload burst
+                    # of 20 accounts hitting the REST endpoint at once could
+                    # look like scraping. Each probe isolates its own
+                    # exceptions, so one failure cannot abort the batch.
+                    for i in range(0, len(due), 8):
+                        await asyncio.gather(*(_probe_account(a, client) for a in due[i:i + 8]))
         except Exception as exc:
             log.warning("account probe loop failed: %s", exc)
         await asyncio.sleep(60)
 
 
-async def _probe_account(account: Account) -> None:
+async def _probe_account(account: Account, client: httpx.AsyncClient) -> None:
     account.last_probe = time.monotonic()
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.post(
-                "https://grok.com/rest/rate-limits",
-                headers={
-                    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/151.0.0.0 Safari/537.36",
-                    "Cookie": account.cookie_header,
-                    "Origin": "https://grok.com",
-                    "Content-Type": "application/json",
-                },
-                json={"modelName": "fast"},
-            )
+        response = await client.post(
+            "https://grok.com/rest/rate-limits",
+            headers={
+                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/151.0.0.0 Safari/537.36",
+                "Cookie": account.cookie_header,
+                "Origin": "https://grok.com",
+                "Content-Type": "application/json",
+            },
+            json={"modelName": "fast"},
+        )
         if response.status_code == 200:
             data = response.json()
             remaining = data.get("remainingQueries")
@@ -116,7 +124,7 @@ async def _probe_account(account: Account) -> None:
                 account.remaining_queries = int(remaining)
             if remaining is not None and remaining <= 0:
                 # Keep the account out of rotation until quota resets;
-                # the probe loop revives it (healthy=False -> 300s probes).
+                # the probe loop revives it (healthy=False -> 60s probes).
                 # A long cooldown stops pick()'s fallback from re-selecting
                 # it while every account is exhausted.
                 account.healthy = False
@@ -421,52 +429,194 @@ async def _replay(account: Account, turn: GrokTurn, history: list[dict]) -> tupl
     return file_ids, response_item
 
 
-async def _run_turn(client_key: str, model: str, history: list[dict], on_delta) -> tuple[str, list[dict], list[dict]]:
-    """Run one chat turn. Returns (text, image parts, web sources)."""
-    last: Exception | None = None
-    for _ in range(5):
-        row = store.get_session(client_key)
-        account: Account | None = None
-        turn: GrokTurn | None = None
-        acquired = False
+# Upper bound on upstream attempts per request. The first attempt is one
+# account; after a failure, each round races RACE_ACCOUNTS sessions at once
+# so a request's wall time tracks the fastest working account instead of
+# the sum of every failing account's timeout.
+MAX_ATTEMPTS = 6
+RACE_ACCOUNTS = 4
+
+
+async def _race_attempts(client_key: str, model: str, history: list[dict], on_delta,
+                         accounts: list[Account]) -> tuple[tuple | None, Exception | None]:
+    """Run the turn on one of `accounts`, racing session setup.
+
+    Every account's connection + session.create run concurrently and the
+    first account whose session becomes ready carries the full turn (replay,
+    generate, streaming) — so when several accounts are failing, the request
+    pays only the fastest account's setup time. Accounts whose preflight
+    actually failed are reported to the pool (cooldown/health); accounts
+    that merely lost the race are closed quietly and stay healthy. Every
+    acquired slot is released exactly once, on every path (including outer
+    cancellation), so racing never leaks load or connections. Deterministic
+    client errors (GrokError 4xx) never penalize an account: they would fail
+    on any account identically.
+
+    Returns (result, None) on success or (None, error) on failure; any
+    genuinely failing account has already been reported to the pool.
+    """
+    async def preflight(acc: Account) -> tuple[Account, GrokTurn | None, BaseException | None]:
         try:
-            if row and _history_prefix(row["history"], history):
-                account = next((a for a in pool.accounts() if a.index == row["account_index"] and a.healthy), None)
-                if account is None:
-                    row = None
+            return acc, await manager.new_turn(acc, model, None), None
+        except BaseException as exc:
+            return acc, None, exc
+
+    async def close_turn_bounded(turn: GrokTurn) -> None:
+        """Close a turn without letting an unresponsive peer stall teardown.
+
+        websockets' close() waits up to close_timeout for the peer's close
+        frame; a silent-but-connected gateway (the exact failing-account
+        case) would otherwise block each close for ~10s on the winner's
+        critical path. Cancellation always propagates — never swallow it.
+        """
+        try:
+            await asyncio.wait_for(manager.close_turn(turn), 1.5)
+        except asyncio.TimeoutError:
+            pass
+        except Exception:
+            pass
+
+    winner: tuple[Account, GrokTurn] | None = None
+    failures: list[tuple[Account, BaseException]] = []
+    released: set[int] = set()
+    closed_turns: set[int] = set()
+
+    def release_once(acc: Account) -> None:
+        if id(acc) not in released:
+            released.add(id(acc))
+            pool.release(acc)
+
+    async def close_turn_once(turn: GrokTurn) -> None:
+        if id(turn) not in closed_turns:
+            closed_turns.add(id(turn))
+            await close_turn_bounded(turn)
+
+    pending = {asyncio.create_task(preflight(a)): a for a in accounts}
+    winner_cleaned = False
+    try:
+        # Phase 1: race until a success settles or every preflight settles.
+        # asyncio.wait returns EVERY task that completed by the time it
+        # resumes, not just one — process the whole batch so no ready
+        # session, failed preflight, or slot is dropped.
+        while pending:
+            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+            for t in done:
+                acc, turn, exc = t.result()
+                if exc is not None:
+                    failures.append((acc, exc))
+                    continue
+                if winner is None:
+                    winner = (acc, turn)
                 else:
-                    account.in_flight += 1
-            else:
-                # Rewind/edit: discard the pinned conversation and choose a
-                # new account for the rebuilt context.
-                row = None
-            if row is None:
-                account = await pool.acquire()
-                if account is None:
-                    raise GrokError("no healthy grok accounts available", code=503, kind="no_accounts")
-                acquired = True
-            # Do not attach: x_grok load_existing is unreliable for client-created sessions.
-            turn = await manager.new_turn(account, model, None)
-            file_ids, response_item = await _replay(account, turn, history)
+                    # Another session became ready in the same wakeup — it
+                    # lost; discard it now so no connection or slot leaks.
+                    await close_turn_once(turn)
+                    release_once(acc)
+            if winner is not None:
+                break
+        # Phase 2: settle the remaining racers (cancelled or finished late).
+        for t in pending:
+            t.cancel()
+        loser_turns: list[GrokTurn] = []
+        for res in await asyncio.gather(*pending, return_exceptions=True):
+            if isinstance(res, BaseException):
+                continue
+            acc, turn, exc = res
+            if exc is not None and not isinstance(exc, asyncio.CancelledError):
+                failures.append((acc, exc))
+            if turn is not None:
+                loser_turns.append(turn)
+            release_once(acc)
+        if loser_turns:
+            await asyncio.gather(*(close_turn_once(t) for t in loser_turns))
+        # Report genuine account failures; never penalize a deterministic
+        # client error (4xx) — it would fail on any account the same way.
+        for acc, exc in failures:
+            if isinstance(exc, GrokError) and 400 <= exc.code < 500:
+                continue
+            pool.report_failure(acc, str(exc)[:160])
+            release_once(acc)
+        if winner is None:
+            real = [e for _, e in failures
+                    if not (isinstance(e, GrokError) and 400 <= e.code < 500)]
+            if not real:
+                raise GrokError("preflight race produced no result", kind="cancelled")
+            return None, real[-1]
+        acc, turn = winner
+        try:
+            file_ids, response_item = await _replay(acc, turn, history)
             text, images, sources = await turn.generate(on_delta, file_attachment_ids=file_ids or None,
                                                         item=response_item)
-            store.create_session(client_key, account.index, turn.session_id, turn.conversation_id, model, history)
-            pool.report_success(account)
-            return text, images, sources
+            store.create_session(client_key, acc.index, turn.session_id, turn.conversation_id, model, history)
+            pool.report_success(acc)
+            return (text, images, sources), None
         except Exception as exc:
-            last = exc
-            if isinstance(exc, GrokError) and 400 <= exc.code < 500:
-                # Client-caused and deterministic (bad file, bad image,
-                # oversized attachment): another account cannot succeed,
-                # and retrying would burn accounts on the same request.
-                raise
-            if account:
-                pool.report_failure(account, str(exc)[:160])
-            store.delete_session(client_key)
+            if not (isinstance(exc, GrokError) and 400 <= exc.code < 500):
+                pool.report_failure(acc, str(exc)[:160])
+            return None, exc
         finally:
-            await manager.close_turn(turn)
-            if account and (acquired or row is not None):
-                pool.release(account)
+            winner_cleaned = True
+            await close_turn_once(turn)
+            release_once(acc)
+    finally:
+        # Outer cancellation (or any exceptional exit): cancel stragglers,
+        # close the winner if the inner cleanup never ran, and release every
+        # slot. All helpers are idempotent, so this is exactly-once safe.
+        for t in pending:
+            t.cancel()
+        if pending:
+            for res in await asyncio.gather(*pending, return_exceptions=True):
+                if isinstance(res, BaseException):
+                    continue
+                acc2, turn2, exc2 = res
+                if turn2 is not None:
+                    await close_turn_once(turn2)
+                release_once(acc2)
+        if winner is not None and not winner_cleaned:
+            await close_turn_once(winner[1])
+            release_once(winner[0])
+        for acc in accounts:
+            release_once(acc)
+
+
+async def _run_turn(client_key: str, model: str, history: list[dict], on_delta) -> tuple[str, list[dict], list[dict]]:
+    """Run one chat turn. Returns (text, image parts, web sources).
+
+    The first attempt is a single account (the pinned conversation account,
+    else the least-loaded account). On failure, later attempts race several
+    accounts' session setup concurrently so failing accounts never serialize
+    a request behind their timeouts.
+    """
+    last: Exception | None = None
+    for attempt in range(MAX_ATTEMPTS):
+        row = store.get_session(client_key)
+        accounts: list[Account] = []
+        if row and _history_prefix(row["history"], history):
+            pinned = next((a for a in pool.accounts() if a.index == row["account_index"] and a.healthy), None)
+            if pinned is not None:
+                pinned.in_flight += 1
+                accounts = [pinned]
+        if not accounts:
+            # Rewind/edit (or the pinned account is gone): discard the pinned
+            # conversation and try fresh accounts.
+            row = None
+            n = 1 if attempt == 0 else RACE_ACCOUNTS
+            accounts = await pool.acquire_many(n)
+            if not accounts:
+                # Pool exhausted (every account cooling down): a capacity
+                # problem, not an upstream failure — always 503 so clients
+                # treat it as retryable, never 502.
+                raise GrokError("no healthy grok accounts available", code=503, kind="no_accounts")
+        result, error = await _race_attempts(client_key, model, history, on_delta, accounts)
+        if error is None:
+            return result
+        last = error
+        if isinstance(error, GrokError) and 400 <= error.code < 500:
+            # Client-caused and deterministic (bad file, bad image,
+            # oversized attachment): another account cannot succeed,
+            # and retrying would burn accounts on the same request.
+            raise error
+        store.delete_session(client_key)
     raise GrokError(f"all accounts failed: {last}", code=502, kind="all_accounts_failed")
 
 

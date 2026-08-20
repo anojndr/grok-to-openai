@@ -270,7 +270,8 @@ class AccountConnection:
                 uri,
                 additional_headers=extra_headers,
                 subprotocols=["json"],
-                open_timeout=30,
+                open_timeout=8,
+                close_timeout=2,
                 ping_interval=20,
                 ping_timeout=20,
                 max_size=16 * 1024 * 1024,
@@ -340,11 +341,15 @@ class GrokTurn:
         await self._send_event({"type": "session.create",
                                 "event_id": f"evt_init_{uuid.uuid4()}",
                                 "session": session})
-        deadline = time.monotonic() + 30
+        # A live gateway answers session.create in well under a second;
+        # a connection that stays silent for 10s is effectively dead, and
+        # a short deadline keeps account failover fast (the pool races
+        # several accounts when failures occur).
+        deadline = time.monotonic() + 10
         got_created = False
         ready = False
         while time.monotonic() < deadline:
-            msg = await self._recv()
+            msg = await self._recv(timeout=10)
             if msg is None:
                 raise GrokError("connection closed during session.create", kind="closed")
             ev = msg.get("event", {})
@@ -626,14 +631,18 @@ class GrokTurn:
         except Exception as e:
             raise GrokError(f"ws send failed: {e}", kind="send_failed") from e
 
-    async def _recv(self) -> dict | None:
+    async def _recv(self, timeout: float | None = None) -> dict | None:
         """Read the next event addressed to THIS session.
 
         The persistent connection hosts many sessions; events for other
         sessions (stale acks, late echoes) are consumed and skipped.
+        `timeout` bounds the whole read including skipped events; None waits
+        indefinitely (callers that need a bound wrap this in asyncio.wait_for
+        — e.g. generate's idle_timeout — so the streaming path is governed by
+        the turn budget, not a per-message one).
         """
-        deadline = time.monotonic() + 30
-        while time.monotonic() < deadline:
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while deadline is None or time.monotonic() < deadline:
             try:
                 raw = await self._ws.recv()
             except websockets.ConnectionClosed as e:
@@ -678,6 +687,12 @@ class GrokSessionManager:
             # prior turns as separate conversation items is reliable and
             # preserves multi-turn semantics without one giant prompt.
             return await conn.make_session(model, None)
+        except asyncio.CancelledError:
+            # A racing attempt that loses the preflight race is cancelled
+            # mid-connect; its socket must be closed, not leaked.
+            self._active.discard(conn)
+            await conn.close()
+            raise
         except Exception:
             self._active.discard(conn)
             await conn.close()
