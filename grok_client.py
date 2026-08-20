@@ -230,6 +230,59 @@ def _has_unresolved_citations(text: str, card_urls: dict[str, str]) -> bool:
     return text.count("<grok:render") != opener_count
 
 
+# ---------------------------------------------------------------------------
+# Degraded-turn detection
+# ---------------------------------------------------------------------------
+# Some accounts' gateways run their web-search tool against placeholder
+# queries that have nothing to do with the user's message (observed live:
+# "current information and recent sources", "best expert recommendations
+# and evidence", "latest updates and authoritative references"), then the
+# model summarizes that unrelated content into fluent-looking word salad
+# that still parses as a successful 200. The turn is detectable before the
+# salad even streams: the tool_usage_card.query arrives before the output
+# deltas. A genuine search almost always echoes at least one significant
+# token of the user's message, so a query sharing zero tokens is the
+# signature of the degraded path.
+
+USER_TOKEN_RE = re.compile(r"[a-z0-9]{4,}")
+# Observed placeholder queries from degraded gateways; a single match here
+# is enough to fail the turn even when only one search has run.
+GENERIC_SEARCH_QUERIES = frozenset({
+    "current information and recent sources",
+    "best expert recommendations and evidence",
+    "latest updates and authoritative references",
+})
+
+
+def _unrelated_queries(queries: list[str], user_text: str) -> bool:
+    """True when 2+ distinct tool queries share no token with the user text.
+
+    Single unrelated queries are tolerated (the model legitimately
+    paraphrases); two unrelated queries mean the gateway is searching about
+    something else entirely. Matches the observed degraded-gateway profile
+    where every search is a placeholder. A known placeholder query counts
+    on its own. Empty user_text disables the check (nothing to measure
+    against).
+    """
+    if not user_text or not queries:
+        return False
+    tokens = set(USER_TOKEN_RE.findall(user_text.lower()))
+    if not tokens:
+        return False
+    distinct: list[str] = []
+    seen: set[str] = set()
+    for q in queries:
+        ql = q.lower().strip()
+        if not ql or ql in seen:
+            continue
+        seen.add(ql)
+        distinct.append(ql)
+    unrelated = [q for q in distinct if not any(t in q for t in tokens)]
+    if len(unrelated) >= 2:
+        return True
+    return len(unrelated) == 1 and unrelated[0] in GENERIC_SEARCH_QUERIES
+
+
 class GrokError(Exception):
     def __init__(self, message: str, code: int = 500, kind: str = "grok_error"):
         super().__init__(message)
@@ -318,6 +371,7 @@ class GrokTurn:
         self.session_id = str(uuid.uuid4())
         self.conversation_id: str | None = None
         self.conversation_mode: str | None = None
+        self.tool_queries: list[str] = []
 
     # ---- lifecycle -----------------------------------------------------
 
@@ -401,6 +455,7 @@ class GrokTurn:
         idle_timeout: float = 120.0,
         file_attachment_ids: list[str] | None = None,
         item: dict | None = None,
+        user_text: str = "",
     ) -> tuple[str, list[dict], list[dict]]:
         """Send response.create and stream deltas.
 
@@ -514,6 +569,26 @@ class GrokTurn:
                 if isinstance(err, dict) and err.get("message"):
                     raise GrokError(err.get("message"), kind=err.get("kind") or "grok_error")
                 self._collect_sources(ev, sources, seen_source_urls)
+                if isinstance(output, dict):
+                    card = output.get("tool_usage_card")
+                    if isinstance(card, dict):
+                        wq = card.get("web_search")
+                        if isinstance(wq, dict):
+                            query = wq.get("query")
+                            if isinstance(query, str) and query.strip():
+                                query = query.strip()
+                                if query not in self.tool_queries:
+                                    self.tool_queries.append(query)
+                                    if _unrelated_queries(self.tool_queries, user_text):
+                                        # The gateway is searching content
+                                        # unrelated to the request; the
+                                        # generation that follows is salad.
+                                        # Fail now, before it streams, so
+                                        # failover costs seconds, not minutes.
+                                        raise GrokError(
+                                            "gateway searched content unrelated to the request "
+                                            "(degraded account)",
+                                            kind="degraded_response")
                 att = output.get("card_attachment") if isinstance(output, dict) else None
                 # contract: {id, url} per the protocol note above; `type` is
                 # render metadata and must not gate resolution
@@ -534,6 +609,11 @@ class GrokTurn:
                 break
         # The loop can also exit on hard_timeout without response.done;
         # flush anything still buffered so no stream tail is silently lost.
+        # NOTE: the degraded-turn guard lives ONLY at the tool_queries append
+        # site (response.grok.output -> tool_usage_card), so no event sequence
+        # can leave this loop with tool_queries newly qualifying — a check
+        # here would be dead code. Every query collected is checked the
+        # moment it is appended.
         await flush_pending(force=True)
         if authoritative:
             full = _resolve_citations(authoritative, card_urls)

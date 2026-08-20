@@ -22,6 +22,12 @@ DEFAULT_ACCOUNTS_FILE = Path(__file__).parent / "accounts.txt"
 COOKIE_RE = re.compile(r"^(\S+)\s+(TRUE|FALSE)\s+(\S+)\s+(TRUE|FALSE)\s+(\d+)\s+(\S+)\s+(\S+)\s*$")
 BLOCK_HEADER_RE = re.compile(r"^\s*account\s*\d+\s*:\s*$")
 
+# How long a degraded account stays out of rotation after one detection.
+# Bounded so a false positive costs time, not the account; re-admission via
+# pick()'s fallback is safe because the first turn after re-admission
+# re-detects before any salad is streamed.
+DEGRADED_QUARANTINE_SECONDS = 3600
+
 
 @dataclass
 class Account:
@@ -30,6 +36,7 @@ class Account:
     cookies: dict[str, str]
     x_userid: str | None = None
     healthy: bool = True
+    degraded: bool = False
     in_flight: int = 0
     consecutive_errors: int = 0
     cooldown_until: float = 0.0
@@ -47,14 +54,29 @@ class Account:
         backoff = min(60 * (2 ** min(self.consecutive_errors - 1, 4)), 3600)
         self.cooldown_until = time.monotonic() + backoff
         lower = reason.lower()
-        if any(token in lower for token in ("401", "unauthenticated", "invalid session", "failed to look up session")):
+        if "degraded account" in lower:
+            # The account's gateway serves valid-looking but unrelated
+            # content (e.g. web searches run against placeholder queries).
+            # Detection is heuristic (token overlap against the user's
+            # message), so a false positive must cost time, not the account:
+            # quarantine lasts DEGRADED_QUARANTINE_SECONDS, then the account
+            # becomes eligible again as a last resort; if it is still
+            # degraded, the first turn re-flags it before any salad is
+            # delivered. A successful probe re-marks the account healthy but
+            # must not shorten that deadline, so mark_success preserves
+            # cooldown_until for degraded accounts.
+            self.degraded = True
+            self.healthy = False
+            self.cooldown_until = time.monotonic() + DEGRADED_QUARANTINE_SECONDS
+        elif any(token in lower for token in ("401", "unauthenticated", "invalid session", "failed to look up session")):
             self.healthy = False
         elif self.consecutive_errors >= 3:
             self.healthy = False
 
     def mark_success(self) -> None:
         self.consecutive_errors = 0
-        self.cooldown_until = 0.0
+        if not self.degraded:
+            self.cooldown_until = 0.0
         self.healthy = True
 
 
@@ -154,9 +176,11 @@ class AccountPool:
         """Least-loaded healthy account; round-robin breaks ties."""
         self.maybe_reload()
         now = time.monotonic()
-        healthy = [a for a in self._accounts if a.healthy and a.cooldown_until <= now]
+        healthy = [a for a in self._accounts if a.healthy and not a.degraded and a.cooldown_until <= now]
         if not healthy:
-            # allow cooldown-expired but previously-unhealthy accounts
+            # Allow cooldown-expired accounts — including degraded accounts
+            # whose quarantine deadline passed (last resort: still-degraded
+            # accounts re-trigger detection on their first turn).
             healthy = [a for a in self._accounts if a.cooldown_until <= now]
         if not healthy:
             return None

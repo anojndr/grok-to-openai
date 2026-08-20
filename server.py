@@ -534,6 +534,7 @@ async def _race_attempts(client_key: str, model: str, history: list[dict], on_de
         for acc, exc in failures:
             if isinstance(exc, GrokError) and 400 <= exc.code < 500:
                 continue
+            log.warning("preflight failed on account %s: %s", acc.index, str(exc)[:160])
             pool.report_failure(acc, str(exc)[:160])
             release_once(acc)
         if winner is None:
@@ -546,12 +547,14 @@ async def _race_attempts(client_key: str, model: str, history: list[dict], on_de
         try:
             file_ids, response_item = await _replay(acc, turn, history)
             text, images, sources = await turn.generate(on_delta, file_attachment_ids=file_ids or None,
-                                                        item=response_item)
+                                                        item=response_item,
+                                                        user_text=_user_text(history))
             store.create_session(client_key, acc.index, turn.session_id, turn.conversation_id, model, history)
             pool.report_success(acc)
             return (text, images, sources), None
         except Exception as exc:
             if not (isinstance(exc, GrokError) and 400 <= exc.code < 500):
+                log.warning("turn failed on account %s: %s", acc.index, str(exc)[:160])
                 pool.report_failure(acc, str(exc)[:160])
             return None, exc
         finally:
@@ -592,7 +595,8 @@ async def _run_turn(client_key: str, model: str, history: list[dict], on_delta) 
         row = store.get_session(client_key)
         accounts: list[Account] = []
         if row and _history_prefix(row["history"], history):
-            pinned = next((a for a in pool.accounts() if a.index == row["account_index"] and a.healthy), None)
+            pinned = next((a for a in pool.accounts()
+                           if a.index == row["account_index"] and a.healthy and not a.degraded), None)
             if pinned is not None:
                 pinned.in_flight += 1
                 accounts = [pinned]
@@ -1085,7 +1089,10 @@ async def models():
 
 @app.get("/healthz")
 async def healthz():
-    return {"ok": True, "accounts": pool.count(), "healthy_accounts": sum(a.healthy for a in pool.accounts()), "port": PORT}
+    accounts = pool.accounts()
+    return {"ok": True, "accounts": pool.count(),
+            "healthy_accounts": sum(a.healthy and not a.degraded for a in accounts),
+            "degraded_accounts": sum(a.degraded for a in accounts), "port": PORT}
 
 
 @app.get("/")

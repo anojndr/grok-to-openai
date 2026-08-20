@@ -87,6 +87,17 @@ Endpoints:
 - The client inside is reverse-engineered from the grok web app and can break when grok changes its gateway.
 - Rate limits and quota are those of the accounts in `accounts.txt`; add more accounts to spread load.
 - Accounts are reloaded automatically when `accounts.txt` changes, no restart needed.
+- Some grok accounts intermittently serve degraded turns: the gateway runs its
+  web-search tool against placeholder queries unrelated to your message and
+  summarizes that content into word salad. The proxy detects the signature
+  (several distinct tool queries sharing no tokens with your message, or a
+  single known placeholder query), fails the turn over to another account
+  instead of delivering the garbage, and quarantines the account (visible as
+  `degraded_accounts` in `/healthz`) for an hour before retrying it as a last
+  resort; still-degraded accounts re-quarantine on their first turn. Replace
+  cookies of accounts that never recover. (Detection compares queries against
+  alphanumeric tokens of the last user message, so messages without such
+  tokens bypass the check.)
 - Run `restart.sh` to restart the server.
 
 Use with accounts you own. This project is not affiliated with xAI.

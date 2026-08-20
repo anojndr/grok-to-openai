@@ -18,6 +18,7 @@ from unittest.mock import patch
 
 import server
 from accounts import Account, AccountPool
+import grok_client
 from grok_client import GrokError, GrokTurn
 
 TEXT = "hello from grok"
@@ -50,7 +51,7 @@ class FakeTurn:
     async def add_item(self, item):
         self.items = getattr(self, "items", []) + [item]
 
-    async def generate(self, on_delta, file_attachment_ids=None, item=None):
+    async def generate(self, on_delta, file_attachment_ids=None, item=None, user_text=""):
         if self.fail is not None:
             raise self.fail
         await on_delta(TEXT, {})
@@ -60,10 +61,11 @@ class FakeTurn:
 class FakeManager:
     """new_turn fails or delays per account index; close_turn records."""
 
-    def __init__(self, fail_indices=(), delays=(), turn_fail=None):
+    def __init__(self, fail_indices=(), delays=(), turn_fail=None, turn_fail_map=None):
         self.fail_indices = set(fail_indices)
         self.delays = dict(delays)
         self.turn_fail = turn_fail
+        self.turn_fail_map = dict(turn_fail_map or {})
         self.created: list[FakeTurn] = []
         self.closed: list[FakeTurn] = []
 
@@ -72,7 +74,7 @@ class FakeManager:
             await asyncio.sleep(self.delays[account.index])
         if account.index in self.fail_indices:
             raise GrokError(f"preflight failed for {account.index}", kind="connect_failed")
-        turn = FakeTurn(account, fail=self.turn_fail)
+        turn = FakeTurn(account, fail=self.turn_fail_map.get(account.index, self.turn_fail))
         self.created.append(turn)
         return turn
 
@@ -422,17 +424,209 @@ class RecvTimeoutTests(unittest.TestCase):
         with self.assertRaises(asyncio.TimeoutError):
             run(asyncio.wait_for(turn._recv(), timeout=0.05))
 
-async def test_skips_other_sessions_within_budget(self):
+    def test_skips_other_sessions_within_budget(self):
         ws = unittest.mock.MagicMock()
         ws.recv = unittest.mock.AsyncMock(side_effect=[
             json.dumps({"session_id": "other", "event": {"type": "stale"}}),
             json.dumps({"session_id": "mine", "event": {"type": "mine"}}),
         ])
-        acc = make_account(0)
-        turn = GrokTurn(acc, ws, asyncio.Lock(), model="fast")
+        turn = self._turn(ws)
         turn.session_id = "mine"
         msg = run(turn._recv(timeout=5))
         self.assertEqual(msg["event"]["type"], "mine")
+
+
+class UnrelatedQueriesTests(unittest.TestCase):
+    """_unrelated_queries flags gateways that search content unrelated to
+    the user's message (the word-salad failure mode)."""
+
+    GENERIC = "current information and recent sources"
+    USER = "what steel thickness can stop a 50 bmg"
+
+    def test_two_unrelated_queries_flag(self):
+        # non-generic pair: the >=2 DISTINCT unrelated branch must fire on
+        # its own (a single generic template would fire earlier)
+        self.assertTrue(grok_client._unrelated_queries(
+            ["sports scores for today", "weather forecast tokyo"], self.USER))
+
+    def test_single_unrelated_query_tolerated(self):
+        # the model may paraphrase once; one unrelated search is not proof
+        self.assertFalse(grok_client._unrelated_queries(
+            ["sports scores for today"], self.USER))
+
+    def test_single_generic_template_flags(self):
+        self.assertTrue(grok_client._unrelated_queries(
+            ["latest updates and authoritative references"], self.USER))
+
+    def test_related_queries_pass(self):
+        self.assertFalse(grok_client._unrelated_queries(
+            ["steel thickness to stop 50 bmg", "AR500 armor plate specs"],
+            self.USER))
+
+    def test_mixed_related_and_one_unrelated_passes(self):
+        self.assertFalse(grok_client._unrelated_queries(
+            ["steel thickness for 50 bmg", "sports scores for today"], self.USER))
+
+    def test_empty_user_text_disables_check(self):
+        self.assertFalse(grok_client._unrelated_queries(
+            [self.GENERIC, "best expert recommendations and evidence"], ""))
+
+    def test_duplicate_queries_count_once(self):
+        self.assertFalse(grok_client._unrelated_queries(
+            ["sports scores for today", "sports scores for today"], self.USER))
+
+
+class DegradedTurnTests(unittest.TestCase):
+    """generate() aborts a turn whose gateway searches content unrelated to
+    the user's message instead of delivering the word salad as success."""
+
+    USER = "what steel thickness can stop a 50 bmg"
+
+    def _turn(self, events):
+        acc = make_account(0)
+        ws = unittest.mock.MagicMock()
+        ws.recv = unittest.mock.AsyncMock(side_effect=[
+            json.dumps({"session_id": "mine", "event": e}) for e in events
+        ])
+        turn = GrokTurn(acc, ws, asyncio.Lock(), model="fast")
+        turn.session_id = "mine"
+        turn._send_event = unittest.mock.AsyncMock()
+        return turn
+
+    def _output(self, **output):
+        return {"type": "response.grok.output", "output": output}
+
+    def test_early_abort_on_two_unrelated_queries(self):
+        # non-generic pair: the first query alone is tolerated (one
+        # paraphrase is legal), the second makes the turn degraded
+        turn = self._turn([
+            {"type": "response.created"},
+            self._output(tool_usage_card={"web_search": {"query": "sports scores for today"}}),
+            self._output(tool_usage_card={"web_search": {"query": "weather forecast tokyo"}}),
+            {"type": "response.output_text.delta", "delta": "garbage "},
+        ])
+        with self.assertRaises(GrokError) as ctx:
+            run(turn.generate(lambda t, e: None, user_text=self.USER))
+        self.assertEqual(ctx.exception.kind, "degraded_response")
+        # generate must have actually sent response.create before streaming
+        send = turn._send_event.await_args.args[0]
+        self.assertEqual(send["type"], "response.create")
+
+    def test_related_queries_stream_normally(self):
+        deltas = []
+        events = [
+            {"type": "response.created"},
+            self._output(tool_usage_card={"web_search": {"query": "steel thickness to stop 50 bmg"}}),
+            {"type": "response.search.result",
+             "result": {"search_type": "web_search",
+                        "web_results": [{"url": "https://example.com/x", "title": "armor steel specs"}]}},
+            {"type": "response.output_text.delta", "delta": "**Around"},
+            {"type": "response.output_text.delta", "delta": " 19 mm.**"},
+            {"type": "response.done"},
+        ]
+        turn = self._turn(events)
+        async def on_delta(text, _e):
+            deltas.append(text)
+        text, images, sources = run(turn.generate(on_delta, user_text=self.USER))
+        self.assertEqual(text, "**Around 19 mm.**")
+        self.assertEqual(sources[0]["url"], "https://example.com/x")
+
+    def test_single_generic_query_aborts(self):
+        # the observed degraded gateways search ONLY placeholder queries; a
+        # generic template with zero overlap is the signature on its own
+        turn = self._turn([
+            {"type": "response.created"},
+            self._output(tool_usage_card={"web_search": {"query": "current information and recent sources"}}),
+            {"type": "response.output_text.delta", "delta": "Paris."},
+            {"type": "response.done"},
+        ])
+        with self.assertRaises(GrokError) as ctx:
+            run(turn.generate(lambda t, e: None, user_text=self.USER))
+        self.assertEqual(ctx.exception.kind, "degraded_response")
+
+
+class DegradedFailoverTests(unittest.TestCase):
+    """A degraded turn is reported to the pool and retried on another
+    account; the account is then quarantined by pick()."""
+
+    def test_degraded_turn_fails_over_to_healthy_account(self):
+        a0 = make_account(0)
+        a1 = make_account(1)
+        pool = FakePool(waves=[[a0], [a1]], known=[a0, a1])
+        manager = FakeManager(turn_fail_map={
+            0: GrokError("gateway searched content unrelated to the request (degraded account)",
+                         kind="degraded_response")})
+        store = FakeStore()
+        with patch.object(server, "manager", manager), \
+             patch.object(server, "pool", pool), \
+             patch.object(server, "store", store):
+            (text, images, sources) = run(server._run_turn("k", "fast", HISTORY, _deltas))
+        self.assertEqual(text, TEXT)
+        self.assertEqual([a.index for a, _ in pool.failures], [0])
+        self.assertEqual(store.created[0][1], 1)
+        # the failed slot and the winner's slot are each released exactly once
+        self.assertEqual(pool.released.count(a0), 1)
+        self.assertEqual(pool.released.count(a1), 1)
+
+    def test_pick_excludes_degraded_account_while_others_exist(self):
+        pool = AccountPool()
+        good = make_account(0)
+        degraded = make_account(1)
+        degraded.degraded = True
+        degraded.healthy = True  # even after a probe revives healthy
+        pool._accounts = [good, degraded]
+        got = run(pool.acquire_many(4))
+        self.assertEqual([a.index for a in got], [0])
+
+    def test_pick_excludes_degraded_with_unexpired_deadline(self):
+        # quarantine in force: no other accounts, but the deadline has not
+        # passed -> pool is empty, never a degraded account
+        pool = AccountPool()
+        degraded = make_account(0)
+        degraded.degraded = True
+        degraded.cooldown_until = 10 ** 9
+        pool._accounts = [degraded]
+        self.assertEqual(run(pool.acquire_many(2)), [])
+
+    def test_pick_expired_degraded_used_as_last_resort(self):
+        # quarantine deadline passed and nothing else is usable: the account
+        # comes back; its first turn re-detects before any salad streams
+        pool = AccountPool()
+        degraded = make_account(0)
+        degraded.degraded = True
+        degraded.cooldown_until = 0.0
+        pool._accounts = [degraded]
+        got = run(pool.acquire_many(2))
+        self.assertEqual([a.index for a in got], [0])
+
+    def test_mark_error_degraded_bounds_quarantine_through_success(self):
+        acc = make_account(0)
+        acc.mark_error("gateway searched content unrelated to the request (degraded account)")
+        self.assertTrue(acc.degraded)
+        self.assertFalse(acc.healthy)
+        deadline = acc.cooldown_until
+        self.assertGreater(deadline, time.monotonic())
+        # a successful probe must not revive the account NOR shorten the
+        # quarantine deadline
+        acc.mark_success()
+        self.assertTrue(acc.healthy)
+        self.assertTrue(acc.degraded)
+        self.assertEqual(acc.cooldown_until, deadline)
+
+    def test_mark_error_plain_degraded_word_does_not_quarantine(self):
+        # only the concrete "(degraded account)" signature quarantines;
+        # unrelated upstream errors that merely contain the word do not
+        acc = make_account(0)
+        acc.mark_error("connection quality degraded, retrying")
+        self.assertFalse(acc.degraded)
+        self.assertTrue(acc.healthy)
+
+    def test_mark_success_clears_cooldown_for_normal_accounts(self):
+        acc = make_account(0)
+        acc.mark_error("quota exhausted (0 remaining queries)")
+        acc.mark_success()
+        self.assertEqual(acc.cooldown_until, 0.0)
+        self.assertTrue(acc.healthy)
 
 
 if __name__ == "__main__":
