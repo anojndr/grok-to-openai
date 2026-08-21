@@ -13,7 +13,7 @@ import asyncio
 import unittest
 from unittest.mock import AsyncMock
 
-from grok_client import GrokTurn, _has_unresolved_citations, _resolve_citations
+from grok_client import GrokError, GrokTurn, _has_unresolved_citations, _resolve_citations
 
 URL1 = "https://learn.microsoft.com/en-us/archive/technet-wiki/54326.windows-servers-page-file-sizing-considerations"
 URL2 = "https://learn.microsoft.com/en-us/archive/blogs/mrsnrub/the-ubiquitous-pagefile"
@@ -410,7 +410,10 @@ class DeltaBufferingTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(text, f"a {LINK1}")
         self.assertEqual(calls, [f"a {LINK1}"])
 
-    async def test_hard_timeout_flushes_buffered_tail(self):
+    async def test_hard_timeout_raises_instead_of_truncating(self):
+        # Hard timeout without response.done means a truncated answer; it
+        # must surface as GrokError(kind="timeout") so callers fail over,
+        # never as a complete-looking "stop"-finished partial text.
         turn = GrokTurn(None, None, asyncio.Lock(), model="fast")
         turn._send_event = AsyncMock()
         counter = {"n": 0}
@@ -421,11 +424,15 @@ class DeltaBufferingTest(unittest.IsolatedAsyncioTestCase):
             return {"event": {"type": "response.output_text.delta", "delta": delta}}
 
         turn._recv = AsyncMock(side_effect=recv_ev)
-        text, calls = await run_generate(turn, hard_timeout=0.2)
-        # buffered partial tags are stripped by the post-loop force flush
-        self.assertEqual(text, "head ")
-        self.assertEqual(calls, ["head "])
-        self.assertNotIn("grok", text)
+        calls: list[str] = []
+
+        async def on_delta(text, _event):
+            calls.append(text)
+
+        with self.assertRaises(GrokError) as ctx:
+            await turn.generate(on_delta, hard_timeout=0.2)
+        self.assertEqual(ctx.exception.kind, "timeout")
+        self.assertNotIn("head", "".join(calls))
 
 
 if __name__ == "__main__":

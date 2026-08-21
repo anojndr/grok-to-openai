@@ -519,6 +519,7 @@ class GrokTurn:
                 await on_delta(resolved, {})
 
         deadline = time.monotonic() + hard_timeout
+        done = False
         while time.monotonic() < deadline:
             try:
                 msg = await asyncio.wait_for(self._recv(), timeout=idle_timeout)
@@ -606,19 +607,19 @@ class GrokTurn:
                     full = _resolve_citations(authoritative, card_urls)
                     if full:
                         text_parts = [full]
+                done = True
                 break
-        # The loop can also exit on hard_timeout without response.done;
-        # flush anything still buffered so no stream tail is silently lost.
-        # NOTE: the degraded-turn guard lives ONLY at the tool_queries append
-        # site (response.grok.output -> tool_usage_card), so no event sequence
-        # can leave this loop with tool_queries newly qualifying — a check
-        # here would be dead code. Every query collected is checked the
-        # moment it is appended.
-        await flush_pending(force=True)
-        if authoritative:
-            full = _resolve_citations(authoritative, card_urls)
-            if full:
-                text_parts = [full]
+        if not done:
+            # The hard deadline expired before the gateway finished the
+            # response: whatever accumulated is a truncated answer, not a
+            # complete one. Raise (like the idle-timeout path) so callers
+            # fail over instead of presenting a cut-off reply with
+            # finish_reason "stop". Streaming callers have already had
+            # deltas forwarded; the producer's error handling surfaces this
+            # as an SSE error chunk, which is honest about the truncation.
+            raise GrokError(
+                f"response did not finish within {hard_timeout:.0f}s",
+                kind="timeout")
         text = "".join(text_parts)
         if not text and not images:
             raise GrokError("empty response from grok (account likely throttled)",

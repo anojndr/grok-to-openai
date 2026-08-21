@@ -312,6 +312,21 @@ class AcquireManyTests(unittest.TestCase):
         got = run(pool.acquire_many(4))
         self.assertEqual([a.index for a in got], [0])
 
+    def test_skewed_load_still_fills_race(self):
+        # Regression: round-robin among the least-loaded group used to
+        # re-pick an already-picked account and stop early, under-filling
+        # the race even though higher-load accounts were available.
+        pool = AccountPool()
+        busy = make_account(3)
+        busy.in_flight = 5
+        pool._accounts = [make_account(0), make_account(1), make_account(2), busy]
+        got = run(pool.acquire_many(4))
+        self.assertEqual(sorted(a.index for a in got), [0, 1, 2, 3])
+        # every slot acquired exactly once: the three idle accounts at load 1,
+        # the pre-busy account incremented on top of its existing 5
+        self.assertEqual([a.in_flight for a in sorted(got, key=lambda a: a.index)],
+                         [1, 1, 1, 6])
+
 
 class ProbeTests(unittest.TestCase):
     def test_probe_success_marks_healthy(self):
@@ -612,6 +627,31 @@ class DegradedFailoverTests(unittest.TestCase):
         self.assertTrue(acc.healthy)
         self.assertTrue(acc.degraded)
         self.assertEqual(acc.cooldown_until, deadline)
+
+    def test_mark_success_after_quarantine_expiry_clears_degraded(self):
+        # Once the quarantine deadline has passed, a successful turn/probe
+        # proves the account recovered: it rejoins primary rotation. A
+        # still-degraded gateway re-flags on its first bad turn.
+        acc = make_account(0)
+        acc.mark_error("gateway searched content unrelated to the request (degraded account)")
+        self.assertTrue(acc.degraded)
+        acc.cooldown_until = time.monotonic() - 1  # quarantine expired
+        acc.mark_success()
+        self.assertFalse(acc.degraded)
+        self.assertTrue(acc.healthy)
+        self.assertEqual(acc.cooldown_until, 0.0)
+
+    def test_expired_degraded_account_rejoins_primary_rotation(self):
+        pool = AccountPool()
+        recovered = make_account(0)
+        recovered.degraded = True
+        recovered.cooldown_until = time.monotonic() - 1
+        pool._accounts = [recovered]
+        # last-resort pick serves it...
+        self.assertEqual([a.index for a in run(pool.acquire_many(1))], [0])
+        # ...and success clears the flag so pick()'s primary tier admits it
+        pool.report_success(recovered)
+        self.assertFalse(recovered.degraded)
 
     def test_mark_error_plain_degraded_word_does_not_quarantine(self):
         # only the concrete "(degraded account)" signature quarantines;

@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import ipaddress
 import json
 import logging
 import mimetypes
@@ -40,6 +41,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 log = logging.getLogger("grok.server")
 
 PORT = int(os.environ.get("GROK_PORT", "15553"))
+HOST = os.environ.get("GROK_HOST", "127.0.0.1")
 ACCOUNTS_FILE = os.environ.get("GROK_ACCOUNTS_FILE", "accounts.txt")
 DB_PATH = os.environ.get("GROK_DB", "grok_sessions.db")
 API_KEY = os.environ.get("GROK_OPENAI_API_KEY") or None
@@ -51,7 +53,38 @@ pool = AccountPool(ACCOUNTS_FILE)
 store = SessionStore(DB_PATH)
 manager = GrokSessionManager()
 file_store = OpenAIFileStore(os.environ.get("GROK_FILES_DIR", ".openai_files"))
-_client_locks: dict[str, asyncio.Lock] = {}
+
+class _ClientLockEntry:
+    """A per-key lock plus the number of active/waiting request owners."""
+
+    __slots__ = ("lock", "users")
+
+    def __init__(self) -> None:
+        self.lock = asyncio.Lock()
+        self.users = 0
+
+
+# Entries live only while a request is queued for or inside the critical
+# section. This bounds memory by concurrent request keys rather than leaking
+# one asyncio.Lock for every conversation ever seen.
+_client_locks: dict[str, _ClientLockEntry] = {}
+
+
+@asynccontextmanager
+async def _client_lock(key: str):
+    """Serialize requests for `key` and remove the entry after its last user."""
+    entry = _client_locks.get(key)
+    if entry is None:
+        entry = _ClientLockEntry()
+        _client_locks[key] = entry
+    entry.users += 1
+    try:
+        async with entry.lock:
+            yield
+    finally:
+        entry.users -= 1
+        if entry.users == 0 and _client_locks.get(key) is entry:
+            del _client_locks[key]
 
 
 @asynccontextmanager
@@ -847,8 +880,7 @@ async def chat_completions(request: Request):
     cid = new_id("chatcmpl-")
     created = int(time.time())
     img_prompt = _image_intent(history)
-    lock = _client_locks.setdefault(key, asyncio.Lock())
-    async with lock:
+    async with _client_lock(key):
         if body.get("stream"):
             async def stream():
                 yield _chat_chunk(cid, model, created, {"role": "assistant", "content": ""})
@@ -929,8 +961,7 @@ async def responses_api(request: Request):
     rid = new_id("resp_")
     created = int(time.time())
     img_prompt = _image_intent(new_items)
-    lock = _client_locks.setdefault(key, asyncio.Lock())
-    async with lock:
+    async with _client_lock(key):
         if body.get("stream"):
             async def stream():
                 seq = 0
@@ -1122,6 +1153,24 @@ async def generic_error_handler(request: Request, exc: Exception):
     return JSONResponse(status_code=500, content={"error": _openai_error(exc)})
 
 
+def _is_loopback(host: str) -> bool:
+    """True when binding `host` only exposes the machine to itself."""
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return host.strip().lower() in ("", "localhost")
+
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
+    if not _is_loopback(HOST) and API_KEY is None:
+        # A non-loopback bind with authentication disabled exposes every
+        # endpoint — the whole grok account pool, attachment upload, and the
+        # local file store — to the network. Fail closed: set GROK_HOST to a
+        # loopback address, or set GROK_OPENAI_API_KEY to require bearer auth.
+        log.error(
+            "refusing to bind %s without GROK_OPENAI_API_KEY: the proxy would "
+            "be unauthenticated on the network (set GROK_OPENAI_API_KEY, or "
+            "bind GROK_HOST=127.0.0.1)", HOST)
+        raise SystemExit(1)
+    uvicorn.run(app, host=HOST, port=PORT)

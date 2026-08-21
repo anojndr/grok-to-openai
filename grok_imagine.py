@@ -40,6 +40,11 @@ log = logging.getLogger("grok.imagine")
 IMAGINE_WS_URL = "wss://grok.com/ws/imagine/listen"
 _IMAGE_ID_RE = re.compile(r"/images/([a-f0-9\-]+)\.")
 
+# Extra drain time after every slot reported 'completed' but some image
+# frames have not arrived yet (frame order is not guaranteed; see
+# generate_images).
+COMPLETION_GRACE_SECONDS = 15.0
+
 # OpenAI-style sizes / grok aspect ratios
 ASPECT_RATIOS = {
     "1280x720": "16:9", "16:9": "16:9",
@@ -112,10 +117,41 @@ async def generate_images(account, prompt: str, n: int = 1, aspect: str = "1:1",
                             },
                         }]}})
         deadline = time.monotonic() + hard_timeout
+        # json status frames and image frames arrive independently, and
+        # 'completed' may precede its image frame. Once every requested
+        # image has completed but some URLs are still missing, keep draining
+        # for a bounded grace window so trailing image frames still land; a
+        # genuinely lost frame then fails fast instead of stalling.
+        grace_until: float | None = None
+
+        def collect(slot: dict) -> None:
+            """Append a completed, unmoderated, url-bearing slot once."""
+            if (slot["done"] and slot["url"] and not slot["moderated"]
+                    and not slot.get("collected") and len(results) < n):
+                slot["collected"] = True
+                results.append({"url": slot["url"], "width": slot["width"],
+                                "height": slot["height"]})
+
+        def new_slot(msg: dict) -> dict:
+            return {
+                "url": None, "done": False,
+                "width": msg.get("width") or 0,
+                "height": msg.get("height") or 0,
+                "moderated": bool(msg.get("moderated") or msg.get("r_rated")),
+            }
+
         while time.monotonic() < deadline:
+            recv_timeout = 60.0
+            if grace_until is not None:
+                remaining = grace_until - time.monotonic()
+                if remaining <= 0:
+                    break
+                recv_timeout = min(recv_timeout, remaining)
             try:
-                raw = await asyncio.wait_for(ws.recv(), timeout=60)
+                raw = await asyncio.wait_for(ws.recv(), timeout=recv_timeout)
             except asyncio.TimeoutError:
+                if grace_until is not None:
+                    break  # grace expired with no further frames
                 raise GrokError("imagine stream went idle", kind="idle_timeout")
             if isinstance(raw, (bytes, bytearray)):
                 continue  # binary blob frames carry nothing we need
@@ -132,28 +168,35 @@ async def generate_images(account, prompt: str, n: int = 1, aspect: str = "1:1",
                 if not image_id:
                     continue
                 if status == "start_stage":
-                    slots[image_id] = {
-                        "url": None, "done": False,
-                        "width": msg.get("width") or 0,
-                        "height": msg.get("height") or 0,
-                        "moderated": bool(msg.get("moderated") or msg.get("r_rated")),
-                    }
+                    slots[image_id] = new_slot(msg)
                 elif status == "completed":
-                    slot = slots.get(image_id)
-                    if slot and not slot["done"]:
-                        slot["done"] = True
-                        if not slot["moderated"] and slot["url"]:
-                            results.append({"url": slot["url"], "width": slot["width"],
-                                            "height": slot["height"]})
-                            if len(results) >= n:
-                                break
+                    slot = slots.setdefault(image_id, new_slot(msg))
+                    slot["done"] = True
+                    collect(slot)
+                    if len(results) >= n:
+                        break
                 if slots and all(s["done"] for s in slots.values()):
-                    break
+                    missing = [s for s in slots.values()
+                               if s["url"] is None and not s["moderated"]]
+                    if len(results) >= n or not missing:
+                        break
+                    if grace_until is None:
+                        log.info("imagine: completed before %d image frame(s); "
+                                 "draining %.0fs", len(missing), COMPLETION_GRACE_SECONDS)
+                        grace_until = time.monotonic() + COMPLETION_GRACE_SECONDS
             elif mtype == "image":
                 url = msg.get("url")
-                slot = slots.get(_image_id_from_url(url or ""))
-                if slot and not slot["done"] and url:
-                    slot["url"] = url
+                if not url:
+                    continue
+                slot = slots.get(_image_id_from_url(url))
+                if slot is None:
+                    # Image frame without any status frame: keep the URL so
+                    # a later 'completed' can still collect it.
+                    slot = slots[_image_id_from_url(url) or str(len(slots))] = new_slot(msg)
+                slot["url"] = url
+                collect(slot)
+                if len(results) >= n:
+                    break
     except websockets.ConnectionClosed as e:
         raise GrokError(f"imagine ws closed: {e.code} {e.reason}", kind="closed") from e
     finally:

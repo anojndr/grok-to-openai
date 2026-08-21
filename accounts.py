@@ -59,12 +59,11 @@ class Account:
             # content (e.g. web searches run against placeholder queries).
             # Detection is heuristic (token overlap against the user's
             # message), so a false positive must cost time, not the account:
-            # quarantine lasts DEGRADED_QUARANTINE_SECONDS, then the account
-            # becomes eligible again as a last resort; if it is still
-            # degraded, the first turn re-flags it before any salad is
-            # delivered. A successful probe re-marks the account healthy but
-            # must not shorten that deadline, so mark_success preserves
-            # cooldown_until for degraded accounts.
+            # quarantine lasts DEGRADED_QUARANTINE_SECONDS. After expiry the
+            # first successful turn or probe (mark_success) clears the flag
+            # and returns the account to primary rotation; if the gateway is
+            # still degraded, that turn re-flags it here before any salad is
+            # delivered.
             self.degraded = True
             self.healthy = False
             self.cooldown_until = time.monotonic() + DEGRADED_QUARANTINE_SECONDS
@@ -75,7 +74,16 @@ class Account:
 
     def mark_success(self) -> None:
         self.consecutive_errors = 0
-        if not self.degraded:
+        if self.degraded:
+            # Re-admit only once the quarantine deadline has actually passed:
+            # a success DURING quarantine (e.g. a rate-limit probe) must not
+            # shorten it. After expiry a served turn/probe succeeded, so the
+            # account has proven itself recovered; a still-degraded gateway
+            # fails its very next turn and re-enters quarantine above.
+            if time.monotonic() >= self.cooldown_until:
+                self.degraded = False
+                self.cooldown_until = 0.0
+        else:
             self.cooldown_until = 0.0
         self.healthy = True
 
@@ -84,7 +92,12 @@ def parse_cookie_block(block: str) -> dict[str, str]:
     cookies: dict[str, str] = {}
     for line in block.splitlines():
         line = line.strip()
-        if not line or line.startswith("#"):
+        if line.startswith("#HttpOnly_"):
+            # Netscape cookie exports mark HttpOnly cookies with a
+            # '#HttpOnly_' prefix; grok's sso/sso-rw session cookies are
+            # typically HttpOnly, so these lines are data, not comments.
+            line = line[len("#HttpOnly_"):]
+        elif not line or line.startswith("#"):
             continue
         m = COOKIE_RE.match(line)
         if not m:
@@ -172,16 +185,24 @@ class AccountPool:
     def count(self) -> int:
         return len(self._accounts)
 
-    def pick(self) -> Account | None:
-        """Least-loaded healthy account; round-robin breaks ties."""
+    def pick(self, exclude: list[Account] | None = None) -> Account | None:
+        """Least-loaded healthy account; round-robin breaks ties.
+
+        Accounts in `exclude` are skipped entirely so batch acquirers get
+        distinct accounts instead of stopping at the first duplicate.
+        (Account is an eq-dataclass and therefore unhashable, hence a list.)
+        """
         self.maybe_reload()
         now = time.monotonic()
-        healthy = [a for a in self._accounts if a.healthy and not a.degraded and a.cooldown_until <= now]
+        healthy = [a for a in self._accounts
+                   if a.healthy and not a.degraded and a.cooldown_until <= now]
         if not healthy:
             # Allow cooldown-expired accounts — including degraded accounts
             # whose quarantine deadline passed (last resort: still-degraded
             # accounts re-trigger detection on their first turn).
             healthy = [a for a in self._accounts if a.cooldown_until <= now]
+        if exclude:
+            healthy = [a for a in healthy if a not in exclude]
         if not healthy:
             return None
         # least in_flight, then round-robin among the least-loaded group
@@ -199,15 +220,16 @@ class AccountPool:
     async def acquire_many(self, n: int) -> list[Account]:
         """Acquire up to n distinct accounts (least-loaded, round-robin).
 
-        Returns fewer than n when the pool cannot supply that many usable
-        accounts (duplicates are never returned); an empty list means no
+        Returns fewer than n only when the pool cannot supply that many
+        distinct usable accounts (already-picked accounts are excluded from
+        later picks rather than stopping the sweep); an empty list means no
         account is available at all.
         """
         async with self._lock:
             picked: list[Account] = []
             for _ in range(n):
-                acc = self.pick()
-                if acc is None or acc in picked:
+                acc = self.pick(exclude=picked)
+                if acc is None:
                     break
                 acc.in_flight += 1
                 picked.append(acc)
